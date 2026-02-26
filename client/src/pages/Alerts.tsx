@@ -5,9 +5,9 @@ import { Badge } from "@/components/ui/badge";
 import { BellRing, CheckCircle2, AlertOctagon } from "lucide-react";
 
 const alerts = [
-  { id: 1, title: "High Page Load Latency", description: "Average page load time exceeded 3s for Initech.", tenant: "Initech", severity: "High", time: "10 mins ago", status: "Active" },
-  { id: 2, title: "Authentication Failures", description: "Multiple synthetic auth tests failed.", tenant: "Globex", severity: "Medium", time: "1 hour ago", status: "Active" },
-  { id: 3, title: "Search API Throttling", description: "SharePoint search API returned 429 Too Many Requests.", tenant: "Acme Corp", severity: "Low", time: "3 hours ago", status: "Resolved" },
+  { id: 1, title: "High Page Load Latency", description: "Average page load time exceeded 3s for Hub.", site: "Hub", severity: "High", time: "10 mins ago", status: "Active" },
+  { id: 2, title: "Authentication Failures", description: "Multiple synthetic auth tests failed.", site: "HR Portal", severity: "Medium", time: "1 hour ago", status: "Active" },
+  { id: 3, title: "Search API Throttling", description: "SharePoint search API returned 429 Too Many Requests.", site: "IT Support", severity: "Low", time: "3 hours ago", status: "Resolved" },
 ];
 
 export default function Alerts() {
@@ -17,7 +17,7 @@ export default function Alerts() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Alerts & Incidents</h2>
           <p className="text-muted-foreground">
-            Manage active alerts and configure notification rules.
+            Manage active alerts and configure notification rules for this tenant.
           </p>
         </div>
         <div className="flex items-center space-x-2">
@@ -36,7 +36,7 @@ export default function Alerts() {
                   {alert.status === 'Active' ? <AlertOctagon className="h-5 w-5 text-destructive" /> : <CheckCircle2 className="h-5 w-5 text-emerald-500" />}
                   {alert.title}
                 </CardTitle>
-                <CardDescription className="mt-1">{alert.tenant} • {alert.time}</CardDescription>
+                <CardDescription className="mt-1">{alert.site} • {alert.time}</CardDescription>
               </div>
               <div className="flex gap-2">
                 <Badge variant={alert.severity === 'High' ? 'destructive' : 'secondary'}>

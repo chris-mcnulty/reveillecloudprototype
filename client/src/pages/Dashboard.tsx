@@ -24,11 +24,11 @@ const performanceData = [
 ];
 
 const errorData = [
-  { tenant: "Acme Corp", errors: 12 },
-  { tenant: "Globex", errors: 8 },
-  { tenant: "Initech", errors: 45 },
-  { tenant: "Soylent", errors: 3 },
-  { tenant: "Umbrella", errors: 1 },
+  { site: "Hub", errors: 12 },
+  { site: "HR Portal", errors: 8 },
+  { site: "IT Support", errors: 45 },
+  { site: "Marketing", errors: 3 },
+  { site: "Engineering", errors: 1 },
 ];
 
 export default function Dashboard() {
@@ -37,7 +37,7 @@ export default function Dashboard() {
       <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Global Avg Load Time</CardTitle>
+            <CardTitle className="text-sm font-medium">Average Load Time</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -50,14 +50,14 @@ export default function Dashboard() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Monitored Tenants</CardTitle>
+            <CardTitle className="text-sm font-medium">Active Monitored Sites</CardTitle>
             <Globe className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">1,248</div>
+            <div className="text-2xl font-bold">24</div>
             <p className="text-xs text-muted-foreground flex items-center mt-1">
               <TrendingUp className="h-3 w-3 mr-1 text-emerald-500" />
-              <span className="text-emerald-500 font-medium">+12</span> this week
+              <span className="text-emerald-500 font-medium">+2</span> this week
             </p>
           </CardContent>
         </Card>
@@ -69,7 +69,7 @@ export default function Dashboard() {
           <CardContent>
             <div className="text-2xl font-bold text-destructive">3</div>
             <p className="text-xs text-muted-foreground mt-1">
-              Across 2 distinct tenants
+              Affecting 2 distinct sites
             </p>
           </CardContent>
         </Card>
@@ -90,9 +90,9 @@ export default function Dashboard() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
         <Card className="col-span-4">
           <CardHeader>
-            <CardTitle>Global Latency Trend</CardTitle>
+            <CardTitle>Latency Trend</CardTitle>
             <CardDescription>
-              Average response time across all synthetic transactions (24h)
+              Average response time across synthetic transactions for this tenant (24h)
             </CardDescription>
           </CardHeader>
           <CardContent className="pl-0">
@@ -131,9 +131,9 @@ export default function Dashboard() {
         
         <Card className="col-span-3">
           <CardHeader>
-            <CardTitle>Error Spikes by Tenant</CardTitle>
+            <CardTitle>Error Spikes by Site</CardTitle>
             <CardDescription>
-              Top 5 tenants with highest error rates in the last hour
+              Top 5 sites with highest error rates in the last hour
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -142,7 +142,7 @@ export default function Dashboard() {
                 <BarChart data={errorData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }} layout="vertical">
                   <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="hsl(var(--border))" />
                   <XAxis type="number" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis dataKey="tenant" type="category" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                  <YAxis dataKey="site" type="category" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
                   <Tooltip 
                     cursor={{fill: 'hsl(var(--muted))'}}
                     contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
@@ -159,22 +159,22 @@ export default function Dashboard() {
         <CardHeader>
           <CardTitle>Recent Synthetic Transaction Logs</CardTitle>
           <CardDescription>
-            Live feed of synthetic tests executed across active tenants
+            Live feed of synthetic tests executed across this tenant
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             {[
-              { id: "tx-1092", tenant: "Acme Corp", type: "Page Load", status: "Success", latency: "420ms", time: "Just now" },
-              { id: "tx-1091", tenant: "Initech", type: "File Upload", status: "Failed", latency: "Timeout", time: "2 min ago" },
-              { id: "tx-1090", tenant: "Globex", type: "Search Query", status: "Success", latency: "1.2s", time: "5 min ago" },
-              { id: "tx-1089", tenant: "Soylent", type: "Authentication", status: "Success", latency: "380ms", time: "6 min ago" },
+              { id: "tx-1092", site: "Hub", type: "Page Load", status: "Success", latency: "420ms", time: "Just now" },
+              { id: "tx-1091", site: "HR Portal", type: "File Upload", status: "Failed", latency: "Timeout", time: "2 min ago" },
+              { id: "tx-1090", site: "IT Support", type: "Search Query", status: "Success", latency: "1.2s", time: "5 min ago" },
+              { id: "tx-1089", site: "Marketing", type: "Authentication", status: "Success", latency: "380ms", time: "6 min ago" },
             ].map((log) => (
               <div key={log.id} className="flex items-center justify-between border-b pb-4 last:border-0 last:pb-0">
                 <div className="flex items-center gap-4">
                   <div className={`w-2 h-2 rounded-full ${log.status === 'Success' ? 'bg-emerald-500' : 'bg-destructive'}`} />
                   <div>
-                    <p className="text-sm font-medium">{log.tenant} - {log.type}</p>
+                    <p className="text-sm font-medium">{log.site} - {log.type}</p>
                     <p className="text-xs text-muted-foreground">ID: {log.id}</p>
                   </div>
                 </div>

@@ -28,7 +28,7 @@ export default function Performance() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Performance Explorer</h2>
           <p className="text-muted-foreground">
-            Deep dive into synthetic transaction metrics across tenants.
+            Deep dive into synthetic transaction metrics for this tenant.
           </p>
         </div>
       </div>

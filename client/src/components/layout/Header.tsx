@@ -1,4 +1,4 @@
-import { Search, Bell } from "lucide-react";
+import { Search, Bell, Building2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,13 +9,40 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export function Header() {
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background px-4 sm:static sm:h-auto sm:border-0 sm:bg-transparent sm:px-6">
-      <div className="flex-1">
-        <h1 className="text-xl font-semibold tracking-tight">SharePoint Monitor</h1>
+      <div className="flex-1 flex items-center gap-4">
+        <h1 className="text-xl font-semibold tracking-tight hidden sm:block">SharePoint Monitor</h1>
+        
+        <div className="h-6 w-px bg-border hidden sm:block" />
+        
+        <Select defaultValue="t-001">
+          <SelectTrigger className="w-[200px] h-9 bg-background border-dashed">
+            <div className="flex items-center gap-2 text-sm">
+              <Building2 className="h-4 w-4 text-muted-foreground" />
+              <SelectValue placeholder="Select tenant" />
+            </div>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all" className="font-medium text-primary">All Tenants (MSP View)</SelectItem>
+            <DropdownMenuSeparator />
+            <SelectItem value="t-001">Acme Corp</SelectItem>
+            <SelectItem value="t-002">Globex</SelectItem>
+            <SelectItem value="t-003">Initech</SelectItem>
+            <SelectItem value="t-004">Soylent</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
+
       <div className="flex items-center gap-4 md:ml-auto md:gap-2 lg:gap-4">
         <form className="ml-auto flex-1 sm:flex-initial">
           <div className="relative">
