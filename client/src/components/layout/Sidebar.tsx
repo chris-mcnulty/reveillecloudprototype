@@ -7,6 +7,7 @@ import {
   Settings,
   Database,
   BarChart3,
+  LayoutGrid,
 } from "lucide-react";
 import {
   Tooltip,
@@ -18,7 +19,8 @@ export function Sidebar() {
   const [location] = useLocation();
 
   const navItems = [
-    { href: "/", icon: Home, label: "Dashboard" },
+    { href: "/", icon: LayoutGrid, label: "Overview" },
+    { href: "/dashboard", icon: Home, label: "Dashboard" },
     { href: "/tenants", icon: Building2, label: "Tenants" },
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },

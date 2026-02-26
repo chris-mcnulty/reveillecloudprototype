@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Database, Cloud } from "lucide-react";
+import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Database, Cloud, LayoutGrid } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,7 +28,8 @@ export function Header() {
   const [location] = useLocation();
 
   const navItems = [
-    { href: "/", icon: Home, label: "Dashboard" },
+    { href: "/", icon: LayoutGrid, label: "Overview" },
+    { href: "/dashboard", icon: Home, label: "Dashboard" },
     { href: "/tenants", icon: Building2, label: "Tenants" },
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },

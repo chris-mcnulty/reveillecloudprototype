@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
 import NotFound from "@/pages/not-found";
+import Environments from "@/pages/Environments";
 import Dashboard from "@/pages/Dashboard";
 import Tenants from "@/pages/Tenants";
 import Alerts from "@/pages/Alerts";
@@ -17,7 +18,8 @@ import TenantConfig from "@/pages/settings/Tenant";
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Dashboard}/>
+      <Route path="/" component={Environments}/>
+      <Route path="/dashboard" component={Dashboard}/>
       <Route path="/tenants" component={Tenants}/>
       <Route path="/alerts" component={Alerts}/>
       <Route path="/performance" component={Performance}/>
