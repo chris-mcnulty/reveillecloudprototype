@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Database, Cloud, LayoutGrid } from "lucide-react";
+import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Cloud, LayoutGrid } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { ThemeToggle } from "@/components/theme-toggle";
+import logoUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
 
 export function Header() {
   const [location] = useLocation();
@@ -48,8 +49,8 @@ export function Header() {
         </SheetTrigger>
         <SheetContent side="left" className="sm:max-w-xs">
           <nav className="grid gap-6 text-lg font-medium mt-6">
-            <Link href="/" className="group flex h-10 w-10 shrink-0 items-center justify-center gap-2 rounded-full bg-primary text-lg font-semibold text-primary-foreground md:text-base">
-              <Database className="h-5 w-5 transition-all group-hover:scale-110" />
+            <Link href="/" className="group flex h-10 shrink-0 items-center gap-2">
+              <img src={logoUrl} alt="Reveille Cloud" className="h-8 w-auto object-contain transition-all group-hover:scale-105" />
               <span className="sr-only">Reveille Cloud</span>
             </Link>
             {navItems.map((item) => (

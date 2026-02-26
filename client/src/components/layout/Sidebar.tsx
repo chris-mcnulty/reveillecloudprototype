@@ -5,7 +5,6 @@ import {
   Building2,
   Home,
   Settings,
-  Database,
   BarChart3,
   LayoutGrid,
 } from "lucide-react";
@@ -14,6 +13,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import logoUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
 
 export function Sidebar() {
   const [location] = useLocation();
@@ -31,8 +31,8 @@ export function Sidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-10 hidden w-14 flex-col border-r bg-background sm:flex">
       <nav className="flex flex-col items-center gap-4 px-2 py-4">
-        <Link href="/" className="group flex h-9 w-9 shrink-0 items-center justify-center gap-2 rounded-full bg-primary text-lg font-semibold text-primary-foreground md:h-8 md:w-8 md:text-base">
-          <Database className="h-4 w-4 transition-all group-hover:scale-110" />
+        <Link href="/" className="group flex h-9 w-9 shrink-0 items-center justify-center gap-2 rounded-full md:h-8 md:w-8">
+          <img src={logoUrl} alt="Reveille Cloud" className="h-6 w-auto object-contain transition-all group-hover:scale-110" />
           <span className="sr-only">Reveille Cloud</span>
         </Link>
         {navItems.map((item) => (
