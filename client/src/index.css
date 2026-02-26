@@ -156,4 +156,13 @@
   .glass-panel {
     @apply bg-background/80 backdrop-blur-md border border-border/50 shadow-sm;
   }
+  
+  /* Hide scrollbar for elements like the horizontal scrolling header on mobile */
+  .hide-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }

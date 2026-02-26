@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Database } from "lucide-react";
+import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Database, Cloud } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,20 +69,20 @@ export function Header() {
         </SheetContent>
       </Sheet>
 
-      <div className="flex-1 flex items-center gap-4">
-        <h1 className="text-xl font-semibold tracking-tight hidden sm:block">SharePoint Monitor</h1>
+      <div className="flex-1 flex items-center gap-2 sm:gap-4 overflow-x-auto pb-1 sm:pb-0 hide-scrollbar">
+        <h1 className="text-xl font-semibold tracking-tight hidden sm:block whitespace-nowrap shrink-0">SharePoint Monitor</h1>
         
-        <div className="h-6 w-px bg-border hidden sm:block" />
+        <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
         
         <Select defaultValue="t-001">
-          <SelectTrigger className="w-[200px] h-9 bg-background border-dashed">
-            <div className="flex items-center gap-2 text-sm">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
-              <SelectValue placeholder="Select tenant" />
+          <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0">
+            <div className="flex items-center gap-2 text-sm truncate">
+              <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span className="truncate"><SelectValue placeholder="Select tenant" /></span>
             </div>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all" className="font-medium text-primary">All Tenants (MSP View)</SelectItem>
+            <SelectItem value="all" className="font-medium text-primary">All Tenants (MSP)</SelectItem>
             <DropdownMenuSeparator />
             <SelectItem value="t-001">Acme Corp</SelectItem>
             <SelectItem value="t-002">Globex</SelectItem>
@@ -90,9 +90,23 @@ export function Header() {
             <SelectItem value="t-004">Soylent</SelectItem>
           </SelectContent>
         </Select>
+
+        <Select defaultValue="m365">
+          <SelectTrigger className="w-[140px] sm:w-[180px] h-9 bg-background border-dashed shrink-0">
+            <div className="flex items-center gap-2 text-sm truncate">
+              <Cloud className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span className="truncate"><SelectValue placeholder="Select system" /></span>
+            </div>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="m365">Microsoft 365</SelectItem>
+            <SelectItem value="gws">Google Workspace</SelectItem>
+            <SelectItem value="opentext">OpenText</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
-      <div className="flex items-center gap-4 md:ml-auto md:gap-2 lg:gap-4">
+      <div className="flex items-center gap-4 md:ml-auto md:gap-2 lg:gap-4 shrink-0">
         <form className="ml-auto flex-1 sm:flex-initial hidden md:block">
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
