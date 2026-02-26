@@ -1,0 +1,109 @@
+# Specification: Multi‑Tenant SharePoint Online Performance Monitoring Collector
+
+## 1 Overview and Goals
+
+**Objective:** design and implement a web‑based collector that continuously monitors the performance and availability of Microsoft SharePoint Online for multiple customer tenants.  The system must gather **performance telemetry (response times, error rates, etc.), usage information and security signals** from SharePoint Online, produce dashboards and alerts, and provide the foundation to support additional cloud or on‑premises content systems in the future.  
+
+**Key goals:**
+
+1. **Multi‑tenant, SaaS design:** the collector must support many customer tenants with **strict logical isolation** of data and credentials.  Each tenant should be identifiable via a tenantID; configuration, telemetry and alerts must be partitioned by tenant.  Azure AD multi‑tenant app registration allows customers to grant the necessary permissions to your application[2](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins-modernize/multi-tenant-applications).  
+2. **Agentless monitoring:** no code is deployed inside customer SharePoint tenants; the collector operates via Microsoft Graph, SharePoint REST/CSOM APIs and browser‑based transactions.  For on‑premises or non‑Microsoft services, optional lightweight collectors (agents) may be added later.  
+3. **Comprehensive observability:** combine **synthetic transactions** (active tests) with passive data from Microsoft Graph reports, audit logs and service‑health APIs to provide end‑to‑end visibility.  Support key KPIs (homepage load time, file upload/download times, search latency, error rates, API latency, etc.).  
+4. **Scalable, extensible architecture:** design the system as loosely coupled services (microservices or serverless), enabling independent scaling and making it easy to add support for new platforms (Box, Google Drive, AI agents, on‑premises ECM) via plug‑in modules.  
+5. **Security and compliance:** enforce **least‑privilege access** and tenant isolation.  Securely manage OAuth tokens and secrets, encrypt telemetry at rest and in transit, and honour data‑retention and deletion requirements.  
+6. **Self‑observability and reliability:** instrument the collector with telemetry (e.g., Azure Application Insights) to monitor its own performance, availability and failure rates.  Implement health probes, rate‑limit awareness, and circuit breaker patterns to remain resilient under load or when Microsoft throttles requests[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).
+
+## 2 Functional Requirements
+
+### 2.1 Tenant onboarding and authentication
+
+1. **Admin portal:** Provide a secure portal where customer administrators can register their tenant.  During onboarding, the admin is directed to Azure AD to grant consent to a **multi‑tenant Azure AD application**.  Required permission scopes may include:
+   * `Sites.Read.All` or `Sites.Selected` and optional scopes for reading usage reports (`Reports.Read.All`) from Microsoft Graph.
+   * `AuditLog.Read.All` if audit logs are collected.
+   * `Sites.Manage.All` or `Files.ReadWrite.All` only if synthetic file uploads are executed and file deletion is required.
+2. **Secure credential storage:** After consent, store the resulting OAuth refresh tokens or certificates in a secure secret store (e.g., Azure Key Vault).  Associate tokens with tenantIDs.  Never store admin passwords.
+3. **Tenant configuration:** allow per‑tenant configuration of synthetic tests (e.g., which site collection and pages to monitor, test frequency, thresholds) and alert destinations (email, Teams channel, webhook, ServiceNow, etc.).
+
+### 2.2 Performance data collection
+
+1. **Synthetic transactions:**
+   * **Page load test:** using a headless browser (e.g., Playwright or Puppeteer), sign in via user‑delegated credentials or app‑only token and measure home page load time, time to DOM complete, and overall latency.  Record network phases (DNS lookup, TCP connect, TLS handshake, TTFB) to distinguish server latency vs. network latency.[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online) 
+   * **File upload/download test:** periodically upload a small file (e.g., 400 KB) to a designated library in SharePoint and measure upload and download times.  Clean up the test file after verifying access.
+   * **Search latency test:** perform a simple search query via SharePoint search API or Graph search and measure time to results.  Optionally capture number of results and accuracy (for baseline trending).
+   * **Login/authentication test:** verify the ability to obtain an access token and log in; measure token acquisition time.
+   * **Scheduling:** implement a scheduling service (or timed Azure Functions) to execute tests on a configurable interval per tenant (default 5–15 minutes).  Stagger test execution across tenants to avoid simultaneous traffic spikes.  Honour SharePoint throttling guidelines—limit concurrent requests and avoid request spikes[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).
+2. **Passive telemetry:**
+   * **Microsoft Graph reports:** call Microsoft Graph `/reports` endpoints to obtain daily/weekly site usage (storage consumption, file counts, site visits)[2](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins-modernize/multi-tenant-applications); store results for trend analysis.
+   * **Service Health signals:** integrate the Microsoft 365 Service Health API or Microsoft 365 Monitoring API (beta) to detect global service incidents or advisories affecting SharePoint Online.
+   * **Audit logs:** optional: use the Office 365 Management Activity API to ingest audit logs (file access events, user activity) for performance or security correlation.
+3. **API consumption and throttling:** implement robust error handling and back‑off logic.  Respect `Retry‑After` and `RateLimit` headers returned by SharePoint Online and Graph[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).  Use exponential backoff with jitter and per‑tenant concurrency limits to avoid throttling.  Prefer Graph API calls over CSOM/REST, as Graph is more efficient and less prone to throttling[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).
+
+### 2.3 Data storage and analytics
+
+1. **Metric ingestion:** push numeric performance measurements (latencies, error counts, scores) into a time‑series store.  Options include:
+   * **Azure Monitor with Log Analytics** (recommended): send metrics via the Azure Monitor Data Collector API and logs via Log Analytics.  Use Kusto Query Language (KQL) to query and build dashboards.  Expose aggregated metrics via REST for the front‑end.  
+   * Alternative: use a dedicated time‑series database (e.g., InfluxDB or Timescale) or Azure Data Explorer if you require full control.  
+2. **Raw telemetry and logs:** store synthetic transaction results, API call details and error messages.  Include correlation IDs and timestamp for each operation.  
+3. **Historical retention:** allow configurable retention periods (e.g., 30 days by default; longer durations possible at additional cost).  Support exporting data to external storage (e.g., Azure Blob) for long‑term retention and compliance.
+4. **Data structure:** design the schema to include `TenantID`, `TestID`, `Timestamp`, `MetricName`, `Value`, `Context` (e.g., region, network path) to allow per‑tenant and cross‑tenant analysis.
+
+### 2.4 Dashboards and alerting
+
+1. **Web dashboard:** build a responsive web UI for tenants to view performance metrics, usage trends and health status.  Use a front‑end framework (React, Vue, or Blazor).  Provide interactive charts (latency over time, distribution histograms, etc.) and tables.  Use client‑side authentication (e.g., Azure AD B2C or multi‑tenant AD) to ensure tenants only see their data.
+2. **Alerting:** allow tenants to define threshold rules (e.g., page load time > 3 s, error rate > 1 %) and automatically generate alerts.  Connect to:
+   * **Email or Teams notifications** (via Graph or Teams webhook) or Slack.  
+   * **Webhook or API** to integrate with ITSM systems (ServiceNow, Jira, OpsGenie).  
+   * For deeper integration with Microsoft tools, publish custom metrics into Azure Monitor so tenants can create native Azure Monitor Alerts.
+3. **Reporting:** provide scheduled and on‑demand reports summarizing the last period’s performance, incidents and trends.  Offer export in PDF/CSV and a **Power BI data connector** so organizations can build custom analytics.
+
+### 2.5 Security and compliance
+
+1. **Least‑privilege design:** request minimal scopes; do not request write permissions to content unless needed for synthetic tests.  Where possible, monitor read‑only operations and avoid storing sensitive user data.  
+2. **Tenant data isolation:** all API calls and telemetry must be scoped per tenant; do not mix identities or data.  Each API call should include the tenant’s access token; queries to the data store must filter by `TenantID` at the query layer.  
+3. **Encryption:** enforce TLS for all communications; store telemetry and secrets with encryption at rest.  Use Azure Key Vault or a similar secret management service.  
+4. **Compliance:** maintain audit logs of administrative actions (e.g., adding/removing tests, changing configuration) and provide an API to retrieve them.  Support data‑retention policies and data‑export requirements (e.g., GDPR).  
+5. **Traffic decoration:** include application identifiers and user‑agent strings in API calls to SharePoint Online to prioritize traffic and simplify support[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).  
+
+### 2.6 Extensibility and plug‑in architecture
+
+1. **Modular data‑source adapters:** define an interface for data collectors (methods for synthetic tests, API queries, metrics emission) and implement a **SharePoint adapter** for the initial release.  Additional adapters can be built for Box, Google Drive, Dropbox, on‑premises SharePoint or AI agents; they reuse the common scheduling, storage and UI components.  
+2. **Custom metrics and scripts:** allow tenants to add their own monitoring scripts (e.g., PowerShell or JavaScript) or configuration (via API) to collect bespoke metrics.  Run these securely in isolated containers or sandboxes.  Expose a REST API to ingest externally collected metrics.  
+3. **Automated remediation hooks:** design an integration point to trigger automated actions (Power Automate flows, Azure Functions, or scripts) when specific conditions are met, such as restarting a service or sending a command to an AI agent.
+
+## 3 Non‑Functional Requirements
+
+1. **Scalability:** the system must handle thousands of tenants without degradation.  Use horizontal scaling by deploying data‑collection workers as serverless functions or containerized services.  Use message queues (Azure Service Bus or Storage Queues) to distribute collection tasks and guarantee delivery.  Scale out the number of workers based on queue length and CPU usage.  
+2. **Fault tolerance:** implement retries with exponential backoff; store failed tasks with reasons for reprocessing.  Use idempotent operations and correlation IDs to trace end‑to‑end.  Circuit breakers should prevent cascading failures or repeated attempts against a misbehaving tenant.  Provide manual override to disable tests for a tenant temporarily.  
+3. **Usability:** dashboard must be intuitive for IT staff; provide clear descriptions of metrics and tests.  Provide documentation and tooltips.  
+4. **Performance:** the processing pipeline must ingest and store metrics with low latency (target < 1 minute from collection to dashboard).  Interactive dashboards should load within 2 seconds.  
+5. **Maintainability:** code should be modular with well‑documented APIs.  Unit and integration tests must cover all critical components.  Continuous integration (CI) pipeline (GitHub Actions or Azure DevOps) should run linting, tests, and deploy to staging/production.  Logging should be centralized and easily queryable via Azure Monitor/Application Insights.  
+6. **Compliance and terms:** ensure the design adheres to Microsoft’s API usage policies and **throttling best practices**: keep concurrent requests low, avoid spikes, rely on Graph API where possible, and honour `Retry‑After`/`RateLimit` headers[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).
+
+## 4 Implementation Guidelines for Replit Project
+
+1. **Language & framework:** choose a language supported by Replit’s environment (e.g., **TypeScript/Node.js** with Express for API and Playwright for browser automation, or **Python** with FastAPI and Selenium).  Node.js has robust packages for Graph API and fits well with serverless functions.  
+2. **Project structure:** separate the code into:
+   * `/collector` – modules to run synthetic tests and call Graph APIs.  Contains submodules for each test type (pageLoadTest.ts, uploadTest.ts, searchTest.ts, etc.) and Graph API client (graphClient.ts).  Implement retry logic and handle throttling headers.  
+   * `/scheduler` – a service that schedules tests and publishes tasks to a queue.  Stores schedule per tenant.  Can use `bullmq` (Redis) or integrate with Azure Service Bus if feasible.  
+   * `/workers` – processes tasks from the queue.  Invokes the appropriate collector module, records metrics, and handles errors.  Emits results to storage.
+   * `/storage` – abstraction layer for storing metrics/logs.  Implement providers for Azure Log Analytics (via Data Collector API) and a local file/NoSQL DB for testing.  
+   * `/api` – REST API for the front‑end to query metrics, configure tests, manage tenants, and push custom metrics.  Provide authentication via Azure AD or another ID provider.  
+   * `/frontend` – web UI built with React/Vue; uses Chart.js or similar to render graphs.  Should call `/api` endpoints to retrieve data and manage configuration.
+   * `/common` – shared models (Tenant, Metric, Alert), utilities (logging, auth middleware).  
+3. **Third‑party libraries:** use Microsoft Graph SDK for Node.js or Python to simplify API calls.  Use an HTTP wrapper that respects `Retry‑After` and `RateLimit` headers.  For browser automation, use Playwright; it supports headless Chrome/Edge.  
+4. **Local development:** since Azure services may not be available in Replit, implement **mock services** (e.g., simple file‑based or SQLite DB) for local storage and a stub for Azure Log Analytics.  Provide configuration to switch between local and Azure environments.  Use environment variables for secrets (client IDs, secrets); never hard‑code secrets in code.  
+5. **Testing:** write unit tests for each module.  For synthetic tests, use **Playwright’s test recorder** to verify page interactions.  For Graph API calls, use `nock` or similar to mock HTTP responses.  For integration tests, spin up the scheduler and workers locally and ensure tasks run as expected.
+6. **CI/CD:** provide a `Dockerfile` and GitHub Actions workflow to build, test and deploy.  Deployment to production might target Azure Functions, Azure App Service or Kubernetes; ensure the specification allows environment-specific configuration.
+
+## 5 Future Work & Extensibility
+
+1. **Additional platforms:** implement new adapters to monitor Box, Google Drive, Dropbox or other enterprise content management systems.  Each adapter must implement the collector interface and define tests appropriate to the platform (e.g., file operations, API performance).  
+2. **Real user monitoring (RUM):** allow customers to instrument their custom SharePoint pages or SPFx components with Application Insights JS SDK or a lightweight script to capture real user performance metrics.  Provide a mechanism to send these to the collector’s storage for analysis.  
+3. **AI agents and on‑prem systems:** design connectors for AI inference services (e.g., Azure OpenAI) to monitor response times and error rates.  For on‑premises systems, provide a lightweight self‑hosted agent that runs synthetic tests locally and uploads aggregated results to the central SaaS service.  
+4. **Advanced analytics:** incorporate anomaly detection and predictive analytics to forecast performance issues.  Use Azure ML or a simple statistical model to detect outliers in latency or error patterns.
+
+## 6 References
+
+* Microsoft guidance on building multi‑tenant applications and Azure AD consent flows[2](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins-modernize/multi-tenant-applications).  
+* SharePoint Online throttling guidelines: reduce concurrent requests, avoid spikes, prefer Graph API, honour `Retry‑After` and `RateLimit` headers[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).  
+* Best practices for capturing and using Delta tokens for SharePoint data scanning[1](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).  
