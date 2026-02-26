@@ -13,7 +13,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import logoUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
+import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
+import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 
 export function Sidebar() {
   const [location] = useLocation();
@@ -32,7 +33,8 @@ export function Sidebar() {
     <aside className="fixed inset-y-0 left-0 z-10 hidden w-14 flex-col border-r bg-background sm:flex">
       <nav className="flex flex-col items-center gap-4 px-2 py-4">
         <Link href="/" className="group flex h-9 w-9 shrink-0 items-center justify-center gap-2 rounded-full md:h-8 md:w-8">
-          <img src={logoUrl} alt="Reveille Cloud" className="h-6 w-auto object-contain transition-all group-hover:scale-110" />
+          <img src={logoUrl} alt="Reveille Cloud" className="h-6 w-auto object-contain transition-all group-hover:scale-110 dark:hidden" />
+          <img src={logoUrlDark} alt="Reveille Cloud" className="h-6 w-auto object-contain transition-all group-hover:scale-110 hidden dark:block" />
           <span className="sr-only">Reveille Cloud</span>
         </Link>
         {navItems.map((item) => (

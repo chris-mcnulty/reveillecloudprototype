@@ -23,7 +23,8 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { ThemeToggle } from "@/components/theme-toggle";
-import logoUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
+import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
+import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 
 export function Header() {
   const [location] = useLocation();
@@ -50,7 +51,8 @@ export function Header() {
         <SheetContent side="left" className="sm:max-w-xs">
           <nav className="grid gap-6 text-lg font-medium mt-6">
             <Link href="/" className="group flex h-10 shrink-0 items-center gap-2">
-              <img src={logoUrl} alt="Reveille Cloud" className="h-8 w-auto object-contain transition-all group-hover:scale-105" />
+              <img src={logoUrl} alt="Reveille Cloud" className="h-8 w-auto object-contain transition-all group-hover:scale-105 dark:hidden" />
+              <img src={logoUrlDark} alt="Reveille Cloud" className="h-8 w-auto object-contain transition-all group-hover:scale-105 hidden dark:block" />
               <span className="sr-only">Reveille Cloud</span>
             </Link>
             {navItems.map((item) => (
