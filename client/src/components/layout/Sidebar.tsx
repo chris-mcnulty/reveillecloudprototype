@@ -23,7 +23,7 @@ export function Sidebar() {
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
-    { href: "/settings/tests", icon: Settings, label: "Settings" },
+    { href: "/settings/tenant", icon: Settings, label: "Settings" },
   ];
 
   return (
