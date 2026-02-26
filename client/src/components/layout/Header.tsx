@@ -50,7 +50,7 @@ export function Header() {
           <nav className="grid gap-6 text-lg font-medium mt-6">
             <Link href="/" className="group flex h-10 w-10 shrink-0 items-center justify-center gap-2 rounded-full bg-primary text-lg font-semibold text-primary-foreground md:text-base">
               <Database className="h-5 w-5 transition-all group-hover:scale-110" />
-              <span className="sr-only">SP Monitor</span>
+              <span className="sr-only">Reveille Cloud</span>
             </Link>
             {navItems.map((item) => (
               <Link
@@ -71,7 +71,7 @@ export function Header() {
       </Sheet>
 
       <div className="flex-1 flex items-center gap-2 sm:gap-4 overflow-x-auto pb-1 sm:pb-0 hide-scrollbar">
-        <h1 className="text-xl font-semibold tracking-tight hidden sm:block whitespace-nowrap shrink-0">SharePoint Monitor</h1>
+        <h1 className="text-xl font-semibold tracking-tight hidden sm:block whitespace-nowrap shrink-0">Reveille Cloud</h1>
         
         <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
         

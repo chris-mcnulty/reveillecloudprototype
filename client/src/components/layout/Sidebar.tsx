@@ -33,7 +33,7 @@ export function Sidebar() {
       <nav className="flex flex-col items-center gap-4 px-2 py-4">
         <Link href="/" className="group flex h-9 w-9 shrink-0 items-center justify-center gap-2 rounded-full bg-primary text-lg font-semibold text-primary-foreground md:h-8 md:w-8 md:text-base">
           <Database className="h-4 w-4 transition-all group-hover:scale-110" />
-          <span className="sr-only">SP Monitor</span>
+          <span className="sr-only">Reveille Cloud</span>
         </Link>
         {navItems.map((item) => (
           <Tooltip key={item.href}>
