@@ -14,13 +14,13 @@ import {
 } from "recharts";
 
 const performanceData = [
-  { time: "00:00", ms: 450 },
-  { time: "04:00", ms: 420 },
-  { time: "08:00", ms: 600 },
-  { time: "12:00", ms: 850 },
-  { time: "16:00", ms: 750 },
-  { time: "20:00", ms: 500 },
-  { time: "24:00", ms: 430 },
+  { time: "00:00", ms: 450, fileUpload: 1200, search: 800 },
+  { time: "04:00", ms: 420, fileUpload: 1150, search: 750 },
+  { time: "08:00", ms: 600, fileUpload: 1400, search: 900 },
+  { time: "12:00", ms: 850, fileUpload: 2100, search: 1200 },
+  { time: "16:00", ms: 750, fileUpload: 1800, search: 1050 },
+  { time: "20:00", ms: 500, fileUpload: 1300, search: 850 },
+  { time: "24:00", ms: 430, fileUpload: 1250, search: 820 },
 ];
 
 const errorData = [
@@ -117,11 +117,33 @@ export default function Dashboard() {
                   />
                   <Area
                     type="monotone"
+                    name="Page Load"
                     dataKey="ms"
+                    stackId="1"
                     stroke="hsl(var(--primary))"
                     strokeWidth={2}
-                    fillOpacity={1}
+                    fillOpacity={0.6}
                     fill="url(#colorMs)"
+                  />
+                  <Area
+                    type="monotone"
+                    name="Search Query"
+                    dataKey="search"
+                    stackId="1"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    fillOpacity={0.6}
+                    fill="#10b981"
+                  />
+                  <Area
+                    type="monotone"
+                    name="File Transfer"
+                    dataKey="fileUpload"
+                    stackId="1"
+                    stroke="#8b5cf6"
+                    strokeWidth={2}
+                    fillOpacity={0.6}
+                    fill="#8b5cf6"
                   />
                 </AreaChart>
               </ResponsiveContainer>

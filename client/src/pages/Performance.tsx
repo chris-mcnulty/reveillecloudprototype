@@ -58,9 +58,9 @@ export default function Performance() {
                       contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
                     />
                     <Legend />
-                    <Line type="monotone" dataKey="Page Load" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="File Upload" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="Search" stroke="hsl(var(--chart-3))" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="Page Load" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="File Upload" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="Search" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
