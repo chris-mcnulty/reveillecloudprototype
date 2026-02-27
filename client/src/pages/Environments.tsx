@@ -2,7 +2,7 @@ import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Building2, Cloud, Server, Database, ArrowRight } from "lucide-react";
+import { Building2, Cloud, Server, Database, ArrowRight, Activity, AlertTriangle, Globe } from "lucide-react";
 import { Link } from "wouter";
 
 const environments = [
@@ -49,13 +49,70 @@ export default function Environments() {
     <Shell>
       <div className="flex items-center justify-between space-y-2 mb-6">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Environments Overview</h2>
+          <h2 className="text-3xl font-bold tracking-tight">MSP Global Dashboard</h2>
           <p className="text-muted-foreground mt-1">
-            Top-level view of all monitored customers and their systems. Select an environment to view detailed metrics.
+            Top-level overview of all monitored customer tenants and active services.
           </p>
+        </div>
+        <div className="flex items-center space-x-2">
+          <Link href="/onboarding">
+            <Button>Onboard New Tenant</Button>
+          </Link>
         </div>
       </div>
 
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-8">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Total Monitored Tenants</CardTitle>
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">4</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Active subscriptions across MSP
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Global Active Incidents</CardTitle>
+            <AlertTriangle className="h-4 w-4 text-destructive" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-destructive">2</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Affecting 2 distinct tenants
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Synthetic Tests Running</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">1,248</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Test transactions in the last 24h
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">M365 Global Status</CardTitle>
+            <Globe className="h-4 w-4 text-emerald-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-emerald-500">Healthy</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              No reported regional outages
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <h3 className="text-xl font-semibold mb-4">Customer Environments</h3>
       <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
         {environments.map((env) => (
           <Card key={env.id} className="flex flex-col hover:border-primary/50 transition-all shadow-sm">
