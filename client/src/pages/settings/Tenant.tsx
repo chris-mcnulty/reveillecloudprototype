@@ -1,4 +1,5 @@
 import { Shell } from "@/components/layout/Shell";
+import { SettingsNav } from "@/components/layout/SettingsNav";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,14 +10,16 @@ import { Badge } from "@/components/ui/badge";
 export default function TenantOnboarding() {
   return (
     <Shell>
-      <div className="flex items-center justify-between space-y-2 mb-4">
+      <div className="flex items-center justify-between space-y-2 mb-6">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Tenant Integration</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Tenant Configuration</h2>
           <p className="text-muted-foreground">
-            Manage Azure AD consent and connection settings for this tenant.
+            Manage Azure AD integration, synthetic tests, and alert rules.
           </p>
         </div>
       </div>
+      
+      <SettingsNav />
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-emerald-500/20 shadow-sm">

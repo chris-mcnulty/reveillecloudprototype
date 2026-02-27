@@ -14,6 +14,7 @@ import Reports from "@/pages/Reports";
 import TestsConfig from "@/pages/settings/Tests";
 import AlertsConfig from "@/pages/settings/Alerts";
 import TenantConfig from "@/pages/settings/Tenant";
+import Onboarding from "@/pages/Onboarding";
 
 function Router() {
   return (
@@ -24,6 +25,7 @@ function Router() {
       <Route path="/alerts" component={Alerts}/>
       <Route path="/performance" component={Performance}/>
       <Route path="/reports" component={Reports}/>
+      <Route path="/onboarding" component={Onboarding}/>
       <Route path="/settings">
         {() => <Redirect to="/settings/tenant" />}
       </Route>

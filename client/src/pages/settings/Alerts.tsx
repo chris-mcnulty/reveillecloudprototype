@@ -1,4 +1,5 @@
 import { Shell } from "@/components/layout/Shell";
+import { SettingsNav } from "@/components/layout/SettingsNav";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,17 +11,19 @@ import { AlertCircle, Mail, MessageSquare, Plus, Webhook } from "lucide-react";
 export default function AlertRulesConfig() {
   return (
     <Shell>
-      <div className="flex items-center justify-between space-y-2 mb-4">
+      <div className="flex items-center justify-between space-y-2 mb-6">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Alert Rules</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Tenant Configuration</h2>
           <p className="text-muted-foreground">
-            Configure automated thresholds and notification channels.
+            Manage Azure AD integration, synthetic tests, and alert rules.
           </p>
         </div>
         <Button>
           <Plus className="mr-2 h-4 w-4" /> Create Rule
         </Button>
       </div>
+
+      <SettingsNav />
 
       <div className="grid gap-6">
         <Card>
