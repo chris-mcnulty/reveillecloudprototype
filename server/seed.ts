@@ -50,6 +50,7 @@ export async function seedDatabase() {
     { tenantId: initech.id, name: "Initech Portal", type: "Page Load", target: "https://initech.sharepoint.com", interval: "5 min", status: "Active" },
     { tenantId: soylent.id, name: "Soylent Hub Load", type: "Page Load", target: "https://soylent.sharepoint.com", interval: "5 min", status: "Active" },
     { tenantId: cascadiaTenant.id, name: "Hub Load", type: "Page Load", target: "https://cascadiaoceanic.sharepoint.com", interval: "5 min", status: "Active" },
+    { tenantId: cascadiaTenant.id, name: "File Upload", type: "File Transfer", target: "/sites/docs/Shared Documents", interval: "15 min", status: "Active" },
   ]);
 
   await db.insert(alertRules).values([
@@ -75,6 +76,7 @@ export async function seedDatabase() {
       { tenantId: initech.id, metricName: "page_load", value: Math.round((2500 + Math.random() * 1500) * loadFactor), unit: "ms", site: "Portal", status: Math.random() > 0.7 ? "Failed" : "Success", timestamp: ts },
       { tenantId: soylent.id, metricName: "page_load", value: Math.round((380 + Math.random() * 120) * loadFactor), unit: "ms", site: "Hub", status: "Success", timestamp: ts },
       { tenantId: cascadiaTenant.id, metricName: "page_load", value: Math.round((350 + Math.random() * 150) * loadFactor), unit: "ms", site: "Hub", status: "Success", timestamp: ts },
+      { tenantId: cascadiaTenant.id, metricName: "file_upload", value: Math.round((900 + Math.random() * 400) * loadFactor), unit: "ms", site: "Documents", status: "Success", timestamp: ts },
     );
   }
 

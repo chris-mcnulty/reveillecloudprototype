@@ -82,6 +82,12 @@ export function Header() {
         </SheetContent>
       </Sheet>
 
+      <Link href="/" className="flex sm:hidden items-center gap-1.5 shrink-0">
+        <img src={logoUrl} alt="Reveille Cloud" className="h-6 w-auto object-contain dark:hidden" />
+        <img src={logoUrlDark} alt="Reveille Cloud" className="h-6 w-auto object-contain hidden dark:block" />
+        <span className="text-sm font-semibold tracking-tight">Reveille</span>
+      </Link>
+
       <div className="flex-1 flex items-center gap-2 sm:gap-4 overflow-x-auto pb-1 sm:pb-0 hide-scrollbar">
         <Link href="/" className="hidden sm:flex items-center gap-2 shrink-0">
           <img src={logoFullUrl} alt="Reveille Cloud" className="h-7 w-auto object-contain dark:hidden" />
