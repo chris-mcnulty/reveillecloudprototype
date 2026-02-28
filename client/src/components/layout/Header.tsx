@@ -25,6 +25,7 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
+import logoFullUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
 import { useActiveTenant } from "@/lib/tenant-context";
 
 export function Header() {
@@ -82,7 +83,11 @@ export function Header() {
       </Sheet>
 
       <div className="flex-1 flex items-center gap-2 sm:gap-4 overflow-x-auto pb-1 sm:pb-0 hide-scrollbar">
-        <h1 className="text-xl font-semibold tracking-tight hidden sm:block whitespace-nowrap shrink-0">Reveille Cloud</h1>
+        <Link href="/" className="hidden sm:flex items-center gap-2 shrink-0">
+          <img src={logoFullUrl} alt="Reveille Cloud" className="h-7 w-auto object-contain dark:hidden" />
+          <img src={logoUrlDark} alt="Reveille Cloud" className="h-7 w-auto object-contain hidden dark:block" />
+          <span className="text-lg font-semibold tracking-tight hidden dark:inline">Reveille Cloud</span>
+        </Link>
         
         <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
 
