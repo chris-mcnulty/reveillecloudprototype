@@ -4,19 +4,20 @@ import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2 
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar,
 } from "recharts";
-import { useMetrics, useMetricsSummary, useLatestMetrics, useTenant } from "@/lib/api";
+import { useMetrics, useMetricsSummary, useLatestMetrics, useTenants } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
 
 export default function Dashboard() {
   const { activeTenantId } = useActiveTenant();
   const tenantId = activeTenantId;
-  const { data: tenant } = useTenant(tenantId);
+  const { data: tenants } = useTenants();
+  const tenant = tenants?.find(t => t.id === tenantId);
 
   const { data: allMetrics, isLoading: loadingMetrics } = useMetrics(tenantId);
   const { data: summary, isLoading: loadingSummary } = useMetricsSummary(tenantId);
   const { data: latestMetrics } = useLatestMetrics(tenantId, 20);
 
-  if (loadingMetrics || loadingSummary) {
+  if (!tenantId || loadingMetrics || loadingSummary) {
     return (
       <Shell>
         <div className="flex items-center justify-center h-64">
