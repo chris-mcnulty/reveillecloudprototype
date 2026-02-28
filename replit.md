@@ -8,6 +8,7 @@ Multi-tenant SaaS platform for monitoring SharePoint Online performance across c
 - **Backend**: Express.js (TypeScript)
 - **Database**: PostgreSQL via Drizzle ORM (node-postgres driver)
 - **Routing**: wouter (frontend), Express (API)
+- **SharePoint**: Microsoft Graph API via Replit SharePoint connector (@microsoft/microsoft-graph-client)
 
 ## Project Structure
 ```
@@ -21,8 +22,10 @@ server/
   storage.ts       - Database storage interface (IStorage + DatabaseStorage)
   db.ts            - Drizzle ORM + pg Pool setup
   seed.ts          - Database seeding with sample tenants/metrics
+  sharepoint.ts    - Microsoft Graph client auth (Replit SharePoint connector)
+  testRunner.ts    - Synthetic test execution engine (Page Load, File Transfer, Search, Auth)
 shared/
-  schema.ts        - Drizzle schema (tenants, systems, tests, alertRules, metrics, alerts)
+  schema.ts        - Drizzle schema (tenants, systems, tests, alertRules, metrics, alerts, testRuns)
 ```
 
 ## Key Data Models
@@ -32,6 +35,7 @@ shared/
 - **alertRules**: Threshold-based alert configurations with notification channels
 - **metrics**: Time-series performance measurements
 - **alerts**: Generated incident records
+- **testRuns**: Synthetic test execution history with timing breakdowns
 
 ## API Endpoints
 All prefixed with `/api`:
@@ -42,6 +46,11 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/metrics`, `/metrics/latest`, `/metrics/summary`
 - `GET/POST /alerts`, `PATCH /alerts/:id/acknowledge`
 - `GET /stats` (global MSP stats)
+- `GET /sharepoint/status` (Graph API connection check)
+- `POST /tests/:id/run` (execute synthetic test)
+- `GET /tests/:id/runs` (test execution history)
+- `GET /tenants/:tenantId/test-runs` (all runs for a tenant)
+- `GET /all-tests` (all tests across tenants)
 
 ## Frontend Pages
 - `/` - MSP Global Dashboard (all tenants overview)
