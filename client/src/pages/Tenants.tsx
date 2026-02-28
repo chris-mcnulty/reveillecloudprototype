@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Plus, Search, MoreHorizontal, Loader2 } from "lucide-react";
+import { useActiveTenant } from "@/lib/tenant-context";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +18,7 @@ import { useState } from "react";
 export default function Tenants() {
   const { data: tenantList, isLoading } = useTenants();
   const [, setLocation] = useLocation();
+  const { setActiveTenantId } = useActiveTenant();
   const [searchQuery, setSearchQuery] = useState("");
 
   if (isLoading) {
@@ -106,9 +108,9 @@ export default function Tenants() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => setLocation(`/dashboard?tenant=${tenant.id}`)}>View Dashboard</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setLocation(`/settings/tests?tenant=${tenant.id}`)}>Configure Tests</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setLocation(`/settings/tenant?tenant=${tenant.id}`)}>Manage Access</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => { setActiveTenantId(tenant.id); setLocation("/"); }}>View Dashboard</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => { setActiveTenantId(tenant.id); setLocation("/settings/tests"); }}>Configure Tests</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => { setActiveTenantId(tenant.id); setLocation("/settings/tenant"); }}>Manage Access</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </TableCell>

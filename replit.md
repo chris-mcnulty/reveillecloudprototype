@@ -53,8 +53,8 @@ All prefixed with `/api`:
 - `GET /all-tests` (all tests across tenants)
 
 ## Frontend Pages
-- `/` - MSP Global Dashboard (all tenants overview)
-- `/dashboard` - Tenant performance dashboard with charts
+- `/` - Tenant Dashboard (default single-tenant view with charts)
+- `/environments` - MSP Global Dashboard (multi-tenant overview, special case)
 - `/tenants` - Tenant management table
 - `/performance` - Performance explorer with line/bar charts
 - `/alerts` - Alerts & incidents list

@@ -6,16 +6,12 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   BarChart, Bar,
 } from "recharts";
-import { useMetrics, useTenants } from "@/lib/api";
-import { useSearch } from "wouter";
+import { useMetrics } from "@/lib/api";
+import { useActiveTenant } from "@/lib/tenant-context";
 
 export default function Performance() {
-  const search = useSearch();
-  const params = new URLSearchParams(search);
-  const tenantIdParam = params.get("tenant");
-
-  const { data: tenantList } = useTenants();
-  const tenantId = tenantIdParam || tenantList?.[0]?.id || null;
+  const { activeTenantId } = useActiveTenant();
+  const tenantId = activeTenantId;
 
   const { data: allMetrics, isLoading } = useMetrics(tenantId);
 

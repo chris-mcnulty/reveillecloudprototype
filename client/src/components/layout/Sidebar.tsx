@@ -20,12 +20,12 @@ export function Sidebar() {
   const [location] = useLocation();
 
   const navItems = [
-    { href: "/", icon: LayoutGrid, label: "Overview" },
-    { href: "/dashboard", icon: Home, label: "Dashboard" },
-    { href: "/tenants", icon: Building2, label: "Tenants" },
+    { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
+    { href: "/environments", icon: LayoutGrid, label: "Environments" },
+    { href: "/tenants", icon: Building2, label: "Tenants" },
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
   ];
 

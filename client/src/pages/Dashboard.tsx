@@ -4,16 +4,13 @@ import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2 
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar,
 } from "recharts";
-import { useMetrics, useMetricsSummary, useLatestMetrics, useTenants } from "@/lib/api";
-import { useSearch } from "wouter";
+import { useMetrics, useMetricsSummary, useLatestMetrics, useTenant } from "@/lib/api";
+import { useActiveTenant } from "@/lib/tenant-context";
 
 export default function Dashboard() {
-  const search = useSearch();
-  const params = new URLSearchParams(search);
-  const tenantIdParam = params.get("tenant");
-  
-  const { data: tenantList } = useTenants();
-  const tenantId = tenantIdParam || tenantList?.[0]?.id || null;
+  const { activeTenantId } = useActiveTenant();
+  const tenantId = activeTenantId;
+  const { data: tenant } = useTenant(tenantId);
 
   const { data: allMetrics, isLoading: loadingMetrics } = useMetrics(tenantId);
   const { data: summary, isLoading: loadingSummary } = useMetricsSummary(tenantId);
@@ -39,6 +36,12 @@ export default function Dashboard() {
 
   return (
     <Shell>
+      <div className="mb-6">
+        <h2 data-testid="text-page-title" className="text-3xl font-bold tracking-tight">{tenant?.name || "Dashboard"}</h2>
+        <p className="text-muted-foreground mt-1">
+          Performance monitoring and synthetic test results for this tenant.
+        </p>
+      </div>
       <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">

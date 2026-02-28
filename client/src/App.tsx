@@ -4,6 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
+import { TenantProvider } from "@/lib/tenant-context";
 import NotFound from "@/pages/not-found";
 import Environments from "@/pages/Environments";
 import Dashboard from "@/pages/Dashboard";
@@ -19,8 +20,8 @@ import Onboarding from "@/pages/Onboarding";
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Environments}/>
-      <Route path="/dashboard" component={Dashboard}/>
+      <Route path="/" component={Dashboard}/>
+      <Route path="/environments" component={Environments}/>
       <Route path="/tenants" component={Tenants}/>
       <Route path="/alerts" component={Alerts}/>
       <Route path="/performance" component={Performance}/>
@@ -32,7 +33,6 @@ function Router() {
       <Route path="/settings/tests" component={TestsConfig} />
       <Route path="/settings/alerts" component={AlertsConfig} />
       <Route path="/settings/tenant" component={TenantConfig} />
-      {/* Fallback to 404 */}
       <Route component={NotFound} />
     </Switch>
   );
@@ -42,10 +42,12 @@ function App() {
   return (
     <ThemeProvider defaultTheme="dark" attribute="class">
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
+        <TenantProvider>
+          <TooltipProvider>
+            <Toaster />
+            <Router />
+          </TooltipProvider>
+        </TenantProvider>
       </QueryClientProvider>
     </ThemeProvider>
   );

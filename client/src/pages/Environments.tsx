@@ -3,8 +3,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Building2, Cloud, Server, Database, ArrowRight, Activity, AlertTriangle, Globe, Loader2 } from "lucide-react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useTenants, useAllSystems, useGlobalStats } from "@/lib/api";
+import { useActiveTenant } from "@/lib/tenant-context";
 
 const systemIcons: Record<string, any> = { m365: Cloud, gws: Database, opentext: Server };
 
@@ -12,6 +13,8 @@ export default function Environments() {
   const { data: tenantList, isLoading: loadingTenants } = useTenants();
   const { data: systems, isLoading: loadingSystems } = useAllSystems();
   const { data: stats, isLoading: loadingStats } = useGlobalStats();
+  const { setActiveTenantId } = useActiveTenant();
+  const [, setLocation] = useLocation();
 
   if (loadingTenants || loadingSystems || loadingStats) {
     return (
@@ -122,7 +125,7 @@ export default function Environments() {
                 {env.systems.map((sys) => {
                   const Icon = systemIcons[sys.type] || Cloud;
                   return (
-                    <Link key={sys.id} href={`/dashboard?tenant=${env.id}`}>
+                    <div key={sys.id} onClick={() => { setActiveTenantId(env.id); setLocation("/"); }} className="cursor-pointer">
                       <div className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 hover:border-accent-foreground/20 transition-all group cursor-pointer mb-2">
                         <div className="flex items-center gap-3">
                           <Icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
@@ -136,17 +139,15 @@ export default function Environments() {
                           }`} />
                         </div>
                       </div>
-                    </Link>
+                    </div>
                   );
                 })}
               </div>
             </CardContent>
             <CardFooter className="pt-4 border-t bg-muted/5">
-              <Link href={`/dashboard?tenant=${env.id}`} className="w-full">
-                <Button variant="ghost" className="w-full justify-between text-muted-foreground hover:text-foreground">
-                  View Environment Details <ArrowRight className="h-4 w-4" />
-                </Button>
-              </Link>
+              <Button variant="ghost" className="w-full justify-between text-muted-foreground hover:text-foreground" onClick={() => { setActiveTenantId(env.id); setLocation("/"); }}>
+                View Environment Details <ArrowRight className="h-4 w-4" />
+              </Button>
             </CardFooter>
           </Card>
         ))}

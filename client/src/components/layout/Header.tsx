@@ -26,18 +26,20 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 import { useTenants } from "@/lib/api";
+import { useActiveTenant } from "@/lib/tenant-context";
 
 export function Header() {
   const [location] = useLocation();
   const { data: tenants } = useTenants();
+  const { activeTenantId, setActiveTenantId } = useActiveTenant();
 
   const navItems = [
-    { href: "/", icon: LayoutGrid, label: "Overview" },
-    { href: "/dashboard", icon: Home, label: "Dashboard" },
-    { href: "/tenants", icon: Building2, label: "Tenants" },
+    { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
+    { href: "/environments", icon: LayoutGrid, label: "Environments" },
+    { href: "/tenants", icon: Building2, label: "Tenants" },
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
   ];
 
@@ -80,33 +82,17 @@ export function Header() {
         
         <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
         
-        <Select defaultValue="all">
-          <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0">
+        <Select value={activeTenantId || ""} onValueChange={(v) => setActiveTenantId(v)}>
+          <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0" data-testid="select-header-tenant">
             <div className="flex items-center gap-2 text-sm truncate">
               <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
               <span className="truncate"><SelectValue placeholder="Select tenant" /></span>
             </div>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all" className="font-medium text-primary">All Tenants (MSP)</SelectItem>
-            <DropdownMenuSeparator />
             {tenants?.map(t => (
               <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
             ))}
-          </SelectContent>
-        </Select>
-
-        <Select defaultValue="m365">
-          <SelectTrigger className="w-[140px] sm:w-[180px] h-9 bg-background border-dashed shrink-0">
-            <div className="flex items-center gap-2 text-sm truncate">
-              <Cloud className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="truncate"><SelectValue placeholder="Select system" /></span>
-            </div>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="m365">Microsoft 365</SelectItem>
-            <SelectItem value="gws">Google Workspace</SelectItem>
-            <SelectItem value="opentext">OpenText</SelectItem>
           </SelectContent>
         </Select>
       </div>
