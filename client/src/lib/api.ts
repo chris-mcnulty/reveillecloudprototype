@@ -32,9 +32,8 @@ export interface OrgContext {
   allOrganizations: Organization[];
 }
 
-export function useOrgContext(orgId?: string | null) {
-  const url = orgId ? `/api/organizations/active?orgId=${orgId}` : "/api/organizations/active";
-  return useQuery<OrgContext>({ queryKey: ["/api/organizations/active", orgId], queryFn: () => fetchJson(url) });
+export function useOrgContext() {
+  return useQuery<OrgContext>({ queryKey: ["/api/organizations/active"], queryFn: () => fetchJson("/api/organizations/active") });
 }
 
 export function useTenants() {
