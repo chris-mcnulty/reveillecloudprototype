@@ -25,9 +25,11 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
+import { useTenants } from "@/lib/api";
 
 export function Header() {
   const [location] = useLocation();
+  const { data: tenants } = useTenants();
 
   const navItems = [
     { href: "/", icon: LayoutGrid, label: "Overview" },
@@ -78,7 +80,7 @@ export function Header() {
         
         <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
         
-        <Select defaultValue="t-001">
+        <Select defaultValue="all">
           <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0">
             <div className="flex items-center gap-2 text-sm truncate">
               <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -88,10 +90,9 @@ export function Header() {
           <SelectContent>
             <SelectItem value="all" className="font-medium text-primary">All Tenants (MSP)</SelectItem>
             <DropdownMenuSeparator />
-            <SelectItem value="t-001">Acme Corp</SelectItem>
-            <SelectItem value="t-002">Globex</SelectItem>
-            <SelectItem value="t-003">Initech</SelectItem>
-            <SelectItem value="t-004">Soylent</SelectItem>
+            {tenants?.map(t => (
+              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+            ))}
           </SelectContent>
         </Select>
 
