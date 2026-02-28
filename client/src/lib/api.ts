@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryClient } from "./queryClient";
-import type { Tenant, MonitoredSystem, SyntheticTest, AlertRule, Metric, Alert } from "@shared/schema";
+import type { Tenant, MonitoredSystem, SyntheticTest, AlertRule, Metric, Alert, TestRun } from "@shared/schema";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -113,4 +113,31 @@ export function useAcknowledgeAlert() {
 
 export function useGlobalStats() {
   return useQuery<{ totalTenants: number; activeIncidents: number; totalTests24h: number }>({ queryKey: ["/api/stats"], queryFn: () => fetchJson("/api/stats") });
+}
+
+export function useSharePointStatus() {
+  return useQuery<{ connected: boolean }>({ queryKey: ["/api/sharepoint/status"], queryFn: () => fetchJson("/api/sharepoint/status"), refetchInterval: 60000 });
+}
+
+export function useRunTest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (testId: string) => postJson(`/api/tests/${testId}/run`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/tests"] });
+      qc.invalidateQueries({ queryKey: ["/api/tenants"] });
+    },
+  });
+}
+
+export function useTestRuns(testId: string | null) {
+  return useQuery<TestRun[]>({ queryKey: ["/api/tests", testId, "runs"], queryFn: () => fetchJson(`/api/tests/${testId}/runs`), enabled: !!testId, refetchInterval: 5000 });
+}
+
+export function useTenantTestRuns(tenantId: string | null) {
+  return useQuery<TestRun[]>({ queryKey: ["/api/tenants", tenantId, "test-runs"], queryFn: () => fetchJson(`/api/tenants/${tenantId}/test-runs`), enabled: !!tenantId });
+}
+
+export function useAllTests() {
+  return useQuery<SyntheticTest[]>({ queryKey: ["/api/all-tests"], queryFn: () => fetchJson("/api/all-tests") });
 }

@@ -97,3 +97,19 @@ export const alerts = pgTable("alerts", {
 export const insertAlertSchema = createInsertSchema(alerts).omit({ id: true });
 export type InsertAlert = z.infer<typeof insertAlertSchema>;
 export type Alert = typeof alerts.$inferSelect;
+
+export const testRuns = pgTable("test_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  testId: varchar("test_id").notNull().references(() => syntheticTests.id),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  status: text("status").notNull().default("running"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+  durationMs: real("duration_ms"),
+  results: jsonb("results").$type<Record<string, any>>(),
+  error: text("error"),
+});
+
+export const insertTestRunSchema = createInsertSchema(testRuns).omit({ id: true });
+export type InsertTestRun = z.infer<typeof insertTestRunSchema>;
+export type TestRun = typeof testRuns.$inferSelect;

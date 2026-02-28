@@ -7,6 +7,7 @@ import {
   alertRules, type AlertRule, type InsertAlertRule,
   metrics, type Metric, type InsertMetric,
   alerts, type Alert, type InsertAlert,
+  testRuns, type TestRun, type InsertTestRun,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -43,6 +44,12 @@ export interface IStorage {
   acknowledgeAlert(id: string): Promise<Alert | undefined>;
 
   getGlobalStats(): Promise<{ totalTenants: number; activeIncidents: number; totalTests24h: number }>;
+
+  getTestRuns(testId: string, limit?: number): Promise<TestRun[]>;
+  getTestRunsByTenant(tenantId: string, limit?: number): Promise<TestRun[]>;
+  createTestRun(run: InsertTestRun): Promise<TestRun>;
+  updateTestRun(id: string, data: Partial<TestRun>): Promise<TestRun | undefined>;
+  getAllTests(): Promise<SyntheticTest[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -194,6 +201,34 @@ export class DatabaseStorage implements IStorage {
       activeIncidents: Number(incidentCount?.count || 0),
       totalTests24h: Number(testCount?.count || 0),
     };
+  }
+
+  async getTestRuns(testId: string, limit = 20): Promise<TestRun[]> {
+    return db.select().from(testRuns)
+      .where(eq(testRuns.testId, testId))
+      .orderBy(desc(testRuns.startedAt))
+      .limit(limit);
+  }
+
+  async getTestRunsByTenant(tenantId: string, limit = 50): Promise<TestRun[]> {
+    return db.select().from(testRuns)
+      .where(eq(testRuns.tenantId, tenantId))
+      .orderBy(desc(testRuns.startedAt))
+      .limit(limit);
+  }
+
+  async createTestRun(run: InsertTestRun): Promise<TestRun> {
+    const [created] = await db.insert(testRuns).values(run).returning();
+    return created;
+  }
+
+  async updateTestRun(id: string, data: Partial<TestRun>): Promise<TestRun | undefined> {
+    const [updated] = await db.update(testRuns).set(data).where(eq(testRuns.id, id)).returning();
+    return updated;
+  }
+
+  async getAllTests(): Promise<SyntheticTest[]> {
+    return db.select().from(syntheticTests);
   }
 }
 

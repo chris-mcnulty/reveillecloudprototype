@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
+import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -163,6 +164,37 @@ export async function registerRoutes(
   app.get("/api/stats", async (_req, res) => {
     const stats = await storage.getGlobalStats();
     res.json(stats);
+  });
+
+  app.get("/api/sharepoint/status", async (_req, res) => {
+    const connected = await isSharePointConnected();
+    res.json({ connected });
+  });
+
+  app.post("/api/tests/:id/run", async (req, res) => {
+    try {
+      const run = await runTestAndRecord(req.params.id);
+      res.json(run);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/tests/:id/runs", async (req, res) => {
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+    const runs = await storage.getTestRuns(req.params.id, limit);
+    res.json(runs);
+  });
+
+  app.get("/api/tenants/:tenantId/test-runs", async (req, res) => {
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+    const runs = await storage.getTestRunsByTenant(req.params.tenantId, limit);
+    res.json(runs);
+  });
+
+  app.get("/api/all-tests", async (_req, res) => {
+    const tests = await storage.getAllTests();
+    res.json(tests);
   });
 
   return httpServer;
