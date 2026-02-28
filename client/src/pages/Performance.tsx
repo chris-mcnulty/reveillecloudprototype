@@ -1,27 +1,38 @@
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Loader2 } from "lucide-react";
 import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  Legend
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  BarChart, Bar,
 } from "recharts";
-
-const syntheticTestData = [
-  { time: "10:00", "Page Load": 450, "File Upload": 1200, "Search": 800 },
-  { time: "10:15", "Page Load": 420, "File Upload": 1150, "Search": 750 },
-  { time: "10:30", "Page Load": 600, "File Upload": 1800, "Search": 1200 },
-  { time: "10:45", "Page Load": 550, "File Upload": 1600, "Search": 950 },
-  { time: "11:00", "Page Load": 480, "File Upload": 1250, "Search": 820 },
-  { time: "11:15", "Page Load": 460, "File Upload": 1220, "Search": 790 },
-];
+import { useMetrics, useTenants } from "@/lib/api";
+import { useSearch } from "wouter";
 
 export default function Performance() {
+  const search = useSearch();
+  const params = new URLSearchParams(search);
+  const tenantIdParam = params.get("tenant");
+
+  const { data: tenantList } = useTenants();
+  const tenantId = tenantIdParam || tenantList?.[0]?.id || null;
+
+  const { data: allMetrics, isLoading } = useMetrics(tenantId);
+
+  if (isLoading) {
+    return (
+      <Shell>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </Shell>
+    );
+  }
+
+  const metrics = allMetrics || [];
+  const syntheticData = buildSyntheticTimeSeries(metrics);
+  const networkPhases = buildNetworkPhases(metrics);
+
   return (
     <Shell>
       <div className="flex items-center justify-between space-y-2">
@@ -35,9 +46,9 @@ export default function Performance() {
 
       <Tabs defaultValue="synthetic" className="space-y-4 mt-4">
         <TabsList>
-          <TabsTrigger value="synthetic">Synthetic Tests</TabsTrigger>
-          <TabsTrigger value="graph">Graph API Latency</TabsTrigger>
-          <TabsTrigger value="network">Network Phases</TabsTrigger>
+          <TabsTrigger value="synthetic" data-testid="tab-synthetic">Synthetic Tests</TabsTrigger>
+          <TabsTrigger value="distribution" data-testid="tab-distribution">Latency Distribution</TabsTrigger>
+          <TabsTrigger value="network" data-testid="tab-network">Network Phases</TabsTrigger>
         </TabsList>
         <TabsContent value="synthetic" className="space-y-4">
           <Card>
@@ -50,13 +61,11 @@ export default function Performance() {
             <CardContent>
               <div className="h-[400px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={syntheticTestData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                  <LineChart data={syntheticData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                     <XAxis dataKey="time" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value}ms`} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
-                    />
+                    <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}ms`} />
+                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} />
                     <Legend />
                     <Line type="monotone" dataKey="Page Load" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                     <Line type="monotone" dataKey="File Upload" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
@@ -67,17 +76,48 @@ export default function Performance() {
             </CardContent>
           </Card>
         </TabsContent>
-        <TabsContent value="graph">
-           <Card>
+        <TabsContent value="distribution">
+          <Card>
             <CardHeader>
-              <CardTitle>Graph API Telemetry</CardTitle>
-              <CardDescription>
-                Passive telemetry tracking Microsoft Graph API endpoint response times
-              </CardDescription>
+              <CardTitle>Latency Distribution by Site</CardTitle>
+              <CardDescription>Average latency per monitored site</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="h-[400px] flex items-center justify-center text-muted-foreground">
-                Select specific endpoints to view telemetry data.
+              <div className="h-[400px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={buildSiteLatency(metrics)} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="site" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                    <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}ms`} />
+                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} />
+                    <Bar dataKey="avgLatency" name="Avg Latency" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="network">
+          <Card>
+            <CardHeader>
+              <CardTitle>Network Phase Breakdown</CardTitle>
+              <CardDescription>Simulated network timing phases (DNS, TCP, TLS, TTFB)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[400px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={networkPhases} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="time" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                    <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}ms`} />
+                    <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} />
+                    <Legend />
+                    <Bar dataKey="DNS" stackId="a" fill="#06b6d4" />
+                    <Bar dataKey="TCP" stackId="a" fill="#8b5cf6" />
+                    <Bar dataKey="TLS" stackId="a" fill="#f59e0b" />
+                    <Bar dataKey="TTFB" stackId="a" fill="hsl(var(--primary))" />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </CardContent>
           </Card>
@@ -85,4 +125,48 @@ export default function Performance() {
       </Tabs>
     </Shell>
   );
+}
+
+function buildSyntheticTimeSeries(metrics: any[]) {
+  const buckets: Record<string, { "Page Load": number[]; "File Upload": number[]; "Search": number[] }> = {};
+  metrics.forEach((m) => {
+    const d = new Date(m.timestamp);
+    const key = `${String(d.getHours()).padStart(2, '0')}:${String(Math.floor(d.getMinutes() / 15) * 15).padStart(2, '0')}`;
+    if (!buckets[key]) buckets[key] = { "Page Load": [], "File Upload": [], "Search": [] };
+    if (m.metricName === "page_load") buckets[key]["Page Load"].push(m.value);
+    else if (m.metricName === "file_upload") buckets[key]["File Upload"].push(m.value);
+    else if (m.metricName === "search") buckets[key]["Search"].push(m.value);
+  });
+  const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+  return Object.entries(buckets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([time, v]) => ({ time, "Page Load": avg(v["Page Load"]), "File Upload": avg(v["File Upload"]), "Search": avg(v["Search"]) }));
+}
+
+function buildSiteLatency(metrics: any[]) {
+  const sites: Record<string, number[]> = {};
+  metrics.forEach((m) => {
+    const site = m.site || "Unknown";
+    if (!sites[site]) sites[site] = [];
+    sites[site].push(m.value);
+  });
+  return Object.entries(sites).map(([site, vals]) => ({
+    site,
+    avgLatency: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
+  })).sort((a, b) => b.avgLatency - a.avgLatency);
+}
+
+function buildNetworkPhases(metrics: any[]) {
+  const pageLoads = metrics.filter((m) => m.metricName === "page_load").slice(0, 12);
+  return pageLoads.map((m) => {
+    const total = m.value;
+    const d = new Date(m.timestamp);
+    return {
+      time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+      DNS: Math.round(total * 0.05),
+      TCP: Math.round(total * 0.1),
+      TLS: Math.round(total * 0.15),
+      TTFB: Math.round(total * 0.7),
+    };
+  }).reverse();
 }

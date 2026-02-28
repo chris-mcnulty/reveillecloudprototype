@@ -4,21 +4,94 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Building2, ShieldCheck, Activity, CheckCircle2, ArrowRight, ArrowLeft, Cloud } from "lucide-react";
+import { Building2, ShieldCheck, Activity, CheckCircle2, ArrowRight, ArrowLeft, Cloud, Loader2 } from "lucide-react";
+import { useCreateTenant, useCreateSystem, useCreateTest } from "@/lib/api";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 
 export default function Onboarding() {
   const [step, setStep] = useState(1);
   const [, setLocation] = useLocation();
+  const [orgName, setOrgName] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [primaryDomain, setPrimaryDomain] = useState("");
+  const [createdTenantId, setCreatedTenantId] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleNext = () => {
-    if (step < 4) setStep(step + 1);
-    else setLocation("/");
+  const createTenant = useCreateTenant();
+  const createSystem = useCreateSystem();
+  const createTest = useCreateTest();
+
+  const handleNext = async () => {
+    if (step === 1) {
+      if (!orgName || !adminEmail || !primaryDomain) return;
+      setIsSubmitting(true);
+      try {
+        const tenant = await createTenant.mutateAsync({
+          name: orgName,
+          adminEmail,
+          primaryDomain,
+          status: "Healthy",
+          consentStatus: "Pending",
+        });
+        setCreatedTenantId(tenant.id);
+        setStep(2);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsSubmitting(false);
+      }
+    } else if (step === 2) {
+      if (createdTenantId) {
+        setIsSubmitting(true);
+        try {
+          await createSystem.mutateAsync({
+            tenantId: createdTenantId,
+            name: "Microsoft 365",
+            type: "m365",
+            status: "Healthy",
+            latency: "—",
+          });
+          await createTenant.mutateAsync;
+        } catch (e) { /* ignore */ }
+        setIsSubmitting(false);
+      }
+      setStep(3);
+    } else if (step === 3) {
+      if (createdTenantId) {
+        setIsSubmitting(true);
+        try {
+          const domain = primaryDomain.replace(".onmicrosoft.com", "");
+          await createTest.mutateAsync({
+            tenantId: createdTenantId,
+            name: `${orgName} Hub Load`,
+            type: "Page Load",
+            target: `https://${domain}.sharepoint.com`,
+            interval: "5 min",
+            status: "Active",
+          });
+          await createTest.mutateAsync({
+            tenantId: createdTenantId,
+            name: `${orgName} File Upload`,
+            type: "File Transfer",
+            target: `/sites/docs/Shared Documents`,
+            interval: "15 min",
+            status: "Active",
+          });
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setIsSubmitting(false);
+        }
+      }
+      setStep(4);
+    } else {
+      setLocation("/");
+    }
   };
 
   const handleBack = () => {
-    if (step > 1) setStep(step - 1);
+    if (step > 1 && step < 4) setStep(step - 1);
   };
 
   return (
@@ -36,7 +109,6 @@ export default function Onboarding() {
               style={{ width: `${((step - 1) / 3) * 100}%` }}
             />
           </div>
-          
           {[
             { num: 1, label: "Organization", icon: Building2 },
             { num: 2, label: "Azure AD", icon: ShieldCheck },
@@ -67,15 +139,15 @@ export default function Onboarding() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="org-name">Organization Name</Label>
-                <Input id="org-name" placeholder="e.g. Acme Corporation" />
+                <Input data-testid="input-org-name" id="org-name" placeholder="e.g. Acme Corporation" value={orgName} onChange={(e) => setOrgName(e.target.value)} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="admin-email">Admin Email</Label>
-                <Input id="admin-email" type="email" placeholder="admin@acmecorp.com" />
+                <Input data-testid="input-admin-email" id="admin-email" type="email" placeholder="admin@acmecorp.com" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="primary-domain">Primary Domain</Label>
-                <Input id="primary-domain" placeholder="acmecorp.onmicrosoft.com" />
+                <Input data-testid="input-primary-domain" id="primary-domain" placeholder="acmecorp.onmicrosoft.com" value={primaryDomain} onChange={(e) => setPrimaryDomain(e.target.value)} />
               </div>
             </CardContent>
           </>
@@ -102,7 +174,7 @@ export default function Onboarding() {
                 <p className="text-sm text-muted-foreground text-center max-w-md mb-6">
                   You will be redirected to the Microsoft login portal to sign in as a Global Administrator and grant consent.
                 </p>
-                <Button size="lg" className="w-full sm:w-auto bg-[#0078D4] hover:bg-[#0078D4]/90 text-white">
+                <Button size="lg" className="w-full sm:w-auto bg-[#0078D4] hover:bg-[#0078D4]/90 text-white" data-testid="button-grant-consent">
                   Grant Admin Consent
                 </Button>
               </div>
@@ -127,7 +199,6 @@ export default function Onboarding() {
                     <p className="text-sm text-muted-foreground">Measures page load time for your root site collection every 5 minutes.</p>
                   </div>
                 </div>
-                
                 <div className="flex items-start space-x-3 p-4 border rounded-lg hover:border-primary/50 transition-colors">
                   <div className="mt-1">
                     <Input type="checkbox" id="test-2" className="h-4 w-4" defaultChecked />
@@ -137,7 +208,6 @@ export default function Onboarding() {
                     <p className="text-sm text-muted-foreground">Uploads and deletes a 400KB file to measure data transfer latencies.</p>
                   </div>
                 </div>
-
                 <div className="flex items-start space-x-3 p-4 border rounded-lg hover:border-primary/50 transition-colors">
                   <div className="mt-1">
                     <Input type="checkbox" id="test-3" className="h-4 w-4" />
@@ -165,10 +235,12 @@ export default function Onboarding() {
               <p className="text-muted-foreground mb-6">
                 It may take up to 15 minutes for the first synthetic metrics to appear on your dashboard.
               </p>
-              <div className="p-4 bg-muted/30 rounded-lg inline-block text-left mb-4">
-                <p className="text-sm font-medium mb-1">Tenant ID:</p>
-                <p className="text-sm font-mono text-muted-foreground">t-new-998</p>
-              </div>
+              {createdTenantId && (
+                <div className="p-4 bg-muted/30 rounded-lg inline-block text-left mb-4">
+                  <p className="text-sm font-medium mb-1">Tenant ID:</p>
+                  <p data-testid="text-new-tenant-id" className="text-sm font-mono text-muted-foreground">{createdTenantId}</p>
+                </div>
+              )}
             </CardContent>
           </>
         )}
@@ -182,7 +254,8 @@ export default function Onboarding() {
           >
             <ArrowLeft className="mr-2 h-4 w-4" /> Back
           </Button>
-          <Button onClick={handleNext} className="ml-auto">
+          <Button onClick={handleNext} className="ml-auto" disabled={isSubmitting} data-testid="button-continue">
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {step === 4 ? "Go to Dashboard" : "Continue"} <ArrowRight className="ml-2 h-4 w-4" />
           </Button>
         </CardFooter>
