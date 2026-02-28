@@ -29,7 +29,7 @@ import { useActiveTenant } from "@/lib/tenant-context";
 
 export function Header() {
   const [location] = useLocation();
-  const { activeTenantId, setActiveTenantId, organization, orgTenants, isMsp } = useActiveTenant();
+  const { activeTenantId, setActiveTenantId, organization, allOrganizations, orgTenants, isMsp, activeOrgId, setActiveOrgId } = useActiveTenant();
 
   const mspOnlyItems = isMsp ? [
     { href: "/environments", icon: LayoutGrid, label: "Environments" },
@@ -85,6 +85,25 @@ export function Header() {
         <h1 className="text-xl font-semibold tracking-tight hidden sm:block whitespace-nowrap shrink-0">Reveille Cloud</h1>
         
         <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
+
+        {allOrganizations.length > 1 && (
+          <Select value={activeOrgId || organization?.id || ""} onValueChange={(v) => setActiveOrgId(v)}>
+            <SelectTrigger className="w-[130px] sm:w-[160px] h-9 bg-background border-dashed shrink-0 text-xs" data-testid="select-header-org">
+              <div className="flex items-center gap-2 truncate">
+                <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <span className="truncate"><SelectValue placeholder="Org" /></span>
+              </div>
+            </SelectTrigger>
+            <SelectContent>
+              {allOrganizations.map(o => (
+                <SelectItem key={o.id} value={o.id}>
+                  <span>{o.name}</span>
+                  <span className="ml-1.5 text-xs text-muted-foreground">({o.mode})</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
 
         {isMsp ? (
           <Select value={activeTenantId || ""} onValueChange={(v) => setActiveTenantId(v)}>
