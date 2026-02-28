@@ -65,6 +65,28 @@ export async function registerRoutes(
     res.json(updated);
   });
 
+  app.post("/api/tenants/:id/consent", async (req, res) => {
+    const tenant = await storage.getTenant(req.params.id);
+    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+    const updated = await storage.updateTenant(req.params.id, {
+      consentStatus: "Connected",
+      consentedBy: tenant.adminEmail,
+      consentedAt: new Date(),
+    });
+    res.json(updated);
+  });
+
+  app.post("/api/tenants/:id/revoke-consent", async (req, res) => {
+    const tenant = await storage.getTenant(req.params.id);
+    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+    const updated = await storage.updateTenant(req.params.id, {
+      consentStatus: "Pending",
+      consentedBy: null,
+      consentedAt: null,
+    });
+    res.json(updated);
+  });
+
   app.delete("/api/tenants/:id", async (req, res) => {
     await storage.deleteTenant(req.params.id);
     res.status(204).send();

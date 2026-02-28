@@ -52,7 +52,17 @@ export function useCreateTenant() {
 
 export function useUpdateTenant() {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: ({ id, ...data }: any) => patchJson(`/api/tenants/${id}`, data), onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/tenants"] }) });
+  return useMutation({ mutationFn: ({ id, ...data }: any) => patchJson(`/api/tenants/${id}`, data), onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/tenants"] }); qc.invalidateQueries({ queryKey: ["/api/organizations/active"] }); } });
+}
+
+export function useConsentTenant() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => postJson(`/api/tenants/${id}/consent`, {}), onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/tenants"] }); qc.invalidateQueries({ queryKey: ["/api/organizations/active"] }); } });
+}
+
+export function useRevokeConsent() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => postJson(`/api/tenants/${id}/revoke-consent`, {}), onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/tenants"] }); qc.invalidateQueries({ queryKey: ["/api/organizations/active"] }); } });
 }
 
 export function useAllSystems() {
