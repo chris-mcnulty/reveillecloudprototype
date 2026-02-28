@@ -30,13 +30,13 @@ export default function TestsConfig() {
   const updateTest = useUpdateTest();
   const deleteTest = useDeleteTest();
   const createTest = useCreateTest();
-  const { data: testRuns } = useTestRuns(selectedTestId);
   const { toast } = useToast();
 
   const activeTenantId = selectedTenantId || tenants?.[0]?.id || null;
   const tests = allTests?.filter(t => t.tenantId === activeTenantId) || [];
   const selectedTest = tests.find(t => t.id === selectedTestId) || tests[0] || null;
   const activeTestId = selectedTest?.id || null;
+  const { data: testRuns } = useTestRuns(activeTestId);
 
   const handleRunTest = () => {
     if (!activeTestId) return;
