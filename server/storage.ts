@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { eq, desc, and, gte, sql } from "drizzle-orm";
 import {
+  organizations, type Organization, type InsertOrganization,
   tenants, type Tenant, type InsertTenant,
   monitoredSystems, type MonitoredSystem, type InsertMonitoredSystem,
   syntheticTests, type SyntheticTest, type InsertSyntheticTest,
@@ -11,7 +12,14 @@ import {
 } from "@shared/schema";
 
 export interface IStorage {
+  getOrganizations(): Promise<Organization[]>;
+  getOrganization(id: string): Promise<Organization | undefined>;
+  createOrganization(org: InsertOrganization): Promise<Organization>;
+  updateOrganization(id: string, data: Partial<InsertOrganization>): Promise<Organization | undefined>;
+  getActiveOrganization(): Promise<Organization | undefined>;
+
   getTenants(): Promise<Tenant[]>;
+  getTenantsByOrg(orgId: string): Promise<Tenant[]>;
   getTenant(id: string): Promise<Tenant | undefined>;
   createTenant(tenant: InsertTenant): Promise<Tenant>;
   updateTenant(id: string, data: Partial<InsertTenant>): Promise<Tenant | undefined>;
@@ -53,8 +61,37 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  async getOrganizations(): Promise<Organization[]> {
+    return db.select().from(organizations);
+  }
+
+  async getOrganization(id: string): Promise<Organization | undefined> {
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, id));
+    return org;
+  }
+
+  async createOrganization(org: InsertOrganization): Promise<Organization> {
+    const [created] = await db.insert(organizations).values(org).returning();
+    return created;
+  }
+
+  async updateOrganization(id: string, data: Partial<InsertOrganization>): Promise<Organization | undefined> {
+    const [updated] = await db.update(organizations).set(data).where(eq(organizations.id, id)).returning();
+    return updated;
+  }
+
+  async getActiveOrganization(): Promise<Organization | undefined> {
+    const orgs = await db.select().from(organizations);
+    if (orgs.length === 1) return orgs[0];
+    return orgs.find(o => o.mode === "standard") || orgs[0];
+  }
+
   async getTenants(): Promise<Tenant[]> {
     return db.select().from(tenants);
+  }
+
+  async getTenantsByOrg(orgId: string): Promise<Tenant[]> {
+    return db.select().from(tenants).where(eq(tenants.organizationId, orgId));
   }
 
   async getTenant(id: string): Promise<Tenant | undefined> {

@@ -11,15 +11,20 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useTenants } from "@/lib/api";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, Redirect } from "wouter";
 import { useState } from "react";
 
 export default function Tenants() {
-  const { data: tenantList, isLoading } = useTenants();
+  const { isMsp, orgTenants, setActiveTenantId, isLoading: loadingOrg } = useActiveTenant();
   const [, setLocation] = useLocation();
-  const { setActiveTenantId } = useActiveTenant();
   const [searchQuery, setSearchQuery] = useState("");
+
+  if (!loadingOrg && !isMsp) {
+    return <Redirect to="/" />;
+  }
+
+  const tenantList = orgTenants;
+  const isLoading = loadingOrg;
 
   if (isLoading) {
     return (

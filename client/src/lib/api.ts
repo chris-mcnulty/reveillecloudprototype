@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryClient } from "./queryClient";
-import type { Tenant, MonitoredSystem, SyntheticTest, AlertRule, Metric, Alert, TestRun } from "@shared/schema";
+import type { Organization, Tenant, MonitoredSystem, SyntheticTest, AlertRule, Metric, Alert, TestRun } from "@shared/schema";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -23,6 +23,18 @@ async function patchJson<T>(url: string, body: unknown): Promise<T> {
 async function deleteReq(url: string): Promise<void> {
   const res = await fetch(url, { method: "DELETE" });
   if (!res.ok) throw new Error(await res.text());
+}
+
+export interface OrgContext {
+  organization: Organization;
+  tenants: Tenant[];
+  isMsp: boolean;
+  allOrganizations: Organization[];
+}
+
+export function useOrgContext(orgId?: string | null) {
+  const url = orgId ? `/api/organizations/active?orgId=${orgId}` : "/api/organizations/active";
+  return useQuery<OrgContext>({ queryKey: ["/api/organizations/active", orgId], queryFn: () => fetchJson(url) });
 }
 
 export function useTenants() {

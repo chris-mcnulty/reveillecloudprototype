@@ -29,7 +29,8 @@ shared/
 ```
 
 ## Key Data Models
-- **tenants**: Customer organizations with Azure AD consent status
+- **organizations**: Top-level entities (mode: "standard" for customers, "msp" for managed service providers). Controls UI mode.
+- **tenants**: Customer tenants with Azure AD consent status, linked to an organization via `organizationId`
 - **monitoredSystems**: Services per tenant (M365, Google Workspace, OpenText)
 - **syntheticTests**: Configured test profiles (page load, file upload, search, auth)
 - **alertRules**: Threshold-based alert configurations with notification channels
@@ -37,8 +38,16 @@ shared/
 - **alerts**: Generated incident records
 - **testRuns**: Synthetic test execution history with timing breakdowns
 
+## Organization Model
+- **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
+- **Synozur** (msp): MSP org managing multiple client tenants (Acme, Globex, Initech, Soylent). Full multi-tenant features, tenant selector active.
+- Org switcher in header lets user toggle between org contexts.
+- `TenantContext` provides `isMsp`, `orgTenants`, `organization`, `allOrganizations` to all components.
+
 ## API Endpoints
 All prefixed with `/api`:
+- `GET /organizations`, `POST /organizations`, `PATCH /organizations/:id`
+- `GET /organizations/active?orgId=` (returns org context with tenants, isMsp flag, all orgs)
 - `GET/POST /tenants`, `GET/PATCH/DELETE /tenants/:id`
 - `GET /tenants/:tenantId/systems`, `POST/PATCH/DELETE /systems`
 - `GET /tenants/:tenantId/tests`, `POST/PATCH/DELETE /tests`

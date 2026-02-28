@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, Cloud, LayoutGrid } from "lucide-react";
+import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, LayoutGrid, Lock } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,23 +25,27 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
-import { useTenants } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
 
 export function Header() {
   const [location] = useLocation();
-  const { data: tenants } = useTenants();
-  const { activeTenantId, setActiveTenantId } = useActiveTenant();
+  const { activeTenantId, setActiveTenantId, organization, allOrganizations, orgTenants, isMsp, activeOrgId, setActiveOrgId } = useActiveTenant();
+
+  const mspOnlyItems = isMsp ? [
+    { href: "/environments", icon: LayoutGrid, label: "Environments" },
+    { href: "/tenants", icon: Building2, label: "Tenants" },
+  ] : [];
 
   const navItems = [
     { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
-    { href: "/environments", icon: LayoutGrid, label: "Environments" },
-    { href: "/tenants", icon: Building2, label: "Tenants" },
+    ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
   ];
+
+  const isLocked = !isMsp && orgTenants.length <= 1;
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background px-4 sm:static sm:h-auto sm:border-0 sm:bg-transparent sm:px-6">
@@ -81,20 +85,48 @@ export function Header() {
         <h1 className="text-xl font-semibold tracking-tight hidden sm:block whitespace-nowrap shrink-0">Reveille Cloud</h1>
         
         <div className="h-6 w-px bg-border hidden sm:block shrink-0" />
-        
-        <Select value={activeTenantId || ""} onValueChange={(v) => setActiveTenantId(v)}>
-          <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0" data-testid="select-header-tenant">
-            <div className="flex items-center gap-2 text-sm truncate">
-              <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="truncate"><SelectValue placeholder="Select tenant" /></span>
-            </div>
-          </SelectTrigger>
-          <SelectContent>
-            {tenants?.map(t => (
-              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+
+        {allOrganizations.length > 1 && (
+          <Select value={activeOrgId || organization?.id || ""} onValueChange={(v) => setActiveOrgId(v)}>
+            <SelectTrigger className="w-[140px] sm:w-[180px] h-9 bg-background border-dashed shrink-0" data-testid="select-header-org">
+              <div className="flex items-center gap-2 text-sm truncate">
+                <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="truncate"><SelectValue placeholder="Select org" /></span>
+              </div>
+            </SelectTrigger>
+            <SelectContent>
+              {allOrganizations.map(o => (
+                <SelectItem key={o.id} value={o.id}>
+                  <div className="flex items-center gap-2">
+                    <span>{o.name}</span>
+                    <span className="text-xs text-muted-foreground">({o.mode})</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        {isMsp ? (
+          <Select value={activeTenantId || ""} onValueChange={(v) => setActiveTenantId(v)}>
+            <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0" data-testid="select-header-tenant">
+              <div className="flex items-center gap-2 text-sm truncate">
+                <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="truncate"><SelectValue placeholder="Select tenant" /></span>
+              </div>
+            </SelectTrigger>
+            <SelectContent>
+              {orgTenants?.map(t => (
+                <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <div className="flex items-center gap-2 px-3 h-9 rounded-md border border-dashed bg-background text-sm text-muted-foreground shrink-0" data-testid="select-header-tenant-locked">
+            <Lock className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{organization?.name || "Loading..."}</span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-4 md:ml-auto md:gap-2 lg:gap-4 shrink-0">
@@ -118,13 +150,13 @@ export function Header() {
           <DropdownMenuTrigger asChild>
             <Button variant="secondary" size="icon" className="rounded-full">
               <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-medium text-primary">
-                AD
+                {organization?.adminEmail?.charAt(0).toUpperCase() || "A"}
               </div>
               <span className="sr-only">Toggle user menu</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuLabel>Admin Account</DropdownMenuLabel>
+            <DropdownMenuLabel>{organization?.adminEmail || "Admin"}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem>Profile</DropdownMenuItem>
             <DropdownMenuItem>Billing</DropdownMenuItem>

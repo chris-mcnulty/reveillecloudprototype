@@ -4,14 +4,13 @@ import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2 
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar,
 } from "recharts";
-import { useMetrics, useMetricsSummary, useLatestMetrics, useTenants } from "@/lib/api";
+import { useMetrics, useMetricsSummary, useLatestMetrics } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
 
 export default function Dashboard() {
-  const { activeTenantId } = useActiveTenant();
+  const { activeTenantId, orgTenants } = useActiveTenant();
   const tenantId = activeTenantId;
-  const { data: tenants } = useTenants();
-  const tenant = tenants?.find(t => t.id === tenantId);
+  const tenant = orgTenants?.find(t => t.id === tenantId);
 
   const { data: allMetrics, isLoading: loadingMetrics } = useMetrics(tenantId);
   const { data: summary, isLoading: loadingSummary } = useMetricsSummary(tenantId);

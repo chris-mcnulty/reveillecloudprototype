@@ -3,18 +3,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Building2, Cloud, Server, Database, ArrowRight, Activity, AlertTriangle, Globe, Loader2 } from "lucide-react";
-import { Link, useLocation } from "wouter";
-import { useTenants, useAllSystems, useGlobalStats } from "@/lib/api";
+import { Link, useLocation, Redirect } from "wouter";
+import { useAllSystems, useGlobalStats } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
 
 const systemIcons: Record<string, any> = { m365: Cloud, gws: Database, opentext: Server };
 
 export default function Environments() {
-  const { data: tenantList, isLoading: loadingTenants } = useTenants();
+  const { isMsp, orgTenants, setActiveTenantId, isLoading: loadingOrg } = useActiveTenant();
   const { data: systems, isLoading: loadingSystems } = useAllSystems();
   const { data: stats, isLoading: loadingStats } = useGlobalStats();
-  const { setActiveTenantId } = useActiveTenant();
   const [, setLocation] = useLocation();
+
+  if (!loadingOrg && !isMsp) {
+    return <Redirect to="/" />;
+  }
+
+  const tenantList = orgTenants;
+  const loadingTenants = loadingOrg;
 
   if (loadingTenants || loadingSystems || loadingStats) {
     return (

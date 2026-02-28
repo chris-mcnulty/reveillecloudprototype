@@ -3,8 +3,21 @@ import { pgTable, text, varchar, integer, boolean, timestamp, real, jsonb } from
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+export const organizations = pgTable("organizations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  domain: text("domain").notNull(),
+  adminEmail: text("admin_email").notNull(),
+  mode: text("mode").notNull().default("standard"),
+});
+
+export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true });
+export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
+export type Organization = typeof organizations.$inferSelect;
+
 export const tenants = pgTable("tenants", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id),
   name: text("name").notNull(),
   adminEmail: text("admin_email").notNull(),
   primaryDomain: text("primary_domain").notNull(),

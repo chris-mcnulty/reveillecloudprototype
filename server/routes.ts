@@ -1,13 +1,45 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+
+  app.get("/api/organizations", async (_req, res) => {
+    const data = await storage.getOrganizations();
+    res.json(data);
+  });
+
+  app.get("/api/organizations/active", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    let org;
+    if (orgId) {
+      org = await storage.getOrganization(orgId);
+    } else {
+      org = await storage.getActiveOrganization();
+    }
+    if (!org) return res.status(404).json({ message: "No organization found" });
+    const orgTenants = await storage.getTenantsByOrg(org.id);
+    const allOrgs = await storage.getOrganizations();
+    res.json({ organization: org, tenants: orgTenants, isMsp: org.mode === "msp", allOrganizations: allOrgs });
+  });
+
+  app.post("/api/organizations", async (req, res) => {
+    const parsed = insertOrganizationSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
+    const org = await storage.createOrganization(parsed.data);
+    res.status(201).json(org);
+  });
+
+  app.patch("/api/organizations/:id", async (req, res) => {
+    const updated = await storage.updateOrganization(req.params.id, req.body);
+    if (!updated) return res.status(404).json({ message: "Organization not found" });
+    res.json(updated);
+  });
 
   app.get("/api/tenants", async (_req, res) => {
     const data = await storage.getTenants();

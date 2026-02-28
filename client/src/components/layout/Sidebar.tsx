@@ -15,17 +15,23 @@ import {
 } from "@/components/ui/tooltip";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
+import { useActiveTenant } from "@/lib/tenant-context";
 
 export function Sidebar() {
   const [location] = useLocation();
+  const { isMsp } = useActiveTenant();
+
+  const mspOnlyItems = isMsp ? [
+    { href: "/environments", icon: LayoutGrid, label: "Environments" },
+    { href: "/tenants", icon: Building2, label: "Tenants" },
+  ] : [];
 
   const navItems = [
     { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
-    { href: "/environments", icon: LayoutGrid, label: "Environments" },
-    { href: "/tenants", icon: Building2, label: "Tenants" },
+    ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
   ];
 
