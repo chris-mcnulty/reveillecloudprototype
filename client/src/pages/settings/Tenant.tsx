@@ -232,14 +232,16 @@ function M365AdminChecklist() {
         },
         {
           title: "5. Configure SharePoint Audit Settings",
-          where: "SharePoint admin center (admin.microsoft.com/sharepoint) > Settings > Site creation",
+          where: "SharePoint admin center (tenant-admin.sharepoint.com) > Settings",
           steps: [
-            "Tenant-wide: Settings > Auditing > Enable audit log collection",
-            "Per-site: Active sites > select site > Policies > Audit settings",
-            "Enable: Editing items, Checking in/out items, Moving/copying items, Deleting/restoring items",
-            "Set retention: SharePoint admin center > Settings > Audit log retention (default 90 days, up to 10 years with E5)",
+            "Navigate to your SharePoint admin center: https://[tenant]-admin.sharepoint.com",
+            "Tenant-wide auditing is controlled by the Unified Audit Log (step 1) — no separate SharePoint toggle needed in modern tenants",
+            "Site-level audit settings (classic): Site Settings > Site Collection Administration > Audit settings",
+            "Classic audit settings allow enabling: Opening/downloading, Editing, Checking in/out, Moving/copying, Deleting/restoring",
+            "Note: Classic site-level audit settings only apply to classic site collections — modern sites rely entirely on the Unified Audit Log",
+            "Retention: Controlled via Microsoft Purview > Audit > Audit retention policies (E5 required for custom retention beyond 180 days)",
           ],
-          impact: "While most events fire automatically with UAL enabled, site-level audit settings control granularity of item-level events and retention period.",
+          impact: "For modern SharePoint Online sites, most audit events are captured automatically by the Unified Audit Log. Classic site-level audit settings are only relevant for legacy classic site collections.",
         },
         {
           title: "6. Enable Microsoft Defender for Office 365 Alerts",
