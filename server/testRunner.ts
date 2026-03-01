@@ -1,4 +1,5 @@
 import { getUncachableSharePointClient, isSharePointConnected } from "./sharepoint";
+import { getAzureGraphClient, isAzureAppConfigured, getClientCredentialsToken } from "./azureAuth";
 import { storage } from "./storage";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -9,10 +10,29 @@ export interface TestResult {
   error?: string;
 }
 
+type AuthMethod = "app" | "delegated";
+
+async function getGraphClientForTest(test: SyntheticTest): Promise<{ client: any; authMethod: AuthMethod }> {
+  const tenant = await storage.getTenant(test.tenantId);
+
+  if (isAzureAppConfigured() && tenant?.azureTenantId && tenant.consentStatus === "Connected") {
+    const client = await getAzureGraphClient(tenant.azureTenantId);
+    return { client, authMethod: "app" };
+  }
+
+  const connected = await isSharePointConnected();
+  if (connected) {
+    const client = await getUncachableSharePointClient();
+    return { client, authMethod: "delegated" };
+  }
+
+  throw new Error("No authentication available — configure Azure AD app consent or connect the SharePoint integration");
+}
+
 async function runPageLoadTest(test: SyntheticTest): Promise<TestResult> {
   const start = Date.now();
   try {
-    const client = await getUncachableSharePointClient();
+    const { client, authMethod } = await getGraphClientForTest(test);
     const siteUrl = new URL(test.target);
     const hostname = siteUrl.hostname;
     const sitePath = siteUrl.pathname === "/" ? "" : siteUrl.pathname;
@@ -45,6 +65,7 @@ async function runPageLoadTest(test: SyntheticTest): Promise<TestResult> {
         siteName: siteInfo.displayName,
         siteId: siteInfo.id,
         listsCount: lists.value?.length || 0,
+        authMethod,
       },
     };
   } catch (err: any) {
@@ -60,7 +81,7 @@ async function runPageLoadTest(test: SyntheticTest): Promise<TestResult> {
 async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
   const start = Date.now();
   try {
-    const client = await getUncachableSharePointClient();
+    const { client, authMethod } = await getGraphClientForTest(test);
 
     const testContent = `Reveille Cloud synthetic test - ${new Date().toISOString()}`;
     const fileName = `reveille-test-${Date.now()}.txt`;
@@ -135,6 +156,7 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
         cleanupMs: deleteMs,
         totalMs: totalDuration,
         fileSize: testContent.length,
+        authMethod,
       },
     };
   } catch (err: any) {
@@ -150,7 +172,7 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
 async function runSearchTest(test: SyntheticTest): Promise<TestResult> {
   const start = Date.now();
   try {
-    const client = await getUncachableSharePointClient();
+    const { client, authMethod } = await getGraphClientForTest(test);
 
     let query = test.target;
     if (query.startsWith("query=")) {
@@ -184,6 +206,7 @@ async function runSearchTest(test: SyntheticTest): Promise<TestResult> {
         totalResults: totalHits,
         returnedResults: returnedHits,
         query,
+        authMethod,
       },
     };
   } catch (err: any) {
@@ -199,6 +222,41 @@ async function runSearchTest(test: SyntheticTest): Promise<TestResult> {
 async function runAuthTest(test: SyntheticTest): Promise<TestResult> {
   const start = Date.now();
   try {
+    const tenant = await storage.getTenant(test.tenantId);
+    const useAppAuth = isAzureAppConfigured() && tenant?.azureTenantId && tenant.consentStatus === "Connected";
+
+    if (useAppAuth) {
+      const tokenStart = Date.now();
+      const token = await getClientCredentialsToken(tenant!.azureTenantId!);
+      const tokenMs = Date.now() - tokenStart;
+
+      const client = await getAzureGraphClient(tenant!.azureTenantId!);
+
+      const orgStart = Date.now();
+      const org = await client.api("/organization").get();
+      const orgMs = Date.now() - orgStart;
+
+      const totalDuration = Date.now() - start;
+
+      return {
+        status: totalDuration > (test.timeout || 30) * 1000 ? "failed" : "success",
+        durationMs: totalDuration,
+        metrics: {
+          tokenAcquisitionMs: tokenMs,
+          profileFetchMs: orgMs,
+          totalMs: totalDuration,
+          tenantDisplayName: org.value?.[0]?.displayName || "Unknown",
+          tenantId: org.value?.[0]?.id || tenant!.azureTenantId,
+          authMethod: "app",
+        },
+      };
+    }
+
+    const connected = await isSharePointConnected();
+    if (!connected) {
+      throw new Error("No authentication available — configure Azure AD app consent or connect the SharePoint integration");
+    }
+
     const tokenStart = Date.now();
     const client = await getUncachableSharePointClient();
     const tokenMs = Date.now() - tokenStart;
@@ -218,6 +276,7 @@ async function runAuthTest(test: SyntheticTest): Promise<TestResult> {
         totalMs: totalDuration,
         userPrincipal: me.userPrincipalName,
         displayName: me.displayName,
+        authMethod: "delegated",
       },
     };
   } catch (err: any) {
@@ -231,13 +290,16 @@ async function runAuthTest(test: SyntheticTest): Promise<TestResult> {
 }
 
 export async function executeTest(test: SyntheticTest): Promise<TestResult> {
-  const connected = await isSharePointConnected();
-  if (!connected) {
+  const tenant = await storage.getTenant(test.tenantId);
+  const hasAzureAuth = isAzureAppConfigured() && tenant?.azureTenantId && tenant.consentStatus === "Connected";
+  const hasConnector = await isSharePointConnected();
+
+  if (!hasAzureAuth && !hasConnector) {
     return {
       status: "error",
       durationMs: 0,
       metrics: {},
-      error: "SharePoint integration not connected. Please authorize the SharePoint connector.",
+      error: "No authentication available — configure Azure AD app consent or connect the SharePoint integration",
     };
   }
 
