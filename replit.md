@@ -77,7 +77,7 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/test-runs` (all runs for a tenant)
 - `GET /all-tests` (all tests across tenants)
 - `GET /scheduler/status` (in-memory scheduler state for all 4 job types)
-- `POST /scheduler/trigger?jobType=` (trigger any job: syntheticTests, graphReports, serviceHealth, auditLogs)
+- `POST /scheduler/trigger?jobType=` (trigger any job: syntheticTests, graphReports, serviceHealth, auditLogs, siteStructure)
 - `POST /scheduler/reset/:jobType`, `POST /scheduler/reset-all` (reset stuck jobs)
 - `POST /scheduler/cancel/:jobType` (cancel running job)
 - `GET /scheduler/job-runs?jobType=&tenantId=&limit=` (persisted job run history)
@@ -95,7 +95,7 @@ All prefixed with `/api`:
 - `/tenants` - Tenant management table
 - `/performance` - Performance explorer with line/bar charts
 - `/service-health` - M365 Service Health incidents & advisories (global)
-- `/usage-reports` - SharePoint usage reports per tenant (5 report types with charts/tables)
+- `/usage-reports` - SharePoint usage reports per tenant (5 Graph usage types + 5 site structure types with charts/tables)
 - `/audit-log` - SharePoint audit trail + internal admin activity (tabbed)
 - `/alerts` - Alerts & incidents list
 - `/reports` - Report generation & scheduling
@@ -107,22 +107,24 @@ All prefixed with `/api`:
 
 ## Scheduler
 - Adapted from Synozur Orbit multi-tenant scheduler pattern (https://github.com/chris-mcnulty/synozur-orbit)
-- 4 job types with independent intervals:
+- 5 job types with independent intervals:
   - **syntheticTests**: Every 60s sweep, per-test interval checking
   - **serviceHealth**: Every 5 minutes (near-real-time incident detection)
   - **auditLogs**: Every 15 minutes (per consented tenant)
   - **graphReports**: Every 6 hours (daily aggregate reports)
+  - **siteStructure**: Every 1 hour (subsites, lists/libraries, drives, groups, users)
 - Only runs for tenants with `consentStatus === "Connected"`
 - Staggered execution with jitter between tests/tenants
 - AbortController support for job cancellation
 - Stuck job cleanup every 15 minutes (auto-marks jobs running >1 hour as failed)
-- Staggered startup: synthetic tests at 10s, service health at 15s, audit logs at 20s, graph reports at 30s
+- Staggered startup: synthetic tests at 10s, service health at 15s, audit logs at 20s, graph reports at 30s, site structure at 45s
 - All job runs persisted to `scheduledJobRuns` table for history/audit
 
 ## Passive Collectors
 - **Graph Reports** (`server/collectors/graphReports.ts`): Collects 5 SharePoint usage report types via Graph Reports API. Requires `Reports.Read.All` permission. Handles CSV parsing with proper quoted field support.
 - **Service Health** (`server/collectors/serviceHealth.ts`): Monitors M365 Service Health for SharePoint/OneDrive/M365 incidents. Creates alerts for new incidents. Requires `ServiceHealth.Read.All` permission.
 - **Audit Logs** (`server/collectors/auditLogs.ts`): Collects SharePoint audit events via directory audits, site analytics, and drive activity enumeration. Falls back gracefully through approaches. Requires `AuditLog.Read.All` permission.
+- **Site Structure** (`server/collectors/siteStructure.ts`): Enumerates subsites, lists/libraries, drive structure (files/folders/quota), M365 Groups, and tenant users. Stores as usageReports with reportTypes: subsites, siteLists, driveStructure, siteGroups, siteUsers. Requires `Sites.Read.All`, `Group.Read.All`, `User.Read.All` permissions.
 - All collectors handle 403 permission errors gracefully with warning logs (no crashes).
 
 ## Azure AD Multi-Tenant App Registration

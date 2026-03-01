@@ -3,6 +3,7 @@ import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 import { collectSharePointUsageReports } from "./collectors/graphReports";
 import { collectServiceHealthIncidents } from "./collectors/serviceHealth";
 import { collectAuditLogs } from "./collectors/auditLogs";
+import { collectSiteStructure } from "./collectors/siteStructure";
 import type { SyntheticTest } from "@shared/schema";
 
 interface JobStatus {
@@ -18,6 +19,7 @@ const jobStatus: Record<string, JobStatus> = {
   graphReports: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   serviceHealth: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   auditLogs: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  siteStructure: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -375,10 +377,59 @@ async function runAuditLogsJob(): Promise<void> {
   }
 }
 
+async function runSiteStructureJob(): Promise<void> {
+  if (jobStatus.siteStructure.isRunning) {
+    console.log("[Scheduler] Site structure already running, skipping...");
+    return;
+  }
+
+  const connected = await isSharePointConnected();
+  if (!connected) {
+    console.log("[Scheduler] SharePoint not connected, skipping site structure collection");
+    return;
+  }
+
+  jobStatus.siteStructure.isRunning = true;
+  console.log("[Scheduler] Starting site structure collection...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+
+    for (const tenant of consentedTenants) {
+      const jobRunId = await trackJobStart("siteStructure", tenant.id, undefined, `Site structure for ${tenant.name}`);
+      jobStatus.siteStructure.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectSiteStructure(tenant.id);
+        const allFailed = result.results.every(r => r.error);
+        const hasErrors = result.results.some(r => r.error);
+        await trackJobComplete(jobRunId, allFailed ? "failed" : "completed", {
+          totalCollected: result.totalCollected,
+          reports: result.results.map(r => ({ type: r.reportType, records: r.recordsCollected, error: r.error })),
+        }, allFailed ? result.results.map(r => r.error).filter(Boolean).join("; ") : undefined);
+        console.log(`[Scheduler] Site structure for ${tenant.name}: ${result.totalCollected} records collected${allFailed ? " (all failed)" : ""}`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] Site structure failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] Site structure job failed:", error);
+  } finally {
+    jobStatus.siteStructure.isRunning = false;
+    jobStatus.siteStructure.activeJobRunId = null;
+    jobStatus.siteStructure.lastRun = new Date();
+  }
+}
+
 let syntheticTestInterval: NodeJS.Timeout | null = null;
 let graphReportsInterval: NodeJS.Timeout | null = null;
 let serviceHealthInterval: NodeJS.Timeout | null = null;
 let auditLogsInterval: NodeJS.Timeout | null = null;
+let siteStructureInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 export function startScheduler(): void {
@@ -388,6 +439,7 @@ export function startScheduler(): void {
   if (graphReportsInterval) clearInterval(graphReportsInterval);
   if (serviceHealthInterval) clearInterval(serviceHealthInterval);
   if (auditLogsInterval) clearInterval(auditLogsInterval);
+  if (siteStructureInterval) clearInterval(siteStructureInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -405,6 +457,10 @@ export function startScheduler(): void {
   auditLogsInterval = setInterval(() => {
     runAuditLogsJob();
   }, 15 * 60 * 1000);
+
+  siteStructureInterval = setInterval(() => {
+    runSiteStructureJob();
+  }, 60 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -436,11 +492,17 @@ export function startScheduler(): void {
     runGraphReportsJob();
   }, 30 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial site structure collection...");
+    runSiteStructureJob();
+  }, 45 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
   console.log("  - Audit logs: every 15m (initial in 20s)");
   console.log("  - Graph reports: every 6h (initial in 30s)");
+  console.log("  - Site structure: every 1h (initial in 45s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -449,6 +511,7 @@ export function stopScheduler(): void {
   if (graphReportsInterval) { clearInterval(graphReportsInterval); graphReportsInterval = null; }
   if (serviceHealthInterval) { clearInterval(serviceHealthInterval); serviceHealthInterval = null; }
   if (auditLogsInterval) { clearInterval(auditLogsInterval); auditLogsInterval = null; }
+  if (siteStructureInterval) { clearInterval(siteStructureInterval); siteStructureInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -480,6 +543,10 @@ export async function triggerServiceHealthNow(): Promise<void> {
 
 export async function triggerAuditLogsNow(): Promise<void> {
   runAuditLogsJob();
+}
+
+export async function triggerSiteStructureNow(): Promise<void> {
+  runSiteStructureJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {
