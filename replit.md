@@ -28,9 +28,10 @@ server/
   testRunner.ts    - Synthetic test execution engine (Page Load, File Transfer, Search, Auth)
   scheduler.ts     - Automated scheduler (synthetic tests + passive collectors)
   collectors/
-    graphReports.ts  - SharePoint usage reports via Graph Reports API (5 report types)
+    graphReports.ts  - M365 usage reports via Graph Reports API (11 report types: SP, OneDrive, Teams, Exchange, M365 Apps)
     serviceHealth.ts - M365 Service Health incident collector (auto-creates alerts)
-    auditLogs.ts     - SharePoint audit log collector (directory audits, site analytics, drive activity)
+    auditLogs.ts     - Unified audit log collector (4 Management API content types: Audit.SharePoint, Audit.General, Audit.Exchange, Audit.AzureActiveDirectory + Graph directoryAudits + signInLogs + site fallback)
+    siteStructure.ts - SharePoint site structure collector (subsites, lists, drives, groups, users)
 shared/
   schema.ts        - Drizzle schema (all tables)
 ```

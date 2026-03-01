@@ -199,7 +199,7 @@ function M365AdminChecklist() {
             "Also check ActivityFeed.ReadDlp (for DLP/sensitive content events)",
             "Click 'Add permissions', then click 'Grant admin consent for [your directory]'",
           ],
-          impact: "This is separate from Microsoft Graph. Without it, Reveille only gets Entra ID directory audits — NOT SharePoint file operations, sharing events, permission changes, or search queries.",
+          impact: "This is separate from Microsoft Graph. Without it, Reveille only gets Entra ID directory audits — NOT SharePoint file operations, sharing events, permission changes, or search queries. Reveille auto-subscribes to all 4 content types: Audit.SharePoint, Audit.General, Audit.Exchange, and Audit.AzureActiveDirectory.",
         },
         {
           title: "3. Grant Admin Consent for Microsoft Graph Permissions",
@@ -299,7 +299,7 @@ function M365AdminChecklist() {
             "Check 'Start Auditing' and enable the audit log categories you need",
             "Power Platform events flow into the Audit.General content type in the Management Activity API",
             "Key events: FlowCreated, FlowModified, AppPublished, PowerAppPermissionEdited, EnvironmentPropertyUpdated",
-            "Reveille Cloud now subscribes to both Audit.SharePoint and Audit.General — Power Platform, Teams, and cross-workload events are collected automatically",
+            "Reveille Cloud subscribes to all 4 Management API content types: Audit.SharePoint, Audit.General, Audit.Exchange, and Audit.AzureActiveDirectory",
           ],
           impact: "Power Platform events are only recorded when environment-level auditing is enabled in each Power Platform environment. Reveille collects these via the Audit.General feed.",
         },

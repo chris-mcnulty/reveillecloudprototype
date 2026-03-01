@@ -27,6 +27,8 @@ const SHAREPOINT_AUDIT_OPERATIONS = [
 const MANAGEMENT_API_CONTENT_TYPES = [
   "Audit.SharePoint",
   "Audit.General",
+  "Audit.Exchange",
+  "Audit.AzureActiveDirectory",
 ];
 
 async function ensureSubscription(
@@ -135,6 +137,18 @@ async function collectContentType(
             members: event.Members || null,
             communicationType: event.CommunicationType || null,
             appId: event.AppId || null,
+            mailboxOwnerUPN: event.MailboxOwnerUPN || null,
+            subject: event.Subject || null,
+            attachments: event.Attachments || null,
+            recipients: event.Recipients || null,
+            sendAsUserSmtp: event.SendAsUserSmtp || null,
+            logonType: event.LogonType || null,
+            externalAccess: event.ExternalAccess || null,
+            actor: event.Actor || null,
+            actorContextId: event.ActorContextId || null,
+            targetId: event.Target?.[0]?.ID || null,
+            targetType: event.Target?.[0]?.Type || null,
+            modifiedProperties: event.ModifiedProperties || null,
           },
         });
 
