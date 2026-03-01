@@ -21,7 +21,7 @@ server/
   routes.ts        - API route handlers (/api/*)
   storage.ts       - Database storage interface (IStorage + DatabaseStorage)
   db.ts            - Drizzle ORM + pg Pool setup
-  seed.ts          - Database seeding with sample tenants/metrics
+  seed.ts          - Database seeding with org/tenant/test structure (no fake metrics - real data only)
   sharepoint.ts    - Microsoft Graph client auth (Replit SharePoint connector)
   testRunner.ts    - Synthetic test execution engine (Page Load, File Transfer, Search, Auth)
 shared/
