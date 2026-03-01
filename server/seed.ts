@@ -51,6 +51,8 @@ export async function seedDatabase() {
     { tenantId: soylent.id, name: "Soylent Hub Load", type: "Page Load", target: "https://soylent.sharepoint.com", interval: "5 min", status: "Active" },
     { tenantId: cascadiaTenant.id, name: "Hub Load", type: "Page Load", target: "https://cascadiaoceanic.sharepoint.com", interval: "5 min", status: "Active" },
     { tenantId: cascadiaTenant.id, name: "File Upload", type: "File Transfer", target: "/sites/docs/Shared Documents", interval: "15 min", status: "Active" },
+    { tenantId: cascadiaTenant.id, name: "People Search", type: "Search", target: "query='marketing'", interval: "10 min", status: "Active" },
+    { tenantId: cascadiaTenant.id, name: "Token Acquisition", type: "Authentication", target: "login.microsoftonline.com", interval: "5 min", status: "Active" },
   ]);
 
   await db.insert(alertRules).values([
