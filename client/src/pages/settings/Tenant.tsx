@@ -23,7 +23,8 @@ const WORKLOAD_PERMISSIONS: Record<string, WorkloadConfig> = {
     label: "SharePoint Online",
     color: "bg-[#038387]",
     permissions: [
-      { scope: "Sites.Read.All", purpose: "Site structure, lists, libraries, subsites, drives", status: "required", api: "Graph" },
+      { scope: "Sites.Read.All", purpose: "Site structure, lists, libraries, subsites, drives, site analytics", status: "required", api: "Graph" },
+      { scope: "Sites.FullControl.All", purpose: "Site-level audit configuration, retention policies, site collection admin operations", status: "recommended", api: "Graph" },
       { scope: "Files.ReadWrite.All", purpose: "Synthetic file upload/download performance tests", status: "required", api: "Graph" },
       { scope: "Reports.Read.All", purpose: "Site usage, storage, file counts, page views, active users", status: "required", api: "Graph" },
     ],
@@ -40,54 +41,61 @@ const WORKLOAD_PERMISSIONS: Record<string, WorkloadConfig> = {
     label: "Identity & Access (Entra ID)",
     color: "bg-[#5C2D91]",
     permissions: [
-      { scope: "AuditLog.Read.All", purpose: "Sign-in logs, directory audits, MFA events", status: "required", api: "Graph" },
-      { scope: "Directory.Read.All", purpose: "User/group enumeration, license assignments", status: "recommended", api: "Graph" },
-      { scope: "User.Read.All", purpose: "User profiles, sign-in activity, account status", status: "required", api: "Graph" },
-      { scope: "Group.Read.All", purpose: "M365 group membership, Teams-connected groups", status: "required", api: "Graph" },
+      { scope: "AuditLog.Read.All", purpose: "Sign-in logs, directory audits, provisioning logs, MFA events, risky sign-ins", status: "required", api: "Graph" },
+      { scope: "Directory.Read.All", purpose: "User/group enumeration, license assignments, org settings, conditional access policies", status: "required", api: "Graph" },
+      { scope: "User.Read.All", purpose: "User profiles, sign-in activity, account status, last sign-in timestamps", status: "required", api: "Graph" },
+      { scope: "Group.Read.All", purpose: "M365 group membership, Teams-connected groups, security groups", status: "required", api: "Graph" },
+      { scope: "IdentityRiskyUser.Read.All", purpose: "Users flagged by Entra ID Protection (compromised credentials, impossible travel)", status: "recommended", api: "Graph" },
+      { scope: "Policy.Read.All", purpose: "Conditional access policies, authentication methods, MFA registration status", status: "recommended", api: "Graph" },
     ],
   },
   serviceHealth: {
     label: "Service Health & Communications",
     color: "bg-[#D83B01]",
     permissions: [
-      { scope: "ServiceHealth.Read.All", purpose: "Service incidents, advisories, planned maintenance", status: "required", api: "Graph" },
-      { scope: "ServiceMessage.Read.All", purpose: "Message center posts (feature changes, retirements)", status: "recommended", api: "Graph" },
+      { scope: "ServiceHealth.Read.All", purpose: "Service incidents, advisories, planned maintenance for all M365 services", status: "required", api: "Graph" },
+      { scope: "ServiceMessage.Read.All", purpose: "Message center posts — upcoming feature changes, retirements, required actions", status: "required", api: "Graph" },
     ],
   },
   auditActivity: {
-    label: "SharePoint Audit (Activity Feed)",
+    label: "Unified Audit Log (Activity Feed)",
     color: "bg-[#107C10]",
     permissions: [
-      { scope: "ActivityFeed.Read", purpose: "Real SharePoint operations: file access, sharing, permissions, search queries", status: "required", api: "Office 365 Management" },
-      { scope: "ActivityFeed.ReadDlp", purpose: "DLP policy match events for sensitive content detection", status: "optional", api: "Office 365 Management" },
+      { scope: "ActivityFeed.Read", purpose: "All audit events: SharePoint file access, sharing, permissions, OneDrive sync, Teams, Exchange, Power Platform", status: "required", api: "Office 365 Management" },
+      { scope: "ActivityFeed.ReadDlp", purpose: "DLP policy match events — sensitive content detection across SharePoint, OneDrive, Exchange", status: "recommended", api: "Office 365 Management" },
+      { scope: "ServiceHealth.Read", purpose: "Service communications via Management API (alternative to Graph)", status: "optional", api: "Office 365 Management" },
     ],
   },
   teams: {
     label: "Microsoft Teams",
     color: "bg-[#6264A7]",
     permissions: [
-      { scope: "Reports.Read.All", purpose: "Teams messages, calls, meetings per user", status: "recommended", api: "Graph" },
+      { scope: "Reports.Read.All", purpose: "Teams messages, calls, meetings, device usage per user", status: "recommended", api: "Graph" },
+      { scope: "TeamSettings.Read.All", purpose: "Teams configuration, channel settings, app installations", status: "optional", api: "Graph" },
     ],
   },
   exchange: {
     label: "Exchange Online / Outlook",
     color: "bg-[#0078D4]",
     permissions: [
-      { scope: "Reports.Read.All", purpose: "Email sends/reads/receives, mailbox usage, app breakdown", status: "recommended", api: "Graph" },
+      { scope: "Reports.Read.All", purpose: "Email sends/reads/receives, mailbox usage, app breakdown (Outlook/OWA/Mobile)", status: "recommended", api: "Graph" },
+      { scope: "MailboxSettings.Read", purpose: "Mailbox configurations, auto-replies, forwarding rules, regional settings", status: "optional", api: "Graph" },
     ],
   },
   m365Apps: {
     label: "Microsoft 365 Apps (Office)",
     color: "bg-[#D83B01]",
     permissions: [
-      { scope: "Reports.Read.All", purpose: "Per-user app usage across Word, Excel, PowerPoint, Outlook, Teams", status: "recommended", api: "Graph" },
+      { scope: "Reports.Read.All", purpose: "Per-user app usage across Word, Excel, PowerPoint, Outlook, Teams, OneDrive clients", status: "recommended", api: "Graph" },
     ],
   },
   security: {
     label: "Security & Compliance",
     color: "bg-[#E3008C]",
     permissions: [
-      { scope: "SecurityEvents.Read.All", purpose: "Security alerts from Microsoft Defender for Office 365", status: "optional", api: "Graph" },
+      { scope: "SecurityEvents.Read.All", purpose: "Security alerts from Microsoft Defender for Office 365, Defender for Endpoint", status: "recommended", api: "Graph" },
+      { scope: "SecurityActions.Read.All", purpose: "Security remediation actions, alert investigation status", status: "optional", api: "Graph" },
+      { scope: "ThreatAssessment.Read.All", purpose: "Threat assessment requests (URL/file/email threat evaluation)", status: "optional", api: "Graph" },
     ],
   },
 };
@@ -160,72 +168,142 @@ function WorkloadPermissions({ isConnected }: { isConnected: boolean }) {
 }
 
 function M365AdminChecklist() {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
-  const checklist = [
+  const sections = [
     {
-      title: "Enable Unified Audit Logging",
-      where: "Microsoft Purview compliance portal (compliance.microsoft.com)",
-      steps: [
-        "Go to Audit page",
-        "If you see a banner saying 'Start recording user and admin activity', click it",
-        "Most tenants have this enabled by default, but older tenants may not",
+      category: "Critical — Must Have",
+      categoryColor: "text-red-600",
+      items: [
+        {
+          title: "1. Enable Unified Audit Logging (UAL)",
+          where: "Microsoft Purview compliance portal (compliance.microsoft.com) > Audit",
+          steps: [
+            "Navigate to compliance.microsoft.com > Solutions > Audit",
+            "If you see a banner saying 'Start recording user and admin activity', click it to enable",
+            "Most tenants created after 2019 have this on by default — verify with PowerShell:",
+            "Get-AdminAuditLogConfig | Select UnifiedAuditLogIngestionEnabled (should be True)",
+          ],
+          impact: "This is the master switch. Without UAL enabled, Microsoft records NO audit events — all audit collectors will return empty results regardless of permissions.",
+        },
+        {
+          title: "2. Register Office 365 Management API Permissions",
+          where: "Azure Portal > Entra ID > App registrations > Reveille Cloud > API permissions",
+          steps: [
+            "Click 'Add a permission'",
+            "Select 'APIs my organization uses' tab (NOT Microsoft Graph)",
+            "Search for 'Office 365 Management APIs' and select it",
+            "Choose Application permissions > ActivityFeed > check ActivityFeed.Read",
+            "Also check ActivityFeed.ReadDlp (for DLP/sensitive content events)",
+            "Click 'Add permissions', then click 'Grant admin consent for [your directory]'",
+          ],
+          impact: "This is separate from Microsoft Graph. Without it, Reveille only gets Entra ID directory audits — NOT SharePoint file operations, sharing events, permission changes, or search queries.",
+        },
+        {
+          title: "3. Grant Admin Consent for Microsoft Graph Permissions",
+          where: "Azure Portal > Entra ID > App registrations > Reveille Cloud > API permissions",
+          steps: [
+            "Add all Microsoft Graph Application permissions listed in the 'Permissions by Workload' section above",
+            "After adding, click 'Grant admin consent for [your directory]'",
+            "Verify all permissions show a green checkmark under 'Status' (Granted for [tenant])",
+            "If status shows 'Not granted', a Global Administrator must click 'Grant admin consent' again",
+          ],
+          impact: "Without admin consent, the app registration has permissions listed but cannot actually use them. Each permission must show 'Granted' status.",
+        },
       ],
-      impact: "Without this, no audit events are recorded at all — this is the master switch",
     },
     {
-      title: "Register Office 365 Management API permissions",
-      where: "Azure Portal > Entra ID > App registrations > Your app > API permissions",
-      steps: [
-        "Click 'Add a permission' > 'APIs my organization uses'",
-        "Search for 'Office 365 Management APIs'",
-        "Select Application permissions > ActivityFeed > ActivityFeed.Read",
-        "Click 'Grant admin consent' for your directory",
+      category: "Important — Enables Key Data Sources",
+      categoryColor: "text-amber-600",
+      items: [
+        {
+          title: "4. Verify Mailbox Auditing is Enabled",
+          where: "Exchange Online PowerShell (Connect-ExchangeOnline)",
+          steps: [
+            "Check org-wide: Get-OrganizationConfig | Format-List AuditDisabled",
+            "If AuditDisabled is True, enable it: Set-OrganizationConfig -AuditDisabled $false",
+            "Mailbox auditing is on by default for E3/E5 licenses since January 2019",
+            "For per-user override: Get-Mailbox -Identity user@domain.com | Format-List AuditEnabled",
+            "Enable advanced events (E5): Set-Mailbox -Identity user@domain.com -AuditOwner @{Add='MailItemsAccessed','Send'}",
+          ],
+          impact: "Enables Exchange audit events in the unified audit log. Without this, email access/send/delete events won't appear in Reveille's audit data.",
+        },
+        {
+          title: "5. Configure SharePoint Audit Settings",
+          where: "SharePoint admin center (admin.microsoft.com/sharepoint) > Settings > Site creation",
+          steps: [
+            "Tenant-wide: Settings > Auditing > Enable audit log collection",
+            "Per-site: Active sites > select site > Policies > Audit settings",
+            "Enable: Editing items, Checking in/out items, Moving/copying items, Deleting/restoring items",
+            "Set retention: SharePoint admin center > Settings > Audit log retention (default 90 days, up to 10 years with E5)",
+          ],
+          impact: "While most events fire automatically with UAL enabled, site-level audit settings control granularity of item-level events and retention period.",
+        },
+        {
+          title: "6. Enable Microsoft Defender for Office 365 Alerts",
+          where: "Microsoft 365 Defender portal (security.microsoft.com) > Policies & rules",
+          steps: [
+            "Navigate to security.microsoft.com > Settings > Microsoft 365 Defender",
+            "Ensure Defender for Office 365 is configured (P1 minimum for safe links/attachments)",
+            "Enable alert policies: Policies & rules > Alert policy > review/enable relevant policies",
+            "Key policies: Suspicious email sending, Malware campaign detected, Phishing delivered",
+          ],
+          impact: "Feeds security alerts into the SecurityEvents.Read.All Graph API. Without Defender configured, the security alert collector returns no data.",
+        },
+        {
+          title: "7. Verify Conditional Access Policy Logging",
+          where: "Entra admin center (entra.microsoft.com) > Protection > Conditional Access",
+          steps: [
+            "Ensure 'Report-only' or 'On' mode for conditional access policies you want to monitor",
+            "Review: Protection > Conditional Access > Named locations (used in sign-in risk assessment)",
+            "Enable: Protection > Authentication methods > Registration campaign (tracks MFA adoption)",
+            "Note: Policy.Read.All permission lets Reveille read these policies for correlation with sign-in events",
+          ],
+          impact: "Sign-in logs include conditional access evaluation results. Without policies configured, this data dimension is empty.",
+        },
       ],
-      impact: "Unlocks real SharePoint operations: FileAccessed, SharingSet, PermissionChanged, SearchQueryPerformed, and 50+ other event types",
     },
     {
-      title: "Subscribe to Audit Content Types",
-      where: "Automatic — Reveille Cloud auto-starts subscriptions when Management API access is granted",
-      steps: [
-        "Audit.SharePoint — SharePoint and OneDrive file operations, sharing, permissions",
-        "Audit.General — Teams, Power Platform, and cross-workload events (future)",
-        "Audit.Exchange — Email access and admin operations (future)",
-        "Audit.AzureActiveDirectory — Sign-ins, role changes, app consents",
+      category: "Advanced — Maximum Observability",
+      categoryColor: "text-blue-600",
+      items: [
+        {
+          title: "8. E5 / Audit Premium for Advanced Events",
+          where: "Microsoft 365 admin center > Billing > Licenses",
+          steps: [
+            "Microsoft 365 E5, E5 Compliance, or E5 eDiscovery & Audit add-on required for:",
+            "MailItemsAccessed — every email open event (critical for breach forensics)",
+            "SearchQueryInitiatedSharePoint — actual search queries users ran in SharePoint",
+            "SearchQueryInitiatedExchange — mailbox search queries",
+            "Send — detailed email send tracking with attachment info",
+            "Extended retention: up to 10 years (vs 180 days standard, 90 days for some events)",
+            "Intelligent insights: automatically surfaced high-value events",
+          ],
+          impact: "Without E5, search query telemetry and detailed email access forensics are completely unavailable. Standard audit retains logs for only 90-180 days.",
+        },
+        {
+          title: "9. Enable Power Platform Audit Logging",
+          where: "Power Platform admin center (admin.powerplatform.microsoft.com)",
+          steps: [
+            "Navigate to Environments > select environment > Settings > Audit and logs",
+            "Enable 'Start Auditing' for each environment you want to monitor",
+            "These events appear in the Audit.General content type in the Management Activity API",
+            "Key events: FlowCreated, FlowModified, AppPublished, EnvironmentProvisioned",
+          ],
+          impact: "Power Platform (Power Automate, Power Apps) events are only recorded when environment-level auditing is enabled. Without this, no Power Platform events flow to Reveille.",
+        },
+        {
+          title: "10. Configure Information Protection Labels",
+          where: "Microsoft Purview (compliance.microsoft.com) > Information protection",
+          steps: [
+            "Create and publish sensitivity labels if not already configured",
+            "Enable auto-labeling policies for SharePoint/OneDrive content",
+            "ActivityFeed.ReadDlp permission lets Reveille see when labels are applied/changed",
+            "This enables correlation: 'how is sensitive content being accessed and shared?'",
+          ],
+          impact: "DLP and sensitivity label events only exist when Information Protection is configured. These provide critical security context about content classification.",
+        },
       ],
-      impact: "Each content type is a separate feed of audit events. Reveille auto-subscribes to Audit.SharePoint.",
-    },
-    {
-      title: "Consider E5 / Audit Premium Licensing",
-      where: "Microsoft 365 admin center > Billing > Licenses",
-      steps: [
-        "Microsoft 365 E5 or E5 Compliance add-on unlocks advanced audit events:",
-        "MailItemsAccessed — every email open event (critical for breach forensics)",
-        "SearchQueryInitiatedSharePoint — actual search queries users ran in SharePoint",
-        "SearchQueryInitiatedExchange — mailbox search queries",
-        "Extended audit log retention: up to 10 years (vs 90 days standard)",
-      ],
-      impact: "Required for forensic investigation capabilities and full search query telemetry",
-    },
-    {
-      title: "Enable Mailbox Auditing (Exchange)",
-      where: "Exchange admin center or PowerShell",
-      steps: [
-        "Run: Set-OrganizationConfig -AuditDisabled $false",
-        "Mailbox audit is now on by default for E3/E5, but verify with: Get-OrganizationConfig | Select AuditDisabled",
-        "Custom audit actions: Set-Mailbox -Identity user@domain.com -AuditOwner MailItemsAccessed,Send",
-      ],
-      impact: "Captures email access patterns for correlation with SharePoint content workflows",
-    },
-    {
-      title: "Configure SharePoint Site-Level Audit Settings",
-      where: "SharePoint admin center > Active sites > (each site) > Policies",
-      steps: [
-        "Enable 'Editing items', 'Checking in/out', 'Moving/copying items', 'Deleting/restoring items'",
-        "Set retention period for audit logs (default is 90 days)",
-        "Consider enabling at site collection level for critical sites",
-      ],
-      impact: "Some granular events only fire when site-level auditing is explicitly enabled",
     },
   ];
 
@@ -237,32 +315,34 @@ function M365AdminChecklist() {
         data-testid="button-toggle-admin-checklist"
       >
         <Info className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium flex-1">M365 Admin Configuration Checklist</span>
+        <span className="text-sm font-medium flex-1">M365 Tenant Configuration Checklist (10 Steps)</span>
         {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
       </button>
       {expanded && (
-        <div className="space-y-3 pt-1">
+        <div className="space-y-4 pt-1">
           <p className="text-xs text-muted-foreground">
-            These steps must be completed by a Microsoft 365 Global Administrator in the tenant being monitored. They enable the data sources that Reveille Cloud collects from.
+            These steps must be completed by a Global Administrator in each monitored tenant. Permissions alone are not enough — Microsoft must also be configured to <span className="font-medium text-foreground">generate</span> the audit data in the first place.
           </p>
-          {checklist.map((item, idx) => (
-            <div key={idx} className="border rounded-lg p-3 space-y-2">
-              <div className="flex items-start gap-2">
-                <div className="h-5 w-5 rounded-full border-2 border-primary/50 flex items-center justify-center shrink-0 text-[10px] font-bold text-primary/70">{idx + 1}</div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium">{item.title}</p>
-                  <p className="text-xs text-muted-foreground">{item.where}</p>
+          {sections.map((section) => (
+            <div key={section.category} className="space-y-2">
+              <h4 className={`text-xs font-bold uppercase tracking-wider ${section.categoryColor}`}>{section.category}</h4>
+              {section.items.map((item) => (
+                <div key={item.title} className="border rounded-lg p-3 space-y-2">
+                  <div>
+                    <p className="text-sm font-medium">{item.title}</p>
+                    <p className="text-xs text-muted-foreground">{item.where}</p>
+                  </div>
+                  <ul className="space-y-0.5 ml-4">
+                    {item.steps.map((step, sIdx) => (
+                      <li key={sIdx} className="text-xs text-muted-foreground flex items-start gap-1.5">
+                        <span className="text-primary/50 mt-0.5 shrink-0">-</span>
+                        <span className={step.startsWith("Get-") || step.startsWith("Set-") || step.startsWith("Connect-") ? "font-mono" : ""}>{step}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="ml-4 p-2 bg-primary/5 rounded text-xs text-primary/80 font-medium">{item.impact}</div>
                 </div>
-              </div>
-              <ul className="space-y-0.5 ml-7">
-                {item.steps.map((step, sIdx) => (
-                  <li key={sIdx} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                    <span className="text-primary/50 mt-0.5">-</span>
-                    <span>{step}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs ml-7 text-primary/80 font-medium">{item.impact}</p>
+              ))}
             </div>
           ))}
         </div>
