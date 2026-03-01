@@ -255,11 +255,14 @@ async function runGraphReportsJob(): Promise<void> {
 
       try {
         const result = await collectSharePointUsageReports(tenant.id);
-        await trackJobComplete(jobRunId, "completed", {
+        const allFailed = result.results.every(r => r.error);
+        const hasErrors = result.results.some(r => r.error);
+        const status = allFailed ? "failed" : hasErrors ? "completed" : "completed";
+        await trackJobComplete(jobRunId, status, {
           totalCollected: result.totalCollected,
           reports: result.results.map(r => ({ type: r.reportType, records: r.recordsCollected, error: r.error })),
-        });
-        console.log(`[Scheduler] Graph reports for ${tenant.name}: ${result.totalCollected} records collected`);
+        }, allFailed ? result.results.map(r => r.error).filter(Boolean).join("; ") : undefined);
+        console.log(`[Scheduler] Graph reports for ${tenant.name}: ${result.totalCollected} records collected${allFailed ? " (all failed)" : ""}`);
       } catch (err: any) {
         await trackJobComplete(jobRunId, "failed", undefined, err.message);
         console.error(`[Scheduler] Graph reports failed for ${tenant.name}:`, err.message);
@@ -345,16 +348,17 @@ async function runAuditLogsJob(): Promise<void> {
 
       try {
         const result = await collectAuditLogs(tenant.id);
+        const status = (result.error || result.entriesCollected === 0) ? "failed" : "completed";
         await trackJobComplete(
           jobRunId,
-          result.error ? "failed" : "completed",
+          status,
           {
             entriesCollected: result.entriesCollected,
             operationBreakdown: result.operationBreakdown,
           },
-          result.error,
+          result.error || (result.entriesCollected === 0 ? "No data collected — may lack required permissions" : undefined),
         );
-        console.log(`[Scheduler] Audit logs for ${tenant.name}: ${result.entriesCollected} entries collected`);
+        console.log(`[Scheduler] Audit logs for ${tenant.name}: ${result.entriesCollected} entries collected${status === "failed" ? " (failed)" : ""}`);
       } catch (err: any) {
         await trackJobComplete(jobRunId, "failed", undefined, err.message);
         console.error(`[Scheduler] Audit logs failed for ${tenant.name}:`, err.message);

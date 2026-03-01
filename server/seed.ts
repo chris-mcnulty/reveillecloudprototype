@@ -19,14 +19,14 @@ export async function seedDatabase() {
   ]).returning();
 
   const [acme, globex, initech, soylent] = await db.insert(tenants).values([
-    { organizationId: synozurOrg.id, name: "Acme Corp", adminEmail: "admin@acmecorp.com", primaryDomain: "acmecorp.onmicrosoft.com", status: "Healthy", consentStatus: "Connected", consentedBy: "admin@acmecorp.com", consentedAt: new Date("2023-10-24"), azureTenantId: "123e4567-e89b-12d3-a456-426614174000" },
-    { organizationId: synozurOrg.id, name: "Globex", adminEmail: "admin@globex.com", primaryDomain: "globex.onmicrosoft.com", status: "Warning", consentStatus: "Connected", consentedBy: "admin@globex.com", consentedAt: new Date("2023-11-15"), azureTenantId: "789e0123-e89b-12d3-a456-426614174001" },
-    { organizationId: synozurOrg.id, name: "Initech", adminEmail: "admin@initech.com", primaryDomain: "initech.onmicrosoft.com", status: "Critical", consentStatus: "Connected", consentedBy: "admin@initech.com", consentedAt: new Date("2024-01-10"), azureTenantId: "456e7890-e89b-12d3-a456-426614174002" },
-    { organizationId: synozurOrg.id, name: "Soylent", adminEmail: "admin@soylent.com", primaryDomain: "soylent.onmicrosoft.com", status: "Healthy", consentStatus: "Connected", consentedBy: "admin@soylent.com", consentedAt: new Date("2024-02-20"), azureTenantId: "012e3456-e89b-12d3-a456-426614174003" },
+    { organizationId: synozurOrg.id, name: "Acme Corp", adminEmail: "admin@acmecorp.com", primaryDomain: "acmecorp.onmicrosoft.com", status: "Healthy", consentStatus: "Pending", azureTenantId: "123e4567-e89b-12d3-a456-426614174000" },
+    { organizationId: synozurOrg.id, name: "Globex", adminEmail: "admin@globex.com", primaryDomain: "globex.onmicrosoft.com", status: "Warning", consentStatus: "Pending", azureTenantId: "789e0123-e89b-12d3-a456-426614174001" },
+    { organizationId: synozurOrg.id, name: "Initech", adminEmail: "admin@initech.com", primaryDomain: "initech.onmicrosoft.com", status: "Critical", consentStatus: "Pending", azureTenantId: "456e7890-e89b-12d3-a456-426614174002" },
+    { organizationId: synozurOrg.id, name: "Soylent", adminEmail: "admin@soylent.com", primaryDomain: "soylent.onmicrosoft.com", status: "Healthy", consentStatus: "Pending", azureTenantId: "012e3456-e89b-12d3-a456-426614174003" },
   ]).returning();
 
   const [synozurTenant] = await db.insert(tenants).values([
-    { organizationId: synozurOrg.id, name: "Synozur", adminEmail: "chris.mcnulty@synozur.com", primaryDomain: "synozur.sharepoint.com", status: "Healthy", consentStatus: "Connected", consentedBy: "chris.mcnulty@synozur.com", consentedAt: new Date("2024-03-01") },
+    { organizationId: synozurOrg.id, name: "Synozur", adminEmail: "chris.mcnulty@synozur.com", primaryDomain: "synozur.sharepoint.com", status: "Healthy", consentStatus: "Pending" },
   ]).returning();
 
   await db.insert(monitoredSystems).values([
