@@ -10,6 +10,10 @@ import {
   alerts, type Alert, type InsertAlert,
   testRuns, type TestRun, type InsertTestRun,
   scheduledJobRuns, type ScheduledJobRun, type InsertScheduledJobRun,
+  usageReports, type UsageReport, type InsertUsageReport,
+  serviceHealthIncidents, type ServiceHealthIncident, type InsertServiceHealthIncident,
+  auditLogEntries, type AuditLogEntry, type InsertAuditLogEntry,
+  adminAuditLog, type AdminAuditLog, type InsertAdminAuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -67,6 +71,21 @@ export interface IStorage {
   getScheduledJobRunsByType(jobType: string, limit?: number): Promise<ScheduledJobRun[]>;
   getRunningJobs(): Promise<ScheduledJobRun[]>;
   getLatestJobRunForTest(testId: string): Promise<ScheduledJobRun | null>;
+
+  createUsageReport(report: InsertUsageReport): Promise<UsageReport>;
+  getUsageReports(tenantId: string, reportType?: string, since?: Date): Promise<UsageReport[]>;
+  getLatestUsageReport(tenantId: string, reportType: string): Promise<UsageReport | null>;
+
+  upsertServiceHealthIncident(data: InsertServiceHealthIncident): Promise<ServiceHealthIncident>;
+  getServiceHealthIncidents(tenantId?: string, status?: string): Promise<ServiceHealthIncident[]>;
+  getActiveServiceHealthIncidents(): Promise<ServiceHealthIncident[]>;
+
+  createAuditLogEntry(entry: InsertAuditLogEntry): Promise<AuditLogEntry>;
+  getAuditLogEntries(tenantId: string, since?: Date, operation?: string, limit?: number): Promise<AuditLogEntry[]>;
+  getAuditLogStats(tenantId: string): Promise<{ operation: string; count: number }[]>;
+
+  createAdminAuditEntry(entry: InsertAdminAuditLog): Promise<AdminAuditLog>;
+  getAdminAuditLog(tenantId?: string, since?: Date, limit?: number): Promise<AdminAuditLog[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -325,6 +344,114 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(scheduledJobRuns.createdAt))
       .limit(1);
     return run || null;
+  }
+
+  async createUsageReport(report: InsertUsageReport): Promise<UsageReport> {
+    const [created] = await db.insert(usageReports).values(report).returning();
+    return created;
+  }
+
+  async getUsageReports(tenantId: string, reportType?: string, since?: Date): Promise<UsageReport[]> {
+    const conditions = [eq(usageReports.tenantId, tenantId)];
+    if (reportType) conditions.push(eq(usageReports.reportType, reportType));
+    if (since) conditions.push(gte(usageReports.collectedAt, since));
+    return db.select().from(usageReports)
+      .where(and(...conditions))
+      .orderBy(desc(usageReports.collectedAt))
+      .limit(200);
+  }
+
+  async getLatestUsageReport(tenantId: string, reportType: string): Promise<UsageReport | null> {
+    const [report] = await db.select().from(usageReports)
+      .where(and(eq(usageReports.tenantId, tenantId), eq(usageReports.reportType, reportType)))
+      .orderBy(desc(usageReports.collectedAt))
+      .limit(1);
+    return report || null;
+  }
+
+  async upsertServiceHealthIncident(data: InsertServiceHealthIncident): Promise<ServiceHealthIncident> {
+    const existing = await db.select().from(serviceHealthIncidents)
+      .where(eq(serviceHealthIncidents.externalId, data.externalId))
+      .limit(1);
+
+    if (existing.length > 0) {
+      const [updated] = await db.update(serviceHealthIncidents)
+        .set({
+          status: data.status,
+          title: data.title,
+          endDateTime: data.endDateTime,
+          lastUpdatedAt: data.lastUpdatedAt,
+          details: data.details,
+          collectedAt: new Date(),
+        })
+        .where(eq(serviceHealthIncidents.externalId, data.externalId))
+        .returning();
+      return updated;
+    }
+
+    const [created] = await db.insert(serviceHealthIncidents).values(data).returning();
+    return created;
+  }
+
+  async getServiceHealthIncidents(tenantId?: string, status?: string): Promise<ServiceHealthIncident[]> {
+    const conditions: any[] = [];
+    if (tenantId) conditions.push(eq(serviceHealthIncidents.tenantId, tenantId));
+    if (status) conditions.push(eq(serviceHealthIncidents.status, status));
+    return db.select().from(serviceHealthIncidents)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(serviceHealthIncidents.collectedAt))
+      .limit(100);
+  }
+
+  async getActiveServiceHealthIncidents(): Promise<ServiceHealthIncident[]> {
+    return db.select().from(serviceHealthIncidents)
+      .where(
+        and(
+          sql`${serviceHealthIncidents.status} NOT IN ('resolved', 'postIncidentReviewPublished')`,
+        )
+      )
+      .orderBy(desc(serviceHealthIncidents.startDateTime));
+  }
+
+  async createAuditLogEntry(entry: InsertAuditLogEntry): Promise<AuditLogEntry> {
+    const [created] = await db.insert(auditLogEntries).values(entry).returning();
+    return created;
+  }
+
+  async getAuditLogEntries(tenantId: string, since?: Date, operation?: string, limit = 200): Promise<AuditLogEntry[]> {
+    const conditions = [eq(auditLogEntries.tenantId, tenantId)];
+    if (since) conditions.push(gte(auditLogEntries.timestamp, since));
+    if (operation) conditions.push(eq(auditLogEntries.operation, operation));
+    return db.select().from(auditLogEntries)
+      .where(and(...conditions))
+      .orderBy(desc(auditLogEntries.timestamp))
+      .limit(limit);
+  }
+
+  async getAuditLogStats(tenantId: string): Promise<{ operation: string; count: number }[]> {
+    const result = await db.select({
+      operation: auditLogEntries.operation,
+      count: sql<number>`count(*)`,
+    }).from(auditLogEntries)
+      .where(eq(auditLogEntries.tenantId, tenantId))
+      .groupBy(auditLogEntries.operation)
+      .orderBy(sql`count(*) desc`);
+    return result.map(r => ({ operation: r.operation, count: Number(r.count) }));
+  }
+
+  async createAdminAuditEntry(entry: InsertAdminAuditLog): Promise<AdminAuditLog> {
+    const [created] = await db.insert(adminAuditLog).values(entry).returning();
+    return created;
+  }
+
+  async getAdminAuditLog(tenantId?: string, since?: Date, limit = 100): Promise<AdminAuditLog[]> {
+    const conditions: any[] = [];
+    if (tenantId) conditions.push(eq(adminAuditLog.tenantId, tenantId));
+    if (since) conditions.push(gte(adminAuditLog.timestamp, since));
+    return db.select().from(adminAuditLog)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(adminAuditLog.timestamp))
+      .limit(limit);
   }
 }
 

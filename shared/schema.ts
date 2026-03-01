@@ -147,3 +147,69 @@ export const insertScheduledJobRunSchema = createInsertSchema(scheduledJobRuns).
 });
 export type InsertScheduledJobRun = z.infer<typeof insertScheduledJobRunSchema>;
 export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;
+
+export const usageReports = pgTable("usage_reports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  reportType: text("report_type").notNull(),
+  reportDate: text("report_date"),
+  data: jsonb("data").$type<Record<string, any>>().notNull(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertUsageReportSchema = createInsertSchema(usageReports).omit({ id: true });
+export type InsertUsageReport = z.infer<typeof insertUsageReportSchema>;
+export type UsageReport = typeof usageReports.$inferSelect;
+
+export const serviceHealthIncidents = pgTable("service_health_incidents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id"),
+  externalId: text("external_id").notNull(),
+  service: text("service").notNull(),
+  status: text("status").notNull(),
+  title: text("title").notNull(),
+  classification: text("classification").notNull().default("incident"),
+  startDateTime: timestamp("start_date_time"),
+  endDateTime: timestamp("end_date_time"),
+  lastUpdatedAt: timestamp("last_updated_at"),
+  details: jsonb("details").$type<Record<string, any>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertServiceHealthIncidentSchema = createInsertSchema(serviceHealthIncidents).omit({ id: true });
+export type InsertServiceHealthIncident = z.infer<typeof insertServiceHealthIncidentSchema>;
+export type ServiceHealthIncident = typeof serviceHealthIncidents.$inferSelect;
+
+export const auditLogEntries = pgTable("audit_log_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  operation: text("operation").notNull(),
+  userId: text("user_id"),
+  userEmail: text("user_email"),
+  objectId: text("object_id"),
+  itemType: text("item_type"),
+  siteUrl: text("site_url"),
+  timestamp: timestamp("timestamp").notNull(),
+  clientIp: text("client_ip"),
+  details: jsonb("details").$type<Record<string, any>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertAuditLogEntrySchema = createInsertSchema(auditLogEntries).omit({ id: true });
+export type InsertAuditLogEntry = z.infer<typeof insertAuditLogEntrySchema>;
+export type AuditLogEntry = typeof auditLogEntries.$inferSelect;
+
+export const adminAuditLog = pgTable("admin_audit_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id"),
+  userId: text("user_id"),
+  action: text("action").notNull(),
+  targetType: text("target_type"),
+  targetId: text("target_id"),
+  details: jsonb("details").$type<Record<string, any>>(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+});
+
+export const insertAdminAuditLogSchema = createInsertSchema(adminAuditLog).omit({ id: true });
+export type InsertAdminAuditLog = z.infer<typeof insertAdminAuditLogSchema>;
+export type AdminAuditLog = typeof adminAuditLog.$inferSelect;

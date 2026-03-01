@@ -1,5 +1,8 @@
 import { storage } from "./storage";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
+import { collectSharePointUsageReports } from "./collectors/graphReports";
+import { collectServiceHealthIncidents } from "./collectors/serviceHealth";
+import { collectAuditLogs } from "./collectors/auditLogs";
 import type { SyntheticTest } from "@shared/schema";
 
 interface JobStatus {
@@ -12,6 +15,9 @@ interface JobStatus {
 
 const jobStatus: Record<string, JobStatus> = {
   syntheticTests: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  graphReports: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  serviceHealth: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  auditLogs: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -224,18 +230,177 @@ async function runSyntheticTestsJob(): Promise<void> {
   }
 }
 
-let sweepInterval: NodeJS.Timeout | null = null;
+async function runGraphReportsJob(): Promise<void> {
+  if (jobStatus.graphReports.isRunning) {
+    console.log("[Scheduler] Graph reports already running, skipping...");
+    return;
+  }
+
+  const connected = await isSharePointConnected();
+  if (!connected) {
+    console.log("[Scheduler] SharePoint not connected, skipping graph reports");
+    return;
+  }
+
+  jobStatus.graphReports.isRunning = true;
+  console.log("[Scheduler] Starting Graph usage reports collection...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+
+    for (const tenant of consentedTenants) {
+      const jobRunId = await trackJobStart("graphReports", tenant.id, undefined, `Usage reports for ${tenant.name}`);
+      jobStatus.graphReports.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectSharePointUsageReports(tenant.id);
+        await trackJobComplete(jobRunId, "completed", {
+          totalCollected: result.totalCollected,
+          reports: result.results.map(r => ({ type: r.reportType, records: r.recordsCollected, error: r.error })),
+        });
+        console.log(`[Scheduler] Graph reports for ${tenant.name}: ${result.totalCollected} records collected`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] Graph reports failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] Graph reports job failed:", error);
+  } finally {
+    jobStatus.graphReports.isRunning = false;
+    jobStatus.graphReports.activeJobRunId = null;
+    jobStatus.graphReports.lastRun = new Date();
+  }
+}
+
+async function runServiceHealthJob(): Promise<void> {
+  if (jobStatus.serviceHealth.isRunning) {
+    console.log("[Scheduler] Service health already running, skipping...");
+    return;
+  }
+
+  const connected = await isSharePointConnected();
+  if (!connected) {
+    console.log("[Scheduler] SharePoint not connected, skipping service health check");
+    return;
+  }
+
+  jobStatus.serviceHealth.isRunning = true;
+
+  const jobRunId = await trackJobStart("serviceHealth", undefined, undefined, "M365 Service Health check");
+  jobStatus.serviceHealth.activeJobRunId = jobRunId;
+
+  try {
+    const result = await collectServiceHealthIncidents();
+    await trackJobComplete(
+      jobRunId,
+      result.error ? "failed" : "completed",
+      {
+        incidentsProcessed: result.incidentsProcessed,
+        newIncidents: result.newIncidents,
+        updatedIncidents: result.updatedIncidents,
+        alertsCreated: result.alertsCreated,
+      },
+      result.error,
+    );
+
+    if (result.incidentsProcessed > 0 || result.error) {
+      console.log(`[Scheduler] Service health: ${result.incidentsProcessed} incidents processed, ${result.newIncidents} new, ${result.alertsCreated} alerts created${result.error ? ` (error: ${result.error})` : ""}`);
+    }
+  } catch (err: any) {
+    await trackJobComplete(jobRunId, "failed", undefined, err.message);
+    console.error("[Scheduler] Service health job failed:", err.message);
+  } finally {
+    jobStatus.serviceHealth.isRunning = false;
+    jobStatus.serviceHealth.activeJobRunId = null;
+    jobStatus.serviceHealth.lastRun = new Date();
+  }
+}
+
+async function runAuditLogsJob(): Promise<void> {
+  if (jobStatus.auditLogs.isRunning) {
+    console.log("[Scheduler] Audit logs already running, skipping...");
+    return;
+  }
+
+  const connected = await isSharePointConnected();
+  if (!connected) {
+    console.log("[Scheduler] SharePoint not connected, skipping audit log collection");
+    return;
+  }
+
+  jobStatus.auditLogs.isRunning = true;
+  console.log("[Scheduler] Starting audit log collection...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+
+    for (const tenant of consentedTenants) {
+      const jobRunId = await trackJobStart("auditLogs", tenant.id, undefined, `Audit logs for ${tenant.name}`);
+      jobStatus.auditLogs.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectAuditLogs(tenant.id);
+        await trackJobComplete(
+          jobRunId,
+          result.error ? "failed" : "completed",
+          {
+            entriesCollected: result.entriesCollected,
+            operationBreakdown: result.operationBreakdown,
+          },
+          result.error,
+        );
+        console.log(`[Scheduler] Audit logs for ${tenant.name}: ${result.entriesCollected} entries collected`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] Audit logs failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] Audit logs job failed:", error);
+  } finally {
+    jobStatus.auditLogs.isRunning = false;
+    jobStatus.auditLogs.activeJobRunId = null;
+    jobStatus.auditLogs.lastRun = new Date();
+  }
+}
+
+let syntheticTestInterval: NodeJS.Timeout | null = null;
+let graphReportsInterval: NodeJS.Timeout | null = null;
+let serviceHealthInterval: NodeJS.Timeout | null = null;
+let auditLogsInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 export function startScheduler(): void {
   console.log("[Scheduler] Initializing scheduled jobs...");
 
-  if (sweepInterval) clearInterval(sweepInterval);
+  if (syntheticTestInterval) clearInterval(syntheticTestInterval);
+  if (graphReportsInterval) clearInterval(graphReportsInterval);
+  if (serviceHealthInterval) clearInterval(serviceHealthInterval);
+  if (auditLogsInterval) clearInterval(auditLogsInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
-  sweepInterval = setInterval(() => {
+  syntheticTestInterval = setInterval(() => {
     runSyntheticTestsJob();
   }, 60 * 1000);
+
+  graphReportsInterval = setInterval(() => {
+    runGraphReportsJob();
+  }, 6 * 60 * 60 * 1000);
+
+  serviceHealthInterval = setInterval(() => {
+    runServiceHealthJob();
+  }, 5 * 60 * 1000);
+
+  auditLogsInterval = setInterval(() => {
+    runAuditLogsJob();
+  }, 15 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -248,23 +413,39 @@ export function startScheduler(): void {
   });
 
   setTimeout(() => {
-    console.log("[Scheduler] Running initial test sweep for any overdue items...");
+    console.log("[Scheduler] Running initial synthetic test sweep...");
     runSyntheticTestsJob();
   }, 10 * 1000);
 
-  console.log("[Scheduler] Scheduler started - sweeps every 60s, stuck job cleanup every 15m");
-  console.log("[Scheduler] Initial sweep will start in 10 seconds");
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial service health check...");
+    runServiceHealthJob();
+  }, 15 * 1000);
+
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial audit log collection...");
+    runAuditLogsJob();
+  }, 20 * 1000);
+
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial graph reports collection...");
+    runGraphReportsJob();
+  }, 30 * 1000);
+
+  console.log("[Scheduler] Jobs scheduled:");
+  console.log("  - Synthetic tests: every 60s (initial in 10s)");
+  console.log("  - Service health: every 5m (initial in 15s)");
+  console.log("  - Audit logs: every 15m (initial in 20s)");
+  console.log("  - Graph reports: every 6h (initial in 30s)");
+  console.log("  - Stuck job cleanup: every 15m");
 }
 
 export function stopScheduler(): void {
-  if (sweepInterval) {
-    clearInterval(sweepInterval);
-    sweepInterval = null;
-  }
-  if (stuckJobInterval) {
-    clearInterval(stuckJobInterval);
-    stuckJobInterval = null;
-  }
+  if (syntheticTestInterval) { clearInterval(syntheticTestInterval); syntheticTestInterval = null; }
+  if (graphReportsInterval) { clearInterval(graphReportsInterval); graphReportsInterval = null; }
+  if (serviceHealthInterval) { clearInterval(serviceHealthInterval); serviceHealthInterval = null; }
+  if (auditLogsInterval) { clearInterval(auditLogsInterval); auditLogsInterval = null; }
+  if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
 
@@ -283,6 +464,18 @@ export function getSchedulerStatus(): Record<string, Omit<JobStatus, "abortContr
 
 export async function triggerSyntheticTestsNow(): Promise<void> {
   runSyntheticTestsJob();
+}
+
+export async function triggerGraphReportsNow(): Promise<void> {
+  runGraphReportsJob();
+}
+
+export async function triggerServiceHealthNow(): Promise<void> {
+  runServiceHealthJob();
+}
+
+export async function triggerAuditLogsNow(): Promise<void> {
+  runAuditLogsJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

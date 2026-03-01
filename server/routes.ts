@@ -3,7 +3,28 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+
+async function logAdminAction(
+  tenantId: string | null,
+  action: string,
+  targetType: string,
+  targetId: string | null,
+  details?: Record<string, any>
+): Promise<void> {
+  try {
+    await storage.createAdminAuditEntry({
+      tenantId,
+      userId: "system",
+      action,
+      targetType,
+      targetId,
+      details: details || null,
+    });
+  } catch (err) {
+    console.error("[AdminAudit] Failed to log action:", action, err);
+  }
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -33,12 +54,14 @@ export async function registerRoutes(
     const parsed = insertOrganizationSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const org = await storage.createOrganization(parsed.data);
+    await logAdminAction(null, "organization.created", "organization", org.id, { name: org.name, mode: org.mode });
     res.status(201).json(org);
   });
 
   app.patch("/api/organizations/:id", async (req, res) => {
     const updated = await storage.updateOrganization(req.params.id, req.body);
     if (!updated) return res.status(404).json({ message: "Organization not found" });
+    await logAdminAction(null, "organization.updated", "organization", req.params.id, { changes: req.body });
     res.json(updated);
   });
 
@@ -57,12 +80,14 @@ export async function registerRoutes(
     const parsed = insertTenantSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const tenant = await storage.createTenant(parsed.data);
+    await logAdminAction(tenant.id, "tenant.created", "tenant", tenant.id, { name: tenant.name, domain: tenant.domain });
     res.status(201).json(tenant);
   });
 
   app.patch("/api/tenants/:id", async (req, res) => {
     const updated = await storage.updateTenant(req.params.id, req.body);
     if (!updated) return res.status(404).json({ message: "Tenant not found" });
+    await logAdminAction(req.params.id, "tenant.updated", "tenant", req.params.id, { changes: req.body });
     res.json(updated);
   });
 
@@ -74,6 +99,7 @@ export async function registerRoutes(
       consentedBy: tenant.adminEmail,
       consentedAt: new Date(),
     });
+    await logAdminAction(req.params.id, "tenant.consented", "tenant", req.params.id, { consentedBy: tenant.adminEmail });
     res.json(updated);
   });
 
@@ -85,11 +111,14 @@ export async function registerRoutes(
       consentedBy: null,
       consentedAt: null,
     });
+    await logAdminAction(req.params.id, "tenant.consent_revoked", "tenant", req.params.id, { previousConsentedBy: tenant.consentedBy });
     res.json(updated);
   });
 
   app.delete("/api/tenants/:id", async (req, res) => {
+    const tenant = await storage.getTenant(req.params.id);
     await storage.deleteTenant(req.params.id);
+    await logAdminAction(req.params.id, "tenant.deleted", "tenant", req.params.id, { name: tenant?.name });
     res.status(204).send();
   });
 
@@ -107,17 +136,20 @@ export async function registerRoutes(
     const parsed = insertMonitoredSystemSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const system = await storage.createMonitoredSystem(parsed.data);
+    await logAdminAction(system.tenantId, "system.created", "monitoredSystem", system.id, { name: system.name, type: system.type });
     res.status(201).json(system);
   });
 
   app.patch("/api/systems/:id", async (req, res) => {
     const updated = await storage.updateMonitoredSystem(req.params.id, req.body);
     if (!updated) return res.status(404).json({ message: "System not found" });
+    await logAdminAction(updated.tenantId, "system.updated", "monitoredSystem", req.params.id, { changes: req.body });
     res.json(updated);
   });
 
   app.delete("/api/systems/:id", async (req, res) => {
     await storage.deleteMonitoredSystem(req.params.id);
+    await logAdminAction(null, "system.deleted", "monitoredSystem", req.params.id);
     res.status(204).send();
   });
 
@@ -136,17 +168,22 @@ export async function registerRoutes(
     const parsed = insertSyntheticTestSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const test = await storage.createSyntheticTest(parsed.data);
+    await logAdminAction(test.tenantId, "test.created", "syntheticTest", test.id, { name: test.name, type: test.type });
     res.status(201).json(test);
   });
 
   app.patch("/api/tests/:id", async (req, res) => {
+    const test = await storage.getSyntheticTest(req.params.id);
     const updated = await storage.updateSyntheticTest(req.params.id, req.body);
     if (!updated) return res.status(404).json({ message: "Test not found" });
+    await logAdminAction(test?.tenantId || null, "test.updated", "syntheticTest", req.params.id, { changes: req.body });
     res.json(updated);
   });
 
   app.delete("/api/tests/:id", async (req, res) => {
+    const test = await storage.getSyntheticTest(req.params.id);
     await storage.deleteSyntheticTest(req.params.id);
+    await logAdminAction(test?.tenantId || null, "test.deleted", "syntheticTest", req.params.id, { name: test?.name });
     res.status(204).send();
   });
 
@@ -159,17 +196,20 @@ export async function registerRoutes(
     const parsed = insertAlertRuleSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const rule = await storage.createAlertRule(parsed.data);
+    await logAdminAction(rule.tenantId, "alertRule.created", "alertRule", rule.id, { name: rule.name, metric: rule.metric });
     res.status(201).json(rule);
   });
 
   app.patch("/api/alert-rules/:id", async (req, res) => {
     const updated = await storage.updateAlertRule(req.params.id, req.body);
     if (!updated) return res.status(404).json({ message: "Alert rule not found" });
+    await logAdminAction(updated.tenantId, "alertRule.updated", "alertRule", req.params.id, { changes: req.body });
     res.json(updated);
   });
 
   app.delete("/api/alert-rules/:id", async (req, res) => {
     await storage.deleteAlertRule(req.params.id);
+    await logAdminAction(null, "alertRule.deleted", "alertRule", req.params.id);
     res.status(204).send();
   });
 
@@ -213,6 +253,7 @@ export async function registerRoutes(
   app.patch("/api/alerts/:id/acknowledge", async (req, res) => {
     const updated = await storage.acknowledgeAlert(req.params.id);
     if (!updated) return res.status(404).json({ message: "Alert not found" });
+    await logAdminAction(updated.tenantId, "alert.acknowledged", "alert", req.params.id, { title: updated.title });
     res.json(updated);
   });
 
@@ -228,7 +269,9 @@ export async function registerRoutes(
 
   app.post("/api/tests/:id/run", async (req, res) => {
     try {
+      const test = await storage.getSyntheticTest(req.params.id);
       const run = await runTestAndRecord(req.params.id);
+      await logAdminAction(test?.tenantId || null, "test.manualRun", "syntheticTest", req.params.id, { testName: test?.name, status: run.status });
       res.json(run);
     } catch (err: any) {
       res.status(400).json({ message: err.message });
@@ -257,24 +300,44 @@ export async function registerRoutes(
     res.json(status);
   });
 
-  app.post("/api/scheduler/trigger", async (_req, res) => {
-    await triggerSyntheticTestsNow();
-    res.json({ message: "Synthetic test sweep triggered" });
+  app.post("/api/scheduler/trigger", async (req, res) => {
+    const jobType = req.query.jobType as string || "syntheticTests";
+    switch (jobType) {
+      case "syntheticTests":
+        await triggerSyntheticTestsNow();
+        break;
+      case "graphReports":
+        await triggerGraphReportsNow();
+        break;
+      case "serviceHealth":
+        await triggerServiceHealthNow();
+        break;
+      case "auditLogs":
+        await triggerAuditLogsNow();
+        break;
+      default:
+        return res.status(400).json({ message: `Unknown job type: ${jobType}` });
+    }
+    await logAdminAction(null, "scheduler.triggered", "scheduler", jobType, { jobType });
+    res.json({ message: `${jobType} job triggered` });
   });
 
   app.post("/api/scheduler/reset/:jobType", async (req, res) => {
     const success = await resetStuckJob(req.params.jobType);
     if (!success) return res.status(404).json({ message: "Unknown job type" });
+    await logAdminAction(null, "scheduler.reset", "scheduler", req.params.jobType);
     res.json({ message: `Job ${req.params.jobType} reset` });
   });
 
   app.post("/api/scheduler/reset-all", async (_req, res) => {
     const resetJobs = await resetAllStuckJobs();
+    await logAdminAction(null, "scheduler.resetAll", "scheduler", null, { resetJobs });
     res.json({ resetJobs });
   });
 
   app.post("/api/scheduler/cancel/:jobType", async (req, res) => {
     const result = await cancelJob(req.params.jobType);
+    await logAdminAction(null, "scheduler.cancelled", "scheduler", req.params.jobType, result);
     res.json(result);
   });
 
@@ -292,6 +355,54 @@ export async function registerRoutes(
       runs = await storage.getScheduledJobRuns(limit);
     }
     res.json(runs);
+  });
+
+  app.get("/api/tenants/:tenantId/usage-reports", async (req, res) => {
+    const reportType = req.query.reportType as string | undefined;
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const data = await storage.getUsageReports(req.params.tenantId, reportType, since);
+    res.json(data);
+  });
+
+  app.get("/api/tenants/:tenantId/usage-reports/latest", async (req, res) => {
+    const reportType = req.query.reportType as string;
+    if (!reportType) return res.status(400).json({ message: "reportType query parameter is required" });
+    const report = await storage.getLatestUsageReport(req.params.tenantId, reportType);
+    if (!report) return res.status(404).json({ message: "No report found" });
+    res.json(report);
+  });
+
+  app.get("/api/service-health", async (_req, res) => {
+    const incidents = await storage.getActiveServiceHealthIncidents();
+    res.json(incidents);
+  });
+
+  app.get("/api/service-health/incidents", async (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const status = req.query.status as string | undefined;
+    const incidents = await storage.getServiceHealthIncidents(tenantId, status);
+    res.json(incidents);
+  });
+
+  app.get("/api/tenants/:tenantId/audit-log", async (req, res) => {
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const operation = req.query.operation as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 200;
+    const entries = await storage.getAuditLogEntries(req.params.tenantId, since, operation, limit);
+    res.json(entries);
+  });
+
+  app.get("/api/tenants/:tenantId/audit-log/stats", async (req, res) => {
+    const stats = await storage.getAuditLogStats(req.params.tenantId);
+    res.json(stats);
+  });
+
+  app.get("/api/admin-audit", async (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
+    const entries = await storage.getAdminAuditLog(tenantId || undefined, since, limit);
+    res.json(entries);
   });
 
   return httpServer;
