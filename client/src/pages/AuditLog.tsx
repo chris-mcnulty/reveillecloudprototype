@@ -59,9 +59,9 @@ function SharePointAuditTab() {
   const { data: stats } = useAuditLogStats(activeTenantId);
 
   const auditEntries = entries || [];
-  const statData = stats && typeof stats === "object" ? Object.entries(stats).map(([op, count]) => ({
-    operation: op.length > 20 ? op.slice(0, 20) + "..." : op,
-    count: count as number,
+  const statData = Array.isArray(stats) ? stats.map((s: any) => ({
+    operation: String(s.operation || "").length > 20 ? String(s.operation).slice(0, 20) + "..." : String(s.operation || ""),
+    count: Number(s.count) || 0,
   })).sort((a, b) => b.count - a.count).slice(0, 10) : [];
 
   return (
@@ -234,7 +234,7 @@ function AdminAuditTab() {
                     <TableCell className="text-xs max-w-[250px]">
                       {entry.details ? (
                         <span className="text-muted-foreground" title={JSON.stringify(entry.details, null, 2)}>
-                          {Object.entries(entry.details).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(", ")}
+                          {Object.entries(entry.details).slice(0, 2).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ")}
                         </span>
                       ) : "—"}
                     </TableCell>
