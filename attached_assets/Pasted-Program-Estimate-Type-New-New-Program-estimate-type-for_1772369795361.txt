@@ -1,0 +1,49 @@
+Program Estimate Type (New)
+
+New "Program" estimate type for large-scale engagements (>$1M programs)
+Week-based staffing blocks: role x duration weeks x utilization % (20/40/60/80/100)
+Gantt timeline view for program blocks
+Accordion-based block editor with compact data entry form
+Weekly subtotals and totals display
+Auto-populate billing and cost rates from role catalog when role selected
+PM Wizard for guided block creation
+Recalculate All button for bulk rate updates
+CSV/Excel import and export for program blocks
+Three-factor contingency system (size, complexity, confidence) same as detailed estimates
+Same epic/stage/workstream hierarchy as detailed estimates
+Week 0 support for pre-project activities
+Portfolio Manager Role (New)
+
+New "Portfolio Manager" role (6th tier in hierarchy)
+PM-level access to ALL projects (not scoped to assigned projects)
+View-only expense access
+External resource cost rates hidden from this role
+Full access to estimates, invoices, and project details
+HubSpot CRM Integration (New)
+
+CRM Deals page with date range and deal stage filters
+Estimate linking with client names and deal stages
+Won/Lost deal linking to estimates
+Contact search and import from HubSpot
+Company-to-client linking for deals
+Per-tenant OAuth 2.0 integration
+User Management Improvements
+
+Organization and role filtering on user management page
+HubSpot contact import improvements
+Stakeholder detail editing
+Data sanitization and error logging for user edits
+Session error fix for contact imports
+Estimate Fixes & Improvements
+
+Cost rate resolution fixed: full rate precedence chain (manual override > estimate override > client override > user default > role default)
+Copied estimates now correctly inherit tenant ID (fixes orphaned estimates)
+Estimate name editing regardless of status
+Stable sort order: week first, then sort order as tiebreaker
+Week 0 support across all estimate types
+Financial Reporting
+
+Client total before commissions displayed in financial reports
+Mobile & UI
+
+Splash page text readability improvements on mobile devices
