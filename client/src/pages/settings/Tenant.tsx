@@ -249,9 +249,10 @@ function M365AdminChecklist() {
           steps: [
             "Navigate to security.microsoft.com (now unified as 'Microsoft Defender' — formerly 'Microsoft 365 Defender')",
             "Defender for Office 365 Plan 1 (included in E5, or available as add-on): enables Safe Links, Safe Attachments, anti-phishing policies",
-            "Alert policies: Settings > Email & collaboration > Alert policy — review and enable relevant built-in policies",
+            "Alert policies: In the left sidebar, expand Email & collaboration > Policies & rules > Alert policy",
             "Key built-in alert policies: Suspicious email sending patterns, Malware campaign detected, Phishing delivered due to override, Unusual volume of file deletion",
             "Custom alert policies: Create alert policies for specific activities relevant to SharePoint monitoring",
+            "Threat policies: Email & collaboration > Policies & rules > Threat policies (Safe Links, Safe Attachments, Anti-phishing)",
             "Note: Requires at least one Defender for Office 365 license in the tenant for security alerts to be generated",
           ],
           impact: "Feeds security alerts into the SecurityEvents.Read.All Graph API. Without Defender for Office 365 licensed and configured, the security alert collector returns no data.",
