@@ -242,3 +242,58 @@ export function useAdminAuditLog(tenantId?: string, limit?: number) {
     queryFn: () => fetchJson(`/api/admin-audit?${params.toString()}`),
   });
 }
+
+export function useUsageReports(tenantId: string | null, reportType?: string) {
+  const params = new URLSearchParams();
+  if (reportType) params.set("reportType", reportType);
+  return useQuery<any[]>({
+    queryKey: ["/api/tenants", tenantId, "usage-reports", reportType],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/usage-reports?${params.toString()}`),
+    enabled: !!tenantId,
+  });
+}
+
+export function useLatestUsageReport(tenantId: string | null, reportType: string) {
+  return useQuery<any>({
+    queryKey: ["/api/tenants", tenantId, "usage-reports", "latest", reportType],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/usage-reports/latest?reportType=${reportType}`),
+    enabled: !!tenantId && !!reportType,
+  });
+}
+
+export function useServiceHealth() {
+  return useQuery<any[]>({
+    queryKey: ["/api/service-health"],
+    queryFn: () => fetchJson("/api/service-health"),
+    refetchInterval: 60000,
+  });
+}
+
+export function useServiceHealthIncidents(tenantId?: string, status?: string) {
+  const params = new URLSearchParams();
+  if (tenantId) params.set("tenantId", tenantId);
+  if (status) params.set("status", status);
+  return useQuery<any[]>({
+    queryKey: ["/api/service-health/incidents", tenantId, status],
+    queryFn: () => fetchJson(`/api/service-health/incidents?${params.toString()}`),
+  });
+}
+
+export function useAuditLogEntries(tenantId: string | null, operation?: string, limit?: number) {
+  const params = new URLSearchParams();
+  if (operation) params.set("operation", operation);
+  if (limit) params.set("limit", String(limit));
+  return useQuery<any[]>({
+    queryKey: ["/api/tenants", tenantId, "audit-log", operation, limit],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/audit-log?${params.toString()}`),
+    enabled: !!tenantId,
+  });
+}
+
+export function useAuditLogStats(tenantId: string | null) {
+  return useQuery<any>({
+    queryKey: ["/api/tenants", tenantId, "audit-log", "stats"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/audit-log/stats`),
+    enabled: !!tenantId,
+  });
+}

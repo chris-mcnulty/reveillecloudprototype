@@ -94,12 +94,16 @@ All prefixed with `/api`:
 - `/environments` - MSP Global Dashboard (multi-tenant overview, special case)
 - `/tenants` - Tenant management table
 - `/performance` - Performance explorer with line/bar charts
+- `/service-health` - M365 Service Health incidents & advisories (global)
+- `/usage-reports` - SharePoint usage reports per tenant (5 report types with charts/tables)
+- `/audit-log` - SharePoint audit trail + internal admin activity (tabbed)
 - `/alerts` - Alerts & incidents list
 - `/reports` - Report generation & scheduling
 - `/onboarding` - New tenant onboarding wizard
 - `/settings/tenant` - Azure AD integration config
 - `/settings/tests` - Synthetic test configuration
 - `/settings/alerts` - Alert rule configuration
+- `/settings/scheduler` - Scheduler management
 
 ## Scheduler
 - Adapted from Synozur Orbit multi-tenant scheduler pattern (https://github.com/chris-mcnulty/synozur-orbit)

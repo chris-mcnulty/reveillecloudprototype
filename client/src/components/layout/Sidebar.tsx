@@ -7,6 +7,9 @@ import {
   Settings,
   BarChart3,
   LayoutGrid,
+  ShieldCheck,
+  FileBarChart,
+  ScrollText,
 } from "lucide-react";
 import {
   Tooltip,
@@ -29,7 +32,10 @@ export function Sidebar() {
   const navItems = [
     { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
+    { href: "/service-health", icon: ShieldCheck, label: "Service Health" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
+    { href: "/usage-reports", icon: FileBarChart, label: "Usage Reports" },
+    { href: "/audit-log", icon: ScrollText, label: "Audit & Compliance" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
     ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },

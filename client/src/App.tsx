@@ -17,6 +17,9 @@ import AlertsConfig from "@/pages/settings/Alerts";
 import TenantConfig from "@/pages/settings/Tenant";
 import Onboarding from "@/pages/Onboarding";
 import SchedulerConfig from "@/pages/settings/Scheduler";
+import ServiceHealth from "@/pages/ServiceHealth";
+import UsageReports from "@/pages/UsageReports";
+import AuditLog from "@/pages/AuditLog";
 
 function Router() {
   return (
@@ -26,6 +29,9 @@ function Router() {
       <Route path="/tenants" component={Tenants}/>
       <Route path="/alerts" component={Alerts}/>
       <Route path="/performance" component={Performance}/>
+      <Route path="/service-health" component={ServiceHealth}/>
+      <Route path="/usage-reports" component={UsageReports}/>
+      <Route path="/audit-log" component={AuditLog}/>
       <Route path="/reports" component={Reports}/>
       <Route path="/onboarding" component={Onboarding}/>
       <Route path="/settings">
