@@ -1,0 +1,73 @@
+Job Type	Name / Test	Status	Duration	Started	Result
+siteStructure
+Site structure for Synozur	Completed	5.5s	53s ago	
+{"reports":[{"type":"subsites","records":1},{"type":"siteLis
+siteStructure
+Site structure for Cascadia Oceanic	Completed	3.4s	59s ago	
+{"reports":[{"type":"subsites","error":"Permission denied","
+Graph Reports
+Usage reports for Synozur	Completed	7.1s	1m ago	
+11 records collected
+Graph Reports
+Usage reports for Cascadia Oceanic	Failed	6.3s	1m ago	
+Permission denied; Permission denied; Permission denied; Permission denied; Perm
+Audit Logs
+Audit logs for Synozur	Completed	1.3s	1m ago	
+18 entries collected
+Audit Logs
+Audit logs for Cascadia Oceanic	Failed	749ms	1m ago	
+No data collected — may lack required permissions
+Service Health
+M365 Service Health check	Completed	1.0s	1m ago	
+50 processed
+siteStructure
+Site structure for Synozur	Completed	5.5s	2m ago	
+{"reports":[{"type":"subsites","records":1},{"type":"siteLis
+siteStructure
+Site structure for Cascadia Oceanic	Completed	3.2s	2m ago	
+{"reports":[{"type":"subsites","error":"Permission denied","
+Graph Reports
+Usage reports for Synozur	Completed	7.1s	2m ago	
+11 records collected
+Graph Reports
+Usage reports for Cascadia Oceanic	Failed	6.4s	2m ago	
+Permission denied; Permission denied; Permission denied; Permission denied; Perm
+Audit Logs
+Audit logs for Synozur	Completed	1.2s	2m ago	
+18 entries collected
+Audit Logs
+Audit logs for Cascadia Oceanic	Failed	747ms	2m ago	
+No data collected — may lack required permissions
+Service Health
+M365 Service Health check	Completed	972ms	2m ago	
+50 processed
+siteStructure
+Site structure for Synozur	Completed	5.5s	3m ago	
+{"reports":[{"type":"subsites","records":1},{"type":"siteLis
+siteStructure
+Site structure for Cascadia Oceanic	Completed	3.4s	3m ago	
+{"reports":[{"type":"subsites","error":"Permission denied","
+Graph Reports
+Usage reports for Synozur	Completed	7.3s	3m ago	
+11 records collected
+Graph Reports
+Usage reports for Cascadia Oceanic	Failed	6.6s	3m ago	
+Permission denied; Permission denied; Permission denied; Permission denied; Perm
+Audit Logs
+Audit logs for Synozur	Completed	1.7s	3m ago	
+18 entries collected
+Audit Logs
+Audit logs for Cascadia Oceanic	Failed	1.1s	3m ago	
+No data collected — may lack required permissions
+Service Health
+M365 Service Health check	Completed	863ms	3m ago	
+50 processed
+syntheticTest
+Synozur Hub Load	Completed	371ms	3m ago	
+success · 321ms
+syntheticTest
+Token Acquisition	Completed	273ms	3m ago	
+success · 205ms
+syntheticTest
+Hub Load	Failed	482ms	3m ago	
+Invalid hostname for this tenancy

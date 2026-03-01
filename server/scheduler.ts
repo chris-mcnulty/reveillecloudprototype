@@ -4,6 +4,7 @@ import { collectSharePointUsageReports } from "./collectors/graphReports";
 import { collectServiceHealthIncidents } from "./collectors/serviceHealth";
 import { collectAuditLogs } from "./collectors/auditLogs";
 import { collectSiteStructure } from "./collectors/siteStructure";
+import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
 interface JobStatus {
@@ -250,8 +251,14 @@ async function runGraphReportsJob(): Promise<void> {
   try {
     const allTenants = await storage.getTenants();
     const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+    const azureConfigured = isAzureAppConfigured();
 
     for (const tenant of consentedTenants) {
+      const hasAzureAuth = azureConfigured && tenant.azureTenantId;
+      if (!hasAzureAuth) {
+        continue;
+      }
+
       const jobRunId = await trackJobStart("graphReports", tenant.id, undefined, `Usage reports for ${tenant.name}`);
       jobStatus.graphReports.activeJobRunId = jobRunId;
 
@@ -343,8 +350,14 @@ async function runAuditLogsJob(): Promise<void> {
   try {
     const allTenants = await storage.getTenants();
     const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+    const azureConfigured = isAzureAppConfigured();
 
     for (const tenant of consentedTenants) {
+      const hasAzureAuth = azureConfigured && tenant.azureTenantId;
+      if (!hasAzureAuth) {
+        continue;
+      }
+
       const jobRunId = await trackJobStart("auditLogs", tenant.id, undefined, `Audit logs for ${tenant.name}`);
       jobStatus.auditLogs.activeJobRunId = jobRunId;
 
@@ -395,8 +408,14 @@ async function runSiteStructureJob(): Promise<void> {
   try {
     const allTenants = await storage.getTenants();
     const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+    const azureConfigured = isAzureAppConfigured();
 
     for (const tenant of consentedTenants) {
+      const hasAzureAuth = azureConfigured && tenant.azureTenantId;
+      if (!hasAzureAuth) {
+        continue;
+      }
+
       const jobRunId = await trackJobStart("siteStructure", tenant.id, undefined, `Site structure for ${tenant.name}`);
       jobStatus.siteStructure.activeJobRunId = jobRunId;
 
