@@ -291,7 +291,7 @@ function M365AdminChecklist() {
           impact: "Without E5 licensing per user, SearchQueryInitiated events and MailItemsAccessed are not recorded at all. Standard audit (E3) retains logs for 180 days with no custom retention options.",
         },
         {
-          title: "9. Enable Power Platform Audit Logging (Future)",
+          title: "9. Enable Power Platform Audit Logging",
           where: "Power Platform admin center (admin.powerplatform.microsoft.com) > Environments",
           steps: [
             "Navigate to admin.powerplatform.microsoft.com > Environments > select environment",
@@ -299,9 +299,9 @@ function M365AdminChecklist() {
             "Check 'Start Auditing' and enable the audit log categories you need",
             "Power Platform events flow into the Audit.General content type in the Management Activity API",
             "Key events: FlowCreated, FlowModified, AppPublished, PowerAppPermissionEdited, EnvironmentPropertyUpdated",
-            "Note: Reveille Cloud currently subscribes to Audit.SharePoint only — Audit.General subscription (which captures Power Platform, Teams, and other cross-workload events) is planned for a future release",
+            "Reveille Cloud now subscribes to both Audit.SharePoint and Audit.General — Power Platform, Teams, and cross-workload events are collected automatically",
           ],
-          impact: "Power Platform events are only recorded when environment-level auditing is enabled. Reveille does not yet consume the Audit.General feed, so these events are not collected today.",
+          impact: "Power Platform events are only recorded when environment-level auditing is enabled in each Power Platform environment. Reveille collects these via the Audit.General feed.",
         },
         {
           title: "10. Configure Information Protection Labels",

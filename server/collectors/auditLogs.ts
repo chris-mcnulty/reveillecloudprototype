@@ -24,6 +24,134 @@ const SHAREPOINT_AUDIT_OPERATIONS = [
   "RecycleBinItemRestored", "RecycleBinItemDeleted",
 ];
 
+const MANAGEMENT_API_CONTENT_TYPES = [
+  "Audit.SharePoint",
+  "Audit.General",
+];
+
+async function ensureSubscription(
+  baseUrl: string,
+  token: string,
+  contentType: string,
+  existingSubscriptions: any[]
+): Promise<boolean> {
+  const existing = existingSubscriptions.find((s: any) => s.contentType === contentType);
+  if (existing) return true;
+
+  console.log(`[Audit Logs] No ${contentType} subscription found, attempting to start one...`);
+  try {
+    const startResponse = await fetch(
+      `${baseUrl}/subscriptions/start?contentType=${contentType}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }
+    );
+
+    if (!startResponse.ok) {
+      const errText = await startResponse.text().catch(() => "");
+      console.warn(`[Audit Logs] Failed to start ${contentType} subscription: ${startResponse.status} ${errText}`);
+      return false;
+    }
+    console.log(`[Audit Logs] Started ${contentType} subscription — events will be available on next collection cycle`);
+    return false;
+  } catch (err: any) {
+    console.warn(`[Audit Logs] Error starting ${contentType} subscription: ${err.message}`);
+    return false;
+  }
+}
+
+async function collectContentType(
+  baseUrl: string,
+  token: string,
+  contentType: string,
+  tenantId: string,
+  startTime: string,
+  endTime: string,
+  result: AuditCollectionResult
+): Promise<number> {
+  const contentUrl = `${baseUrl}/subscriptions/content?contentType=${contentType}&startTime=${startTime}&endTime=${endTime}`;
+  const contentResponse = await fetch(contentUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!contentResponse.ok) {
+    console.warn(`[Audit Logs] ${contentType} content listing failed: ${contentResponse.status}`);
+    return 0;
+  }
+
+  const contentBlobs = await contentResponse.json();
+  if (!Array.isArray(contentBlobs) || contentBlobs.length === 0) {
+    console.log(`[Audit Logs] ${contentType}: no content blobs in this time window`);
+    return 0;
+  }
+
+  let totalEntries = 0;
+  const maxBlobs = 10;
+
+  for (const blob of contentBlobs.slice(0, maxBlobs)) {
+    try {
+      const blobResponse = await fetch(blob.contentUri, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!blobResponse.ok) continue;
+
+      const events = await blobResponse.json();
+      if (!Array.isArray(events)) continue;
+
+      for (const event of events) {
+        const operation = event.Operation || event.operation || "Unknown";
+        const workload = event.Workload || contentType.replace("Audit.", "");
+
+        await storage.createAuditLogEntry({
+          tenantId,
+          operation,
+          userId: event.UserId || event.userId || null,
+          userEmail: event.UserId || event.userId || null,
+          objectId: event.ObjectId || event.objectId || null,
+          itemType: event.ItemType || event.itemType || null,
+          siteUrl: event.SiteUrl || event.siteUrl || null,
+          timestamp: event.CreationTime ? new Date(event.CreationTime) : new Date(),
+          clientIp: event.ClientIP || event.clientIp || null,
+          details: {
+            source: "managementActivityApi",
+            contentType,
+            workload,
+            eventSource: event.EventSource || null,
+            userAgent: event.UserAgent || null,
+            correlationId: event.CorrelationId || null,
+            listItemUniqueId: event.ListItemUniqueId || null,
+            sourceFileName: event.SourceFileName || null,
+            sourceRelativeUrl: event.SourceRelativeUrl || null,
+            userType: event.UserType || null,
+            eventData: event.EventData || null,
+            teamName: event.TeamName || null,
+            channelName: event.ChannelName || null,
+            members: event.Members || null,
+            communicationType: event.CommunicationType || null,
+            appId: event.AppId || null,
+          },
+        });
+
+        totalEntries++;
+        const opKey = workload !== "SharePoint" ? `${workload}:${operation}` : operation;
+        result.operationBreakdown[opKey] = (result.operationBreakdown[opKey] || 0) + 1;
+      }
+    } catch (blobErr: any) {
+      console.warn(`[Audit Logs] Failed to process ${contentType} content blob: ${blobErr.message}`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  return totalEntries;
+}
+
 async function collectViaManagementApi(
   azureTenantId: string,
   tenantId: string,
@@ -47,31 +175,16 @@ async function collectViaManagementApi(
     }
 
     const subscriptions = await subsResponse.json();
-    const spSub = Array.isArray(subscriptions)
-      ? subscriptions.find((s: any) => s.contentType === "Audit.SharePoint")
-      : null;
+    const existingSubs = Array.isArray(subscriptions) ? subscriptions : [];
 
-    if (!spSub) {
-      console.log("[Audit Logs] No Audit.SharePoint subscription found, attempting to start one...");
-      const startResponse = await fetch(
-        `${baseUrl}/subscriptions/start?contentType=Audit.SharePoint`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({}),
-        }
-      );
+    let anyNewSubscriptions = false;
+    for (const contentType of MANAGEMENT_API_CONTENT_TYPES) {
+      const ready = await ensureSubscription(baseUrl, token, contentType, existingSubs);
+      if (!ready) anyNewSubscriptions = true;
+    }
 
-      if (!startResponse.ok) {
-        const errText = await startResponse.text().catch(() => "");
-        console.warn(`[Audit Logs] Failed to start Audit.SharePoint subscription: ${startResponse.status} ${errText}`);
-        return false;
-      }
-      console.log("[Audit Logs] Started Audit.SharePoint subscription — events will be available on next collection cycle");
-      result.sources.push("managementApi:subscriptionStarted");
+    if (existingSubs.length === 0 && anyNewSubscriptions) {
+      result.sources.push("managementApi:subscriptionsStarted");
       return true;
     }
 
@@ -80,77 +193,22 @@ async function collectViaManagementApi(
     const startTime = since.toISOString().replace(/\.\d{3}Z$/, "");
     const endTime = now.toISOString().replace(/\.\d{3}Z$/, "");
 
-    const contentUrl = `${baseUrl}/subscriptions/content?contentType=Audit.SharePoint&startTime=${startTime}&endTime=${endTime}`;
-    const contentResponse = await fetch(contentUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    let grandTotal = 0;
+    const typeSummaries: string[] = [];
 
-    if (!contentResponse.ok) {
-      console.warn(`[Audit Logs] Content listing failed: ${contentResponse.status}`);
-      return false;
+    for (const contentType of MANAGEMENT_API_CONTENT_TYPES) {
+      const hasSub = existingSubs.some((s: any) => s.contentType === contentType);
+      if (!hasSub) continue;
+
+      const count = await collectContentType(baseUrl, token, contentType, tenantId, startTime, endTime, result);
+      grandTotal += count;
+      if (count > 0) typeSummaries.push(`${contentType}:${count}`);
     }
 
-    const contentBlobs = await contentResponse.json();
-    if (!Array.isArray(contentBlobs) || contentBlobs.length === 0) {
-      console.log("[Audit Logs] No content blobs available in this time window");
-      result.sources.push("managementApi:noContent");
-      return true;
-    }
-
-    let totalEntries = 0;
-    const maxBlobs = 10;
-
-    for (const blob of contentBlobs.slice(0, maxBlobs)) {
-      try {
-        const blobResponse = await fetch(blob.contentUri, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (!blobResponse.ok) continue;
-
-        const events = await blobResponse.json();
-        if (!Array.isArray(events)) continue;
-
-        for (const event of events) {
-          const operation = event.Operation || event.operation || "Unknown";
-
-          await storage.createAuditLogEntry({
-            tenantId,
-            operation,
-            userId: event.UserId || event.userId || null,
-            userEmail: event.UserId || event.userId || null,
-            objectId: event.ObjectId || event.objectId || null,
-            itemType: event.ItemType || event.itemType || null,
-            siteUrl: event.SiteUrl || event.siteUrl || null,
-            timestamp: event.CreationTime ? new Date(event.CreationTime) : new Date(),
-            clientIp: event.ClientIP || event.clientIp || null,
-            details: {
-              source: "managementActivityApi",
-              workload: event.Workload || "SharePoint",
-              eventSource: event.EventSource || null,
-              userAgent: event.UserAgent || null,
-              correlationId: event.CorrelationId || null,
-              listItemUniqueId: event.ListItemUniqueId || null,
-              sourceFileName: event.SourceFileName || null,
-              sourceRelativeUrl: event.SourceRelativeUrl || null,
-              userType: event.UserType || null,
-              eventData: event.EventData || null,
-            },
-          });
-
-          totalEntries++;
-          result.operationBreakdown[operation] = (result.operationBreakdown[operation] || 0) + 1;
-        }
-      } catch (blobErr: any) {
-        console.warn(`[Audit Logs] Failed to process content blob: ${blobErr.message}`);
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-
-    result.entriesCollected += totalEntries;
-    result.sources.push(`managementApi:${totalEntries}events`);
-    console.log(`[Audit Logs] Management Activity API collected ${totalEntries} SharePoint events from ${Math.min(contentBlobs.length, maxBlobs)} blobs`);
+    result.entriesCollected += grandTotal;
+    const summary = typeSummaries.length > 0 ? typeSummaries.join(",") : "noContent";
+    result.sources.push(`managementApi:${summary}`);
+    console.log(`[Audit Logs] Management Activity API collected ${grandTotal} events across ${MANAGEMENT_API_CONTENT_TYPES.length} content types (${typeSummaries.join(", ") || "none available yet"})`);
     return true;
   } catch (err: any) {
     console.warn(`[Audit Logs] Management Activity API error: ${err.message}`);
