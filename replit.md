@@ -9,6 +9,7 @@ Multi-tenant SaaS platform for monitoring SharePoint Online performance across c
 - **Database**: PostgreSQL via Drizzle ORM (node-postgres driver)
 - **Routing**: wouter (frontend), Express (API)
 - **SharePoint**: Microsoft Graph API via Replit SharePoint connector (@microsoft/microsoft-graph-client)
+- **Azure AD Auth**: Multi-tenant app registration with client credentials flow (server/azureAuth.ts)
 
 ## Project Structure
 ```
@@ -22,7 +23,8 @@ server/
   storage.ts       - Database storage interface (IStorage + DatabaseStorage)
   db.ts            - Drizzle ORM + pg Pool setup
   seed.ts          - Database seeding with org/tenant/test structure (no fake metrics - real data only)
-  sharepoint.ts    - Microsoft Graph client auth (Replit SharePoint connector)
+  sharepoint.ts    - Microsoft Graph client auth (Replit SharePoint connector — delegated auth for synthetic tests)
+  azureAuth.ts     - Azure AD multi-tenant app auth (client credentials flow for per-tenant token acquisition)
   testRunner.ts    - Synthetic test execution engine (Page Load, File Transfer, Search, Auth)
   scheduler.ts     - Automated scheduler (synthetic tests + passive collectors)
   collectors/
@@ -59,7 +61,10 @@ All prefixed with `/api`:
 - `GET /organizations`, `POST /organizations`, `PATCH /organizations/:id`
 - `GET /organizations/active?orgId=` (returns org context with tenants, isMsp flag, all orgs)
 - `GET/POST /tenants`, `GET/PATCH/DELETE /tenants/:id`
-- `POST /tenants/:id/consent`, `POST /tenants/:id/revoke-consent`
+- `POST /tenants/:id/consent`, `POST /tenants/:id/revoke-consent` (revoke also clears token cache)
+- `GET /auth/azure-app-status` (check if Azure AD app is configured, show client ID and required permissions)
+- `GET /auth/consent-url?tenantId=` (generates Microsoft admin consent URL for a tenant)
+- `GET /auth/callback` (handles Microsoft admin consent redirect — sets tenant to Connected with Azure tenant ID)
 - `GET /tenants/:tenantId/systems`, `POST/PATCH/DELETE /systems`
 - `GET /tenants/:tenantId/tests`, `POST/PATCH/DELETE /tests`
 - `GET /tenants/:tenantId/alert-rules`, `POST/PATCH/DELETE /alert-rules`
@@ -115,6 +120,17 @@ All prefixed with `/api`:
 - **Service Health** (`server/collectors/serviceHealth.ts`): Monitors M365 Service Health for SharePoint/OneDrive/M365 incidents. Creates alerts for new incidents. Requires `ServiceHealth.Read.All` permission.
 - **Audit Logs** (`server/collectors/auditLogs.ts`): Collects SharePoint audit events via directory audits, site analytics, and drive activity enumeration. Falls back gracefully through approaches. Requires `AuditLog.Read.All` permission.
 - All collectors handle 403 permission errors gracefully with warning logs (no crashes).
+
+## Azure AD Multi-Tenant App Registration
+- When `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` env secrets are set, collectors use client credentials flow instead of the Replit SharePoint connector
+- Per-tenant token acquisition via `server/azureAuth.ts` using `https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token`
+- Admin consent flow: `/api/auth/consent-url?tenantId=` generates Microsoft consent URL, `/api/auth/callback` handles the redirect
+- Token cache with automatic expiry (refreshes 60s before expiration)
+- Tenant settings UI shows step-by-step Azure AD registration instructions when secrets are not configured
+- When secrets ARE configured, "Grant Admin Consent" button redirects to real Microsoft consent page
+- Required Application permissions: Reports.Read.All, ServiceHealth.Read.All, AuditLog.Read.All, Sites.Read.All, Files.ReadWrite.All
+- Redirect URI: `{app_origin}/api/auth/callback`
+- Synthetic tests continue using the Replit SharePoint connector (delegated auth)
 
 ## Admin Audit Logging
 All mutating API routes log to `adminAuditLog` table via `logAdminAction()` helper:

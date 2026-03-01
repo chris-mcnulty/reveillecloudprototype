@@ -1,4 +1,5 @@
 import { getUncachableSharePointClient } from "../sharepoint";
+import { getAzureGraphClient, isAzureAppConfigured } from "../azureAuth";
 import { storage } from "../storage";
 
 interface ServiceHealthResult {
@@ -18,7 +19,14 @@ export async function collectServiceHealthIncidents(): Promise<ServiceHealthResu
   };
 
   try {
-    const client = await getUncachableSharePointClient();
+    const tenants = await storage.getTenants();
+    const consentedWithAzure = tenants.find(t => t.consentStatus === "Connected" && t.azureTenantId);
+    let client;
+    if (isAzureAppConfigured() && consentedWithAzure) {
+      client = await getAzureGraphClient(consentedWithAzure.azureTenantId!);
+    } else {
+      client = await getUncachableSharePointClient();
+    }
 
     let issues: any[] = [];
     try {

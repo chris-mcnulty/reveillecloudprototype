@@ -1,4 +1,5 @@
 import { getUncachableSharePointClient } from "../sharepoint";
+import { getAzureGraphClient, isAzureAppConfigured } from "../azureAuth";
 import { storage } from "../storage";
 
 interface ReportResult {
@@ -227,11 +228,19 @@ async function collectActiveUsers(client: any, tenantId: string): Promise<Report
   }
 }
 
+async function getGraphClientForTenant(tenantId: string) {
+  const tenant = await storage.getTenant(tenantId);
+  if (isAzureAppConfigured() && tenant?.azureTenantId) {
+    return getAzureGraphClient(tenant.azureTenantId);
+  }
+  return getUncachableSharePointClient();
+}
+
 export async function collectSharePointUsageReports(tenantId: string): Promise<{
   results: ReportResult[];
   totalCollected: number;
 }> {
-  const client = await getUncachableSharePointClient();
+  const client = await getGraphClientForTenant(tenantId);
 
   const results: ReportResult[] = [];
   const collectors = [

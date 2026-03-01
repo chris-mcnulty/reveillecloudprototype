@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
 
 async function logAdminAction(
   tenantId: string | null,
@@ -88,30 +89,6 @@ export async function registerRoutes(
     const updated = await storage.updateTenant(req.params.id, req.body);
     if (!updated) return res.status(404).json({ message: "Tenant not found" });
     await logAdminAction(req.params.id, "tenant.updated", "tenant", req.params.id, { changes: req.body });
-    res.json(updated);
-  });
-
-  app.post("/api/tenants/:id/consent", async (req, res) => {
-    const tenant = await storage.getTenant(req.params.id);
-    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
-    const updated = await storage.updateTenant(req.params.id, {
-      consentStatus: "Connected",
-      consentedBy: tenant.adminEmail,
-      consentedAt: new Date(),
-    });
-    await logAdminAction(req.params.id, "tenant.consented", "tenant", req.params.id, { consentedBy: tenant.adminEmail });
-    res.json(updated);
-  });
-
-  app.post("/api/tenants/:id/revoke-consent", async (req, res) => {
-    const tenant = await storage.getTenant(req.params.id);
-    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
-    const updated = await storage.updateTenant(req.params.id, {
-      consentStatus: "Pending",
-      consentedBy: null,
-      consentedAt: null,
-    });
-    await logAdminAction(req.params.id, "tenant.consent_revoked", "tenant", req.params.id, { previousConsentedBy: tenant.consentedBy });
     res.json(updated);
   });
 
@@ -403,6 +380,122 @@ export async function registerRoutes(
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
     const entries = await storage.getAdminAuditLog(tenantId || undefined, since, limit);
     res.json(entries);
+  });
+
+  app.get("/api/auth/azure-app-status", async (_req, res) => {
+    const configured = isAzureAppConfigured();
+    res.json({
+      configured,
+      clientId: configured ? process.env.AZURE_CLIENT_ID : null,
+      requiredPermissions: [
+        "Reports.Read.All",
+        "ServiceHealth.Read.All",
+        "AuditLog.Read.All",
+        "Sites.Read.All",
+        "Files.ReadWrite.All",
+      ],
+    });
+  });
+
+  app.get("/api/auth/consent-url", async (req, res) => {
+    try {
+      const tenantId = req.query.tenantId as string;
+      if (!tenantId) return res.status(400).json({ message: "tenantId query parameter required" });
+
+      const tenant = await storage.getTenant(tenantId);
+      if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+
+      const protocol = req.headers["x-forwarded-proto"] || req.protocol;
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      const redirectUri = `${protocol}://${host}/api/auth/callback`;
+
+      const state = signState({ dbTenantId: tenant.id, orgId: tenant.organizationId });
+
+      let consentUrl: string;
+      if (tenant.azureTenantId) {
+        consentUrl = buildAdminConsentUrl(tenant.azureTenantId, redirectUri, state);
+      } else {
+        consentUrl = buildCommonConsentUrl(redirectUri, state);
+      }
+
+      res.json({ consentUrl, redirectUri });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/auth/callback", async (req, res) => {
+    try {
+      const { tenant: azureTenantId, admin_consent, error, error_description, state } = req.query;
+
+      if (error) {
+        const errorMsg = error_description || error;
+        console.error("[Auth Callback] Consent denied:", errorMsg);
+        return res.redirect(`/settings/tenant?consent_error=${encodeURIComponent(String(errorMsg))}`);
+      }
+
+      if (admin_consent !== "True") {
+        return res.redirect("/settings/tenant?consent_error=Admin+consent+was+not+granted");
+      }
+
+      const stateData = state ? verifyState(String(state)) : null;
+      if (!stateData || !stateData.dbTenantId) {
+        console.error("[Auth Callback] Invalid or tampered state parameter");
+        return res.redirect("/settings/tenant?consent_error=Invalid+state+parameter+-+consent+may+have+been+tampered");
+      }
+
+      const dbTenantId = stateData.dbTenantId;
+
+      {
+        const tenant = await storage.getTenant(dbTenantId);
+        if (tenant) {
+          await storage.updateTenant(dbTenantId, {
+            consentStatus: "Connected",
+            consentedBy: tenant.adminEmail,
+            consentedAt: new Date(),
+            azureTenantId: azureTenantId ? String(azureTenantId) : tenant.azureTenantId,
+          });
+          await logAdminAction(dbTenantId, "tenant.consented", "tenant", dbTenantId, {
+            consentedBy: tenant.adminEmail,
+            azureTenantId: String(azureTenantId),
+            method: "azure_ad_admin_consent",
+          });
+          console.log(`[Auth Callback] Consent granted for tenant ${tenant.name} (Azure: ${azureTenantId})`);
+        }
+      }
+
+      return res.redirect(`/settings/tenant?consent_success=true&azure_tenant=${azureTenantId || ""}`);
+    } catch (err: any) {
+      console.error("[Auth Callback] Error:", err.message);
+      return res.redirect(`/settings/tenant?consent_error=${encodeURIComponent(err.message)}`);
+    }
+  });
+
+  app.post("/api/tenants/:id/consent", async (req, res) => {
+    const tenant = await storage.getTenant(req.params.id);
+    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+    const updated = await storage.updateTenant(req.params.id, {
+      consentStatus: "Connected",
+      consentedBy: tenant.adminEmail,
+      consentedAt: new Date(),
+    });
+    await logAdminAction(req.params.id, "tenant.consented", "tenant", req.params.id, { consentedBy: tenant.adminEmail, method: "manual" });
+    res.json(updated);
+  });
+
+  app.post("/api/tenants/:id/revoke-consent", async (req, res) => {
+    const tenant = await storage.getTenant(req.params.id);
+    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+    if (tenant.azureTenantId) {
+      clearTokenCache(tenant.azureTenantId);
+    }
+    const updated = await storage.updateTenant(req.params.id, {
+      consentStatus: "Pending",
+      consentedBy: null,
+      consentedAt: null,
+    });
+    await logAdminAction(req.params.id, "tenant.consent_revoked", "tenant", req.params.id, { previousConsentedBy: tenant.consentedBy });
+    res.json(updated);
   });
 
   return httpServer;

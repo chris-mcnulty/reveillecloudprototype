@@ -1,4 +1,5 @@
 import { getUncachableSharePointClient } from "../sharepoint";
+import { getAzureGraphClient, isAzureAppConfigured } from "../azureAuth";
 import { storage } from "../storage";
 
 interface AuditCollectionResult {
@@ -14,7 +15,13 @@ export async function collectAuditLogs(tenantId: string): Promise<AuditCollectio
   };
 
   try {
-    const client = await getUncachableSharePointClient();
+    const tenant = await storage.getTenant(tenantId);
+    let client;
+    if (isAzureAppConfigured() && tenant?.azureTenantId) {
+      client = await getAzureGraphClient(tenant.azureTenantId);
+    } else {
+      client = await getUncachableSharePointClient();
+    }
 
     const now = new Date();
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);

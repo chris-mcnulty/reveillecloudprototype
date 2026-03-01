@@ -218,6 +218,21 @@ export function useResetJob() {
   });
 }
 
+export function useAzureAppStatus() {
+  return useQuery<{ configured: boolean; clientId: string | null; requiredPermissions: string[] }>({
+    queryKey: ["/api/auth/azure-app-status"],
+    queryFn: () => fetchJson("/api/auth/azure-app-status"),
+  });
+}
+
+export function useConsentUrl(tenantId: string | null) {
+  return useQuery<{ consentUrl: string; redirectUri: string }>({
+    queryKey: ["/api/auth/consent-url", tenantId],
+    queryFn: () => fetchJson(`/api/auth/consent-url?tenantId=${tenantId}`),
+    enabled: !!tenantId,
+  });
+}
+
 export function useAdminAuditLog(tenantId?: string, limit?: number) {
   const params = new URLSearchParams();
   if (tenantId) params.set("tenantId", tenantId);
