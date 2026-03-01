@@ -396,6 +396,9 @@ export async function registerRoutes(
         "AuditLog.Read.All",
         "Sites.Read.All",
         "Files.ReadWrite.All",
+        "Group.Read.All",
+        "User.Read.All",
+        "Directory.Read.All",
       ],
     });
   });

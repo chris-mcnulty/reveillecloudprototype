@@ -121,7 +121,7 @@ All prefixed with `/api`:
 - All job runs persisted to `scheduledJobRuns` table for history/audit
 
 ## Passive Collectors
-- **Graph Reports** (`server/collectors/graphReports.ts`): Collects 5 SharePoint usage report types via Graph Reports API. Requires `Reports.Read.All` permission. Handles CSV parsing with proper quoted field support.
+- **Graph Reports** (`server/collectors/graphReports.ts`): Collects 5 SharePoint usage report types via Graph Reports API. Requires `Reports.Read.All` permission. Handles both JSON and CSV response formats with proper quoted field support.
 - **Service Health** (`server/collectors/serviceHealth.ts`): Monitors M365 Service Health for SharePoint/OneDrive/M365 incidents. Creates alerts for new incidents. Requires `ServiceHealth.Read.All` permission.
 - **Audit Logs** (`server/collectors/auditLogs.ts`): Collects SharePoint audit events via directory audits, site analytics, and drive activity enumeration. Falls back gracefully through approaches. Requires `AuditLog.Read.All` permission.
 - **Site Structure** (`server/collectors/siteStructure.ts`): Enumerates subsites, lists/libraries, drive structure (files/folders/quota), M365 Groups, and tenant users. Stores as usageReports with reportTypes: subsites, siteLists, driveStructure, siteGroups, siteUsers. Requires `Sites.Read.All`, `Group.Read.All`, `User.Read.All` permissions.
@@ -134,7 +134,7 @@ All prefixed with `/api`:
 - Token cache with automatic expiry (refreshes 60s before expiration)
 - Tenant settings UI shows step-by-step Azure AD registration instructions when secrets are not configured
 - When secrets ARE configured, "Grant Admin Consent" button redirects to real Microsoft consent page
-- Required Application permissions: Reports.Read.All, ServiceHealth.Read.All, AuditLog.Read.All, Sites.Read.All, Files.ReadWrite.All
+- Required Application permissions: Reports.Read.All, ServiceHealth.Read.All, AuditLog.Read.All, Sites.Read.All, Files.ReadWrite.All, Group.Read.All, User.Read.All, Directory.Read.All
 - Redirect URI: `{app_origin}/api/auth/callback`
 - Synthetic tests continue using the Replit SharePoint connector (delegated auth)
 
