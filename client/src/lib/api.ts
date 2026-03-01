@@ -14,6 +14,11 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+async function deleteJson(url: string): Promise<void> {
+  const res = await fetch(url, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
+}
+
 async function patchJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(await res.text());
@@ -53,6 +58,11 @@ export function useCreateTenant() {
 export function useUpdateTenant() {
   const qc = useQueryClient();
   return useMutation({ mutationFn: ({ id, ...data }: any) => patchJson(`/api/tenants/${id}`, data), onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/tenants"] }); qc.invalidateQueries({ queryKey: ["/api/organizations/active"] }); } });
+}
+
+export function useDeleteTenant() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => deleteJson(`/api/tenants/${id}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/tenants"] }); qc.invalidateQueries({ queryKey: ["/api/organizations/active"] }); } });
 }
 
 export function useConsentTenant() {

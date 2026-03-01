@@ -3,12 +3,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, MoreHorizontal, Loader2 } from "lucide-react";
+import { Plus, Search, MoreHorizontal, Loader2, Trash2 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { useDeleteTenant } from "@/lib/api";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Link, useLocation, Redirect } from "wouter";
@@ -18,6 +20,7 @@ export default function Tenants() {
   const { isMsp, orgTenants, setActiveTenantId, isLoading: loadingOrg } = useActiveTenant();
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
+  const deleteTenant = useDeleteTenant();
 
   if (!loadingOrg && !isMsp) {
     return <Redirect to="/" />;
@@ -116,6 +119,18 @@ export default function Tenants() {
                       <DropdownMenuItem onClick={() => { setActiveTenantId(tenant.id); setLocation("/"); }}>View Dashboard</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => { setActiveTenantId(tenant.id); setLocation("/settings/tests"); }}>Configure Tests</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => { setActiveTenantId(tenant.id); setLocation("/settings/tenant"); }}>Manage Access</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        data-testid={`button-delete-${tenant.id}`}
+                        className="text-destructive focus:text-destructive"
+                        onClick={() => {
+                          if (window.confirm(`Delete "${tenant.name}" and all its data (tests, metrics, alerts)? This cannot be undone.`)) {
+                            deleteTenant.mutate(tenant.id);
+                          }
+                        }}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" /> Delete Tenant
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </TableCell>

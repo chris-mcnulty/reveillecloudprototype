@@ -138,6 +138,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    await db.delete(adminAuditLog).where(eq(adminAuditLog.tenantId, id));
+    await db.delete(auditLogEntries).where(eq(auditLogEntries.tenantId, id));
+    await db.delete(usageReports).where(eq(usageReports.tenantId, id));
+    await db.delete(serviceHealthIncidents).where(eq(serviceHealthIncidents.tenantId, id));
+    await db.delete(alerts).where(eq(alerts.tenantId, id));
+    await db.delete(metrics).where(eq(metrics.tenantId, id));
+    const tests = await db.select({ id: syntheticTests.id }).from(syntheticTests).where(eq(syntheticTests.tenantId, id));
+    for (const t of tests) {
+      await db.delete(testRuns).where(eq(testRuns.testId, t.id));
+    }
+    await db.delete(syntheticTests).where(eq(syntheticTests.tenantId, id));
+    await db.delete(alertRules).where(eq(alertRules.tenantId, id));
+    await db.delete(monitoredSystems).where(eq(monitoredSystems.tenantId, id));
+    await db.delete(scheduledJobRuns).where(eq(scheduledJobRuns.tenantId, id));
     await db.delete(tenants).where(eq(tenants.id, id));
   }
 
