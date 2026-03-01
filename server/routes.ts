@@ -400,6 +400,107 @@ export async function registerRoutes(
         "User.Read.All",
         "Directory.Read.All",
       ],
+      permissionsByWorkload: {
+        sharepoint: {
+          label: "SharePoint Online",
+          permissions: [
+            { scope: "Sites.Read.All", purpose: "Site structure, lists, libraries, subsites, drives", status: "required" },
+            { scope: "Files.ReadWrite.All", purpose: "Synthetic file upload/download tests", status: "required" },
+            { scope: "Reports.Read.All", purpose: "Site usage detail, storage, file counts, page views, active users", status: "required" },
+          ],
+          endpoints: [
+            "/sites/root, /sites/{id}/lists, /sites/{id}/drives — site structure enumeration",
+            "/reports/getSharePointSiteUsageDetail — per-site storage, files, page views",
+            "/reports/getSharePointSiteUsageStorage — daily storage consumption trends",
+            "/reports/getSharePointSiteUsageFileCounts — daily file activity",
+            "/reports/getSharePointActivityUserDetail — per-user activity (views, edits, syncs, shares)",
+          ],
+        },
+        onedrive: {
+          label: "OneDrive for Business",
+          permissions: [
+            { scope: "Reports.Read.All", purpose: "OneDrive usage, storage, file counts, sync activity", status: "required" },
+            { scope: "Files.Read.All", purpose: "OneDrive file structure and quota monitoring", status: "recommended" },
+          ],
+          endpoints: [
+            "/reports/getOneDriveUsageAccountDetail — per-user storage, file count, sync status",
+            "/reports/getOneDriveUsageAccountCounts — daily active/inactive account trends",
+            "/reports/getOneDriveUsageStorage — daily total storage consumption",
+            "/reports/getOneDriveUsageFileCounts — daily file count trends",
+            "/reports/getOneDriveActivityUserDetail — per-user file operations (synced, shared, viewed)",
+          ],
+        },
+        exchange: {
+          label: "Exchange Online / Outlook",
+          permissions: [
+            { scope: "Reports.Read.All", purpose: "Mailbox usage, app usage, email activity", status: "recommended" },
+          ],
+          endpoints: [
+            "/reports/getEmailActivityUserDetail — sends, reads, receives per user",
+            "/reports/getEmailAppUsageUserDetail — client app breakdown (Outlook, OWA, mobile)",
+            "/reports/getMailboxUsageDetail — mailbox storage, item counts, quota status",
+          ],
+        },
+        teams: {
+          label: "Microsoft Teams",
+          permissions: [
+            { scope: "Reports.Read.All", purpose: "Teams activity, device usage, channel messages", status: "recommended" },
+          ],
+          endpoints: [
+            "/reports/getTeamsUserActivityUserDetail — messages, calls, meetings per user",
+            "/reports/getTeamsDeviceUsageUserDetail — device/platform breakdown",
+            "/reports/getTeamsTeamActivityDetail — per-team channel messages, meetings",
+          ],
+        },
+        m365Apps: {
+          label: "Microsoft 365 Apps (Office)",
+          permissions: [
+            { scope: "Reports.Read.All", purpose: "Office app activation, usage across Word/Excel/PowerPoint", status: "recommended" },
+          ],
+          endpoints: [
+            "/reports/getM365AppUserDetail — per-user app usage (Word, Excel, PowerPoint, Outlook, Teams, OneDrive)",
+            "/reports/getM365AppPlatformUserCounts — platform breakdown (Windows, Mac, Web, Mobile)",
+          ],
+        },
+        identity: {
+          label: "Identity & Access (Entra ID)",
+          permissions: [
+            { scope: "AuditLog.Read.All", purpose: "Sign-in logs, directory audits, risky user events", status: "required" },
+            { scope: "Directory.Read.All", purpose: "User/group enumeration, license assignment, MFA status", status: "recommended" },
+            { scope: "User.Read.All", purpose: "User profiles, sign-in activity, account status", status: "required" },
+            { scope: "Group.Read.All", purpose: "M365 group membership, Teams-connected groups", status: "required" },
+          ],
+          endpoints: [
+            "/auditLogs/directoryAudits — admin activity (permission changes, app consents, config changes)",
+            "/auditLogs/signIns — user sign-in events (location, device, risk, MFA status)",
+            "/users — user enumeration with license and activity details",
+            "/groups — M365/security group enumeration",
+          ],
+        },
+        serviceHealth: {
+          label: "Service Health & Communications",
+          permissions: [
+            { scope: "ServiceHealth.Read.All", purpose: "Service incidents, advisories, planned maintenance", status: "required" },
+            { scope: "ServiceMessage.Read.All", purpose: "Message center posts (feature changes, retirements)", status: "recommended" },
+          ],
+          endpoints: [
+            "/admin/serviceAnnouncement/issues — active incidents and advisories",
+            "/admin/serviceAnnouncement/messages — message center posts",
+            "/admin/serviceAnnouncement/healthOverviews — per-service health status",
+          ],
+        },
+        security: {
+          label: "Security & Compliance",
+          permissions: [
+            { scope: "SecurityEvents.Read.All", purpose: "Security alerts from Microsoft Defender", status: "optional" },
+            { scope: "ThreatIndicators.Read.All", purpose: "Threat intelligence indicators", status: "optional" },
+          ],
+          endpoints: [
+            "/security/alerts_v2 — security alerts from Defender for Office 365",
+            "/security/secureScores — tenant security score and improvement actions",
+          ],
+        },
+      },
     });
   });
 
