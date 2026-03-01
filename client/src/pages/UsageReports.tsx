@@ -5,16 +5,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { useUsageReports, useLatestUsageReport } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
-import { Loader2, HardDrive, Users, FileText, BarChart3, TrendingUp, Database, FolderTree, List, Network, UserCheck } from "lucide-react";
+import { Loader2, HardDrive, Users, FileText, BarChart3, TrendingUp, Database, FolderTree, List, Network, UserCheck, CloudCog, MessageSquare, Mail, AppWindow } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { useState } from "react";
 
 const reportTypes = [
-  { key: "siteUsageDetail", label: "Site Usage", icon: BarChart3, group: "usage" },
-  { key: "siteUsageCounts", label: "Site Counts", icon: TrendingUp, group: "usage" },
-  { key: "storageUsage", label: "Storage", icon: HardDrive, group: "usage" },
-  { key: "fileActivity", label: "File Activity", icon: FileText, group: "usage" },
-  { key: "activeUsers", label: "Active Users", icon: Users, group: "usage" },
+  { key: "siteUsageDetail", label: "Site Usage", icon: BarChart3, group: "sharepoint" },
+  { key: "siteUsageCounts", label: "Site Counts", icon: TrendingUp, group: "sharepoint" },
+  { key: "storageUsage", label: "Storage", icon: HardDrive, group: "sharepoint" },
+  { key: "fileActivity", label: "File Activity", icon: FileText, group: "sharepoint" },
+  { key: "activeUsers", label: "Active Users", icon: Users, group: "sharepoint" },
+  { key: "onedriveUsageDetail", label: "OneDrive Usage", icon: CloudCog, group: "onedrive" },
+  { key: "onedriveActivityDetail", label: "OneDrive Activity", icon: FileText, group: "onedrive" },
+  { key: "onedriveStorageUsage", label: "OneDrive Storage", icon: HardDrive, group: "onedrive" },
+  { key: "teamsActivity", label: "Teams Activity", icon: MessageSquare, group: "m365" },
+  { key: "emailActivity", label: "Email Activity", icon: Mail, group: "m365" },
+  { key: "m365AppUsage", label: "M365 App Usage", icon: AppWindow, group: "m365" },
   { key: "subsites", label: "Subsites", icon: Network, group: "structure" },
   { key: "siteLists", label: "Lists & Libraries", icon: List, group: "structure" },
   { key: "driveStructure", label: "Drives & Files", icon: FolderTree, group: "structure" },
@@ -130,56 +136,45 @@ export default function UsageReports() {
       <div className="mb-6">
         <h2 data-testid="text-page-title" className="text-2xl font-bold tracking-tight">Usage Reports</h2>
         <p className="text-muted-foreground">
-          SharePoint usage data and site structure metrics for {tenant?.name || "this tenant"}.
+          M365 usage data across SharePoint, OneDrive, Teams, Exchange, and site structure for {tenant?.name || "this tenant"}.
           Usage reports collected every 6 hours, site structure every hour.
         </p>
       </div>
 
       <div className="space-y-3 mb-6">
-        <div>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Graph Usage Reports</h3>
-          <div className="grid gap-2 grid-cols-5">
-            {reportTypes.filter(rt => rt.group === "usage").map(rt => {
-              const Icon = rt.icon;
-              const isActive = activeTab === rt.key;
-              return (
-                <Card
-                  key={rt.key}
-                  className={`cursor-pointer transition-all hover:border-primary/50 ${isActive ? "border-primary bg-primary/5" : ""}`}
-                  onClick={() => setActiveTab(rt.key)}
-                  data-testid={`card-report-type-${rt.key}`}
-                >
-                  <CardContent className="flex items-center gap-3 p-3">
-                    <Icon className={`h-4 w-4 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-                    <span className={`text-xs font-medium ${isActive ? "text-primary" : ""}`}>{rt.label}</span>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        </div>
-        <div>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Site Structure (§2.1.2 / §2.1.3)</h3>
-          <div className="grid gap-2 grid-cols-5">
-            {reportTypes.filter(rt => rt.group === "structure").map(rt => {
-              const Icon = rt.icon;
-              const isActive = activeTab === rt.key;
-              return (
-                <Card
-                  key={rt.key}
-                  className={`cursor-pointer transition-all hover:border-primary/50 ${isActive ? "border-primary bg-primary/5" : ""}`}
-                  onClick={() => setActiveTab(rt.key)}
-                  data-testid={`card-report-type-${rt.key}`}
-                >
-                  <CardContent className="flex items-center gap-3 p-3">
-                    <Icon className={`h-4 w-4 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-                    <span className={`text-xs font-medium ${isActive ? "text-primary" : ""}`}>{rt.label}</span>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        </div>
+        {[
+          { group: "sharepoint", label: "SharePoint Usage Reports" },
+          { group: "onedrive", label: "OneDrive for Business" },
+          { group: "m365", label: "Cross-M365 Workloads" },
+          { group: "structure", label: "Site Structure" },
+        ].map(({ group, label }) => {
+          const groupTypes = reportTypes.filter(rt => rt.group === group);
+          if (groupTypes.length === 0) return null;
+          return (
+            <div key={group}>
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">{label}</h3>
+              <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(groupTypes.length, 5)}, minmax(0, 1fr))` }}>
+                {groupTypes.map(rt => {
+                  const Icon = rt.icon;
+                  const isActive = activeTab === rt.key;
+                  return (
+                    <Card
+                      key={rt.key}
+                      className={`cursor-pointer transition-all hover:border-primary/50 ${isActive ? "border-primary bg-primary/5" : ""}`}
+                      onClick={() => setActiveTab(rt.key)}
+                      data-testid={`card-report-type-${rt.key}`}
+                    >
+                      <CardContent className="flex items-center gap-3 p-3">
+                        <Icon className={`h-4 w-4 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+                        <span className={`text-xs font-medium ${isActive ? "text-primary" : ""}`}>{rt.label}</span>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <Card>
