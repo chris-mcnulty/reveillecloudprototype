@@ -6,11 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Clock, Globe, Search, ShieldCheck, FileUp, Plus, Play, Loader2, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
+import { Clock, Globe, Search, ShieldCheck, FileUp, Play, Loader2, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { useState } from "react";
-import { useTenants, useAllTests, useRunTest, useTestRuns, useSharePointStatus, useCreateTest, useUpdateTest, useDeleteTest } from "@/lib/api";
-import type { SyntheticTest } from "@shared/schema";
+import { useState, useRef, useEffect } from "react";
+import { useSyntheticTests, useRunTest, useTestRuns, useSharePointStatus, useUpdateTest, useDeleteTest } from "@/lib/api";
+import { useActiveTenant } from "@/lib/tenant-context";
 import { useToast } from "@/hooks/use-toast";
 
 const typeIcons: Record<string, any> = {
@@ -21,22 +21,37 @@ const typeIcons: Record<string, any> = {
 };
 
 export default function TestsConfig() {
-  const { data: tenants } = useTenants();
-  const { data: allTests } = useAllTests();
+  const { activeTenantId, orgTenants, isMsp } = useActiveTenant();
   const { data: spStatus } = useSharePointStatus();
-  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const { data: tests } = useSyntheticTests(activeTenantId);
   const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
   const runTest = useRunTest();
   const updateTest = useUpdateTest();
   const deleteTest = useDeleteTest();
-  const createTest = useCreateTest();
   const { toast } = useToast();
 
-  const activeTenantId = selectedTenantId || tenants?.[0]?.id || null;
-  const tests = allTests?.filter(t => t.tenantId === activeTenantId) || [];
-  const selectedTest = tests.find(t => t.id === selectedTestId) || tests[0] || null;
+  const tenant = orgTenants.find(t => t.id === activeTenantId);
+  const testList = tests || [];
+  const selectedTest = testList.find(t => t.id === selectedTestId) || testList[0] || null;
   const activeTestId = selectedTest?.id || null;
   const { data: testRuns } = useTestRuns(activeTestId);
+
+  const targetRef = useRef<HTMLInputElement>(null);
+  const authRef = useRef<string>(selectedTest?.authContext || "delegated");
+  const intervalRef = useRef<string>(selectedTest?.interval?.replace(/ min/, "") || "5");
+  const timeoutRef = useRef<string>(String(selectedTest?.timeout || 30));
+  const networkPhasesRef = useRef<boolean>(selectedTest?.collectNetworkPhases ?? true);
+  const domTimingRef = useRef<boolean>(selectedTest?.collectDomTiming ?? true);
+
+  useEffect(() => {
+    if (selectedTest) {
+      authRef.current = selectedTest.authContext || "delegated";
+      intervalRef.current = selectedTest.interval?.replace(/ min/, "") || "5";
+      timeoutRef.current = String(selectedTest.timeout || 30);
+      networkPhasesRef.current = selectedTest.collectNetworkPhases ?? true;
+      domTimingRef.current = selectedTest.collectDomTiming ?? true;
+    }
+  }, [selectedTest?.id]);
 
   const handleRunTest = () => {
     if (!activeTestId) return;
@@ -50,6 +65,30 @@ export default function TestsConfig() {
       },
       onError: (err: any) => {
         toast({ title: "Run Failed", description: err.message, variant: "destructive" });
+      },
+    });
+  };
+
+  const handleSave = () => {
+    if (!activeTestId) return;
+    const target = targetRef.current?.value || selectedTest?.target || "";
+    const interval = `${intervalRef.current} min`;
+    const timeout = parseInt(timeoutRef.current) || 30;
+
+    updateTest.mutate({
+      id: activeTestId,
+      target,
+      authContext: authRef.current,
+      interval,
+      timeout,
+      collectNetworkPhases: networkPhasesRef.current,
+      collectDomTiming: domTimingRef.current,
+    }, {
+      onSuccess: () => {
+        toast({ title: "Configuration Saved", description: `Updated ${selectedTest?.name} settings.` });
+      },
+      onError: (err: any) => {
+        toast({ title: "Save Failed", description: err.message, variant: "destructive" });
       },
     });
   };
@@ -73,7 +112,7 @@ export default function TestsConfig() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight" data-testid="text-page-title">Tenant Configuration</h2>
           <p className="text-muted-foreground">
-            Manage Azure AD integration, synthetic tests, and alert rules.
+            Manage synthetic tests for <span className="font-medium text-foreground">{tenant?.name || "..."}</span>
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -83,16 +122,6 @@ export default function TestsConfig() {
               {spStatus.connected ? "Graph Connected" : "Graph Disconnected"}
             </Badge>
           )}
-          <Select value={activeTenantId || ""} onValueChange={v => { setSelectedTenantId(v); setSelectedTestId(null); }}>
-            <SelectTrigger className="w-[200px]" data-testid="select-tenant">
-              <SelectValue placeholder="Select tenant" />
-            </SelectTrigger>
-            <SelectContent>
-              {tenants?.map(t => (
-                <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </div>
       </div>
 
@@ -104,17 +133,17 @@ export default function TestsConfig() {
             <CardHeader>
               <CardTitle className="text-lg">Test Profiles</CardTitle>
               <CardDescription>
-                {tests.length} synthetic transaction{tests.length !== 1 ? "s" : ""} configured
+                {testList.length} synthetic transaction{testList.length !== 1 ? "s" : ""} configured
               </CardDescription>
             </CardHeader>
             <CardContent className="p-0">
               <div className="flex flex-col divide-y">
-                {tests.length === 0 && (
+                {testList.length === 0 && (
                   <div className="p-6 text-center text-sm text-muted-foreground">
                     No tests configured for this tenant.
                   </div>
                 )}
-                {tests.map((test) => {
+                {testList.map((test) => {
                   const TIcon = typeIcons[test.type] || Globe;
                   return (
                     <button
@@ -178,11 +207,11 @@ export default function TestsConfig() {
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="url">Target URL (Site or Page)</Label>
-                          <Input id="url" defaultValue={selectedTest.target} data-testid="input-target-url" />
+                          <Input id="url" ref={targetRef} key={selectedTest.id + "-target"} defaultValue={selectedTest.target} data-testid="input-target-url" />
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="auth">Authentication Context</Label>
-                          <Select defaultValue={selectedTest.authContext || "delegated"}>
+                          <Select key={selectedTest.id + "-auth"} defaultValue={selectedTest.authContext || "delegated"} onValueChange={v => { authRef.current = v; }}>
                             <SelectTrigger id="auth" data-testid="select-auth-context">
                               <SelectValue placeholder="Select auth" />
                             </SelectTrigger>
@@ -200,7 +229,7 @@ export default function TestsConfig() {
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="interval">Test Interval</Label>
-                          <Select defaultValue={selectedTest.interval?.replace(/ min/, "") || "5"}>
+                          <Select key={selectedTest.id + "-interval"} defaultValue={selectedTest.interval?.replace(/ min/, "") || "5"} onValueChange={v => { intervalRef.current = v; }}>
                             <SelectTrigger id="interval" data-testid="select-interval">
                               <SelectValue placeholder="Select interval" />
                             </SelectTrigger>
@@ -214,7 +243,7 @@ export default function TestsConfig() {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="timeout">Timeout Threshold</Label>
-                          <Select defaultValue={String(selectedTest.timeout || 30)}>
+                          <Select key={selectedTest.id + "-timeout"} defaultValue={String(selectedTest.timeout || 30)} onValueChange={v => { timeoutRef.current = v; }}>
                             <SelectTrigger id="timeout" data-testid="select-timeout">
                               <SelectValue placeholder="Select timeout" />
                             </SelectTrigger>
@@ -238,7 +267,7 @@ export default function TestsConfig() {
                               Record DNS, TCP, TLS, and TTFB latency breakdowns.
                             </p>
                           </div>
-                          <Switch defaultChecked={selectedTest.collectNetworkPhases ?? true} data-testid="switch-network-phases" />
+                          <Switch key={selectedTest.id + "-np"} defaultChecked={selectedTest.collectNetworkPhases ?? true} onCheckedChange={v => { networkPhasesRef.current = v; }} data-testid="switch-network-phases" />
                         </div>
                         <div className="flex items-center justify-between rounded-lg border p-4">
                           <div className="space-y-0.5">
@@ -247,7 +276,7 @@ export default function TestsConfig() {
                               Measure time to DOM interactive and completely loaded states.
                             </p>
                           </div>
-                          <Switch defaultChecked={selectedTest.collectDomTiming ?? true} data-testid="switch-dom-timing" />
+                          <Switch key={selectedTest.id + "-dt"} defaultChecked={selectedTest.collectDomTiming ?? true} onCheckedChange={v => { domTimingRef.current = v; }} data-testid="switch-dom-timing" />
                         </div>
                       </div>
                     </div>
@@ -255,7 +284,10 @@ export default function TestsConfig() {
                 </CardContent>
                 <CardFooter className="bg-muted/10 border-t p-6 flex justify-between">
                   <Button variant="destructive" size="sm" onClick={handleDeleteTest} data-testid="button-delete-test">Delete Test</Button>
-                  <Button data-testid="button-save-config">Save Configuration</Button>
+                  <Button onClick={handleSave} disabled={updateTest.isPending} data-testid="button-save-config">
+                    {updateTest.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Save Configuration
+                  </Button>
                 </CardFooter>
               </Card>
 
