@@ -245,14 +245,16 @@ function M365AdminChecklist() {
         },
         {
           title: "6. Enable Microsoft Defender for Office 365 Alerts",
-          where: "Microsoft 365 Defender portal (security.microsoft.com) > Policies & rules",
+          where: "Microsoft Defender portal (security.microsoft.com)",
           steps: [
-            "Navigate to security.microsoft.com > Settings > Microsoft 365 Defender",
-            "Ensure Defender for Office 365 is configured (P1 minimum for safe links/attachments)",
-            "Enable alert policies: Policies & rules > Alert policy > review/enable relevant policies",
-            "Key policies: Suspicious email sending, Malware campaign detected, Phishing delivered",
+            "Navigate to security.microsoft.com (now unified as 'Microsoft Defender' — formerly 'Microsoft 365 Defender')",
+            "Defender for Office 365 Plan 1 (included in E5, or available as add-on): enables Safe Links, Safe Attachments, anti-phishing policies",
+            "Alert policies: Settings > Email & collaboration > Alert policy — review and enable relevant built-in policies",
+            "Key built-in alert policies: Suspicious email sending patterns, Malware campaign detected, Phishing delivered due to override, Unusual volume of file deletion",
+            "Custom alert policies: Create alert policies for specific activities relevant to SharePoint monitoring",
+            "Note: Requires at least one Defender for Office 365 license in the tenant for security alerts to be generated",
           ],
-          impact: "Feeds security alerts into the SecurityEvents.Read.All Graph API. Without Defender configured, the security alert collector returns no data.",
+          impact: "Feeds security alerts into the SecurityEvents.Read.All Graph API. Without Defender for Office 365 licensed and configured, the security alert collector returns no data.",
         },
         {
           title: "7. Verify Conditional Access Policy Logging",
