@@ -16,6 +16,7 @@ import TestsConfig from "@/pages/settings/Tests";
 import AlertsConfig from "@/pages/settings/Alerts";
 import TenantConfig from "@/pages/settings/Tenant";
 import Onboarding from "@/pages/Onboarding";
+import SchedulerConfig from "@/pages/settings/Scheduler";
 
 function Router() {
   return (
@@ -32,6 +33,7 @@ function Router() {
       </Route>
       <Route path="/settings/tests" component={TestsConfig} />
       <Route path="/settings/alerts" component={AlertsConfig} />
+      <Route path="/settings/scheduler" component={SchedulerConfig} />
       <Route path="/settings/tenant" component={TenantConfig} />
       <Route component={NotFound} />
     </Switch>

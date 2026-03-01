@@ -7,6 +7,7 @@ export function SettingsNav() {
     { href: "/settings/tenant", label: "Integration & Consent" },
     { href: "/settings/tests", label: "Synthetic Tests" },
     { href: "/settings/alerts", label: "Alert Rules" },
+    { href: "/settings/scheduler", label: "Scheduler" },
   ];
 
   return (

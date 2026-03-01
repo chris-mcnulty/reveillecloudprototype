@@ -163,3 +163,67 @@ export function useTenantTestRuns(tenantId: string | null) {
 export function useAllTests() {
   return useQuery<SyntheticTest[]>({ queryKey: ["/api/all-tests"], queryFn: () => fetchJson("/api/all-tests") });
 }
+
+export function useSchedulerStatus() {
+  return useQuery<Record<string, { lastRun: string | null; isRunning: boolean; nextRun: string | null; activeJobRunId: string | null }>>({
+    queryKey: ["/api/scheduler/status"],
+    queryFn: () => fetchJson("/api/scheduler/status"),
+    refetchInterval: 5000,
+  });
+}
+
+export function useSchedulerJobRuns(filters?: { jobType?: string; tenantId?: string; limit?: number }) {
+  const params = new URLSearchParams();
+  if (filters?.jobType) params.set("jobType", filters.jobType);
+  if (filters?.tenantId) params.set("tenantId", filters.tenantId);
+  if (filters?.limit) params.set("limit", String(filters.limit));
+  const url = `/api/scheduler/job-runs?${params.toString()}`;
+  return useQuery<any[]>({
+    queryKey: ["/api/scheduler/job-runs", filters?.jobType, filters?.tenantId, filters?.limit],
+    queryFn: () => fetchJson(url),
+    refetchInterval: 10000,
+  });
+}
+
+export function useTriggerJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobType: string) => postJson(`/api/scheduler/trigger?jobType=${jobType}`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/scheduler/status"] });
+      qc.invalidateQueries({ queryKey: ["/api/scheduler/job-runs"] });
+    },
+  });
+}
+
+export function useCancelJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobType: string) => postJson(`/api/scheduler/cancel/${jobType}`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/scheduler/status"] });
+      qc.invalidateQueries({ queryKey: ["/api/scheduler/job-runs"] });
+    },
+  });
+}
+
+export function useResetJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobType: string) => postJson(`/api/scheduler/reset/${jobType}`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/scheduler/status"] });
+      qc.invalidateQueries({ queryKey: ["/api/scheduler/job-runs"] });
+    },
+  });
+}
+
+export function useAdminAuditLog(tenantId?: string, limit?: number) {
+  const params = new URLSearchParams();
+  if (tenantId) params.set("tenantId", tenantId);
+  if (limit) params.set("limit", String(limit));
+  return useQuery<any[]>({
+    queryKey: ["/api/admin-audit", tenantId, limit],
+    queryFn: () => fetchJson(`/api/admin-audit?${params.toString()}`),
+  });
+}
