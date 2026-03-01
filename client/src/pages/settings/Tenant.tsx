@@ -176,12 +176,15 @@ function M365AdminChecklist() {
       items: [
         {
           title: "1. Enable Unified Audit Logging (UAL)",
-          where: "Microsoft Purview compliance portal (compliance.microsoft.com) > Audit",
+          where: "Microsoft Purview portal (purview.microsoft.com) > Audit",
           steps: [
-            "Navigate to compliance.microsoft.com > Solutions > Audit",
-            "If you see a banner saying 'Start recording user and admin activity', click it to enable",
-            "Most tenants created after 2019 have this on by default — verify with PowerShell:",
-            "Get-AdminAuditLogConfig | Select UnifiedAuditLogIngestionEnabled (should be True)",
+            "Navigate to purview.microsoft.com > Solutions > Audit (or search 'Audit' in the top search bar)",
+            "If auditing is not enabled, you'll see a banner prompting you to turn it on — click 'Start recording user and admin activity'",
+            "For tenants created after January 2019, UAL is typically enabled by default",
+            "Verify via Exchange Online PowerShell: Connect-ExchangeOnline, then:",
+            "Get-AdminAuditLogConfig | Format-List UnifiedAuditLogIngestionEnabled (must be True)",
+            "If False, enable it: Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true",
+            "Note: Changes can take up to 60 minutes to take effect across the tenant",
           ],
           impact: "This is the master switch. Without UAL enabled, Microsoft records NO audit events — all audit collectors will return empty results regardless of permissions.",
         },
@@ -293,7 +296,7 @@ function M365AdminChecklist() {
         },
         {
           title: "10. Configure Information Protection Labels",
-          where: "Microsoft Purview (compliance.microsoft.com) > Information protection",
+          where: "Microsoft Purview portal (purview.microsoft.com) > Information protection",
           steps: [
             "Create and publish sensitivity labels if not already configured",
             "Enable auto-labeling policies for SharePoint/OneDrive content",
