@@ -24,7 +24,6 @@ const WORKLOAD_PERMISSIONS: Record<string, WorkloadConfig> = {
     color: "bg-[#038387]",
     permissions: [
       { scope: "Sites.Read.All", purpose: "Site structure, lists, libraries, subsites, drives, site analytics", status: "required", api: "Graph" },
-      { scope: "Sites.FullControl.All", purpose: "Site-level audit configuration, retention policies, site collection admin operations", status: "recommended", api: "Graph" },
       { scope: "Files.ReadWrite.All", purpose: "Synthetic file upload/download performance tests", status: "required", api: "Graph" },
       { scope: "Reports.Read.All", purpose: "Site usage, storage, file counts, page views, active users", status: "required", api: "Graph" },
     ],
