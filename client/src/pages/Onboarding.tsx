@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Building2, ShieldCheck, Activity, CheckCircle2, ArrowRight, ArrowLeft, Cloud, Loader2 } from "lucide-react";
 import { useCreateTenant, useCreateSystem, useCreateTest } from "@/lib/api";
+import { useActiveTenant } from "@/lib/tenant-context";
 import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 
@@ -15,9 +16,12 @@ export default function Onboarding() {
   const [orgName, setOrgName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [primaryDomain, setPrimaryDomain] = useState("");
+  const [azureTenantId, setAzureTenantId] = useState("");
   const [createdTenantId, setCreatedTenantId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
+  const { organization } = useActiveTenant();
   const createTenant = useCreateTenant();
   const createSystem = useCreateSystem();
   const createTest = useCreateTest();
@@ -25,18 +29,26 @@ export default function Onboarding() {
   const handleNext = async () => {
     if (step === 1) {
       if (!orgName || !adminEmail || !primaryDomain) return;
+      if (!organization?.id) {
+        setError("No active organization found. Please select an organization first.");
+        return;
+      }
       setIsSubmitting(true);
+      setError(null);
       try {
         const tenant = await createTenant.mutateAsync({
+          organizationId: organization.id,
           name: orgName,
           adminEmail,
           primaryDomain,
           status: "Healthy",
           consentStatus: "Pending",
+          azureTenantId: azureTenantId.trim() || null,
         });
         setCreatedTenantId(tenant.id);
         setStep(2);
-      } catch (e) {
+      } catch (e: any) {
+        setError(e?.message || "Failed to create tenant");
         console.error(e);
       } finally {
         setIsSubmitting(false);
@@ -149,6 +161,14 @@ export default function Onboarding() {
                 <Label htmlFor="primary-domain">Primary Domain</Label>
                 <Input data-testid="input-primary-domain" id="primary-domain" placeholder="acmecorp.onmicrosoft.com" value={primaryDomain} onChange={(e) => setPrimaryDomain(e.target.value)} />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="azure-tenant-id">Azure Tenant ID <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                <Input data-testid="input-azure-tenant-id" id="azure-tenant-id" placeholder="e.g. 12345678-abcd-1234-abcd-1234567890ab" value={azureTenantId} onChange={(e) => setAzureTenantId(e.target.value)} />
+                <p className="text-xs text-muted-foreground">Found in Azure Portal &gt; Entra ID &gt; Overview. Required for app-only authentication.</p>
+              </div>
+              {error && (
+                <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md">{error}</div>
+              )}
             </CardContent>
           </>
         )}
