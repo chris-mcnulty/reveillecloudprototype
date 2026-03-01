@@ -2,7 +2,7 @@ import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2 } from "lucide-react";
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend,
 } from "recharts";
 import { useMetrics, useMetricsSummary, useLatestMetrics } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
@@ -111,13 +111,15 @@ export default function Dashboard() {
                       <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <XAxis dataKey="time" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                  <XAxis dataKey="time" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} interval={2} />
                   <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}ms`} />
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                  <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--foreground))' }} />
-                  <Area type="monotone" name="Page Load" dataKey="pageLoad" stroke="hsl(var(--primary))" strokeWidth={2} fillOpacity={0.6} fill="url(#colorMs)" />
-                  <Area type="monotone" name="Search" dataKey="search" stroke="#10b981" strokeWidth={2} fillOpacity={0.3} fill="#10b981" />
-                  <Area type="monotone" name="File Upload" dataKey="fileUpload" stroke="#8b5cf6" strokeWidth={2} fillOpacity={0.3} fill="#8b5cf6" />
+                  <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} itemStyle={{ color: 'hsl(var(--foreground))' }} formatter={(value: any, name: string) => value != null ? [`${value}ms`, name] : []} />
+                  <Legend />
+                  <Area type="monotone" name="Page Load" dataKey="pageLoad" stroke="hsl(var(--primary))" strokeWidth={2} fillOpacity={0.6} fill="url(#colorMs)" connectNulls />
+                  <Area type="monotone" name="Search" dataKey="search" stroke="#10b981" strokeWidth={2} fillOpacity={0.3} fill="#10b981" connectNulls />
+                  <Area type="monotone" name="File Transfer" dataKey="fileTransfer" stroke="#8b5cf6" strokeWidth={2} fillOpacity={0.3} fill="#8b5cf6" connectNulls />
+                  <Area type="monotone" name="Authentication" dataKey="authentication" stroke="#f59e0b" strokeWidth={2} fillOpacity={0.2} fill="#f59e0b" connectNulls />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -176,19 +178,33 @@ export default function Dashboard() {
 }
 
 function buildTimeSeriesData(metrics: any[]) {
-  const buckets: Record<string, { pageLoad: number[]; search: number[]; fileUpload: number[] }> = {};
+  const buckets: Record<string, { pageLoad: number[]; search: number[]; fileTransfer: number[]; authentication: number[] }> = {};
+
+  const now = new Date();
+  for (let h = 0; h < 24; h++) {
+    const key = `${String(h).padStart(2, '0')}:00`;
+    buckets[key] = { pageLoad: [], search: [], fileTransfer: [], authentication: [] };
+  }
+
   metrics.forEach((m) => {
     const d = new Date(m.timestamp);
     const key = `${String(d.getHours()).padStart(2, '0')}:00`;
-    if (!buckets[key]) buckets[key] = { pageLoad: [], search: [], fileUpload: [] };
+    if (!buckets[key]) buckets[key] = { pageLoad: [], search: [], fileTransfer: [], authentication: [] };
     if (m.metricName === "page_load") buckets[key].pageLoad.push(m.value);
     else if (m.metricName === "search") buckets[key].search.push(m.value);
-    else if (m.metricName === "file_upload") buckets[key].fileUpload.push(m.value);
+    else if (m.metricName === "file_transfer") buckets[key].fileTransfer.push(m.value);
+    else if (m.metricName === "authentication") buckets[key].authentication.push(m.value);
   });
-  const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+  const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
   return Object.entries(buckets)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([time, v]) => ({ time, pageLoad: avg(v.pageLoad), search: avg(v.search), fileUpload: avg(v.fileUpload) }));
+    .map(([time, v]) => ({
+      time,
+      pageLoad: avg(v.pageLoad),
+      search: avg(v.search),
+      fileTransfer: avg(v.fileTransfer),
+      authentication: avg(v.authentication),
+    }));
 }
 
 function buildErrorData(metrics: any[]) {
@@ -211,7 +227,7 @@ function buildRecentLogs(metrics: any[]) {
     return {
       id: m.id,
       site: m.site || "Unknown",
-      type: m.metricName === "page_load" ? "Page Load" : m.metricName === "file_upload" ? "File Upload" : m.metricName === "search" ? "Search Query" : m.metricName,
+      type: m.metricName === "page_load" ? "Page Load" : m.metricName === "file_transfer" ? "File Transfer" : m.metricName === "search" ? "Search" : m.metricName === "authentication" ? "Auth" : m.metricName,
       status: m.status || "Success",
       latency: m.status === "Failed" ? "Timeout" : `${Math.round(m.value)}ms`,
       time: mins < 1 ? "Just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)}h ago`,

@@ -140,14 +140,14 @@ export default function Performance() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={syntheticData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis dataKey="time" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
+                    <XAxis dataKey="time" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} interval={3} />
                     <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}ms`} />
-                    <Tooltip contentStyle={tooltipStyle} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(value: any, name: string) => value != null ? [`${value}ms`, name] : []} />
                     <Legend />
-                    <Line type="monotone" dataKey="Page Load" stroke={CHART_COLORS.primary} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                    <Line type="monotone" dataKey="File Transfer" stroke={CHART_COLORS.purple} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                    <Line type="monotone" dataKey="Search" stroke={CHART_COLORS.green} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                    <Line type="monotone" dataKey="Authentication" stroke={CHART_COLORS.amber} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                    <Line type="monotone" dataKey="Page Load" stroke={CHART_COLORS.primary} strokeWidth={2} dot={false} activeDot={{ r: 5 }} connectNulls />
+                    <Line type="monotone" dataKey="File Transfer" stroke={CHART_COLORS.purple} strokeWidth={2} dot={false} activeDot={{ r: 5 }} connectNulls />
+                    <Line type="monotone" dataKey="Search" stroke={CHART_COLORS.green} strokeWidth={2} dot={false} activeDot={{ r: 5 }} connectNulls />
+                    <Line type="monotone" dataKey="Authentication" stroke={CHART_COLORS.amber} strokeWidth={2} dot={false} activeDot={{ r: 5 }} connectNulls />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -384,6 +384,14 @@ function formatBytes(bytes: number): string {
 
 function buildSyntheticTimeSeries(metrics: any[]) {
   const buckets: Record<string, Record<string, number[]>> = {};
+
+  for (let h = 0; h < 24; h++) {
+    for (let q = 0; q < 4; q++) {
+      const key = `${String(h).padStart(2, '0')}:${String(q * 15).padStart(2, '0')}`;
+      buckets[key] = { "Page Load": [], "File Transfer": [], "Search": [], "Authentication": [] };
+    }
+  }
+
   metrics.forEach((m) => {
     const d = new Date(m.timestamp);
     const key = `${String(d.getHours()).padStart(2, '0')}:${String(Math.floor(d.getMinutes() / 15) * 15).padStart(2, '0')}`;
@@ -393,7 +401,7 @@ function buildSyntheticTimeSeries(metrics: any[]) {
     else if (m.metricName === "search") buckets[key]["Search"].push(m.value);
     else if (m.metricName === "authentication") buckets[key]["Authentication"].push(m.value);
   });
-  const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+  const avg = (arr: number[]) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
   return Object.entries(buckets)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([time, v]) => ({
