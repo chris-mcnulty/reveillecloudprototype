@@ -9,6 +9,7 @@ import {
   metrics, type Metric, type InsertMetric,
   alerts, type Alert, type InsertAlert,
   testRuns, type TestRun, type InsertTestRun,
+  scheduledJobRuns, type ScheduledJobRun, type InsertScheduledJobRun,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -58,6 +59,14 @@ export interface IStorage {
   createTestRun(run: InsertTestRun): Promise<TestRun>;
   updateTestRun(id: string, data: Partial<TestRun>): Promise<TestRun | undefined>;
   getAllTests(): Promise<SyntheticTest[]>;
+
+  createScheduledJobRun(data: InsertScheduledJobRun): Promise<ScheduledJobRun>;
+  updateScheduledJobRun(id: string, data: Partial<InsertScheduledJobRun>): Promise<ScheduledJobRun | null>;
+  getScheduledJobRuns(limit?: number): Promise<ScheduledJobRun[]>;
+  getScheduledJobRunsByTenant(tenantId: string, limit?: number): Promise<ScheduledJobRun[]>;
+  getScheduledJobRunsByType(jobType: string, limit?: number): Promise<ScheduledJobRun[]>;
+  getRunningJobs(): Promise<ScheduledJobRun[]>;
+  getLatestJobRunForTest(testId: string): Promise<ScheduledJobRun | null>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -266,6 +275,56 @@ export class DatabaseStorage implements IStorage {
 
   async getAllTests(): Promise<SyntheticTest[]> {
     return db.select().from(syntheticTests);
+  }
+
+  async createScheduledJobRun(data: InsertScheduledJobRun): Promise<ScheduledJobRun> {
+    const [jobRun] = await db.insert(scheduledJobRuns).values(data).returning();
+    return jobRun;
+  }
+
+  async updateScheduledJobRun(id: string, data: Partial<InsertScheduledJobRun>): Promise<ScheduledJobRun | null> {
+    const [jobRun] = await db.update(scheduledJobRuns)
+      .set(data)
+      .where(eq(scheduledJobRuns.id, id))
+      .returning();
+    return jobRun || null;
+  }
+
+  async getScheduledJobRuns(limit = 100): Promise<ScheduledJobRun[]> {
+    return db.select().from(scheduledJobRuns)
+      .orderBy(desc(scheduledJobRuns.createdAt))
+      .limit(limit);
+  }
+
+  async getScheduledJobRunsByTenant(tenantId: string, limit = 50): Promise<ScheduledJobRun[]> {
+    return db.select().from(scheduledJobRuns)
+      .where(eq(scheduledJobRuns.tenantId, tenantId))
+      .orderBy(desc(scheduledJobRuns.createdAt))
+      .limit(limit);
+  }
+
+  async getScheduledJobRunsByType(jobType: string, limit = 50): Promise<ScheduledJobRun[]> {
+    return db.select().from(scheduledJobRuns)
+      .where(eq(scheduledJobRuns.jobType, jobType))
+      .orderBy(desc(scheduledJobRuns.createdAt))
+      .limit(limit);
+  }
+
+  async getRunningJobs(): Promise<ScheduledJobRun[]> {
+    return db.select().from(scheduledJobRuns)
+      .where(eq(scheduledJobRuns.status, "running"))
+      .orderBy(desc(scheduledJobRuns.startedAt));
+  }
+
+  async getLatestJobRunForTest(testId: string): Promise<ScheduledJobRun | null> {
+    const [run] = await db.select().from(scheduledJobRuns)
+      .where(and(
+        eq(scheduledJobRuns.testId, testId),
+        eq(scheduledJobRuns.jobType, "syntheticTest"),
+      ))
+      .orderBy(desc(scheduledJobRuns.createdAt))
+      .limit(1);
+    return run || null;
   }
 }
 

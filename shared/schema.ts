@@ -126,3 +126,24 @@ export const testRuns = pgTable("test_runs", {
 export const insertTestRunSchema = createInsertSchema(testRuns).omit({ id: true });
 export type InsertTestRun = z.infer<typeof insertTestRunSchema>;
 export type TestRun = typeof testRuns.$inferSelect;
+
+export const scheduledJobRuns = pgTable("scheduled_job_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobType: text("job_type").notNull(),
+  tenantId: varchar("tenant_id"),
+  testId: varchar("test_id"),
+  testName: text("test_name"),
+  status: text("status").notNull().default("pending"),
+  result: jsonb("result").$type<Record<string, any>>(),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertScheduledJobRunSchema = createInsertSchema(scheduledJobRuns).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertScheduledJobRun = z.infer<typeof insertScheduledJobRunSchema>;
+export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;

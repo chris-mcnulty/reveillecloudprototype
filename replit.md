@@ -24,8 +24,9 @@ server/
   seed.ts          - Database seeding with org/tenant/test structure (no fake metrics - real data only)
   sharepoint.ts    - Microsoft Graph client auth (Replit SharePoint connector)
   testRunner.ts    - Synthetic test execution engine (Page Load, File Transfer, Search, Auth)
+  scheduler.ts     - Automated test scheduler (adapted from Synozur Orbit pattern)
 shared/
-  schema.ts        - Drizzle schema (tenants, systems, tests, alertRules, metrics, alerts, testRuns)
+  schema.ts        - Drizzle schema (tenants, systems, tests, alertRules, metrics, alerts, testRuns, scheduledJobRuns)
 ```
 
 ## Key Data Models
@@ -37,6 +38,7 @@ shared/
 - **metrics**: Time-series performance measurements
 - **alerts**: Generated incident records
 - **testRuns**: Synthetic test execution history with timing breakdowns
+- **scheduledJobRuns**: Scheduler job run tracking (status, results, errors, timing)
 
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
@@ -60,6 +62,11 @@ All prefixed with `/api`:
 - `GET /tests/:id/runs` (test execution history)
 - `GET /tenants/:tenantId/test-runs` (all runs for a tenant)
 - `GET /all-tests` (all tests across tenants)
+- `GET /scheduler/status` (in-memory scheduler state)
+- `POST /scheduler/trigger` (manually trigger test sweep)
+- `POST /scheduler/reset/:jobType`, `POST /scheduler/reset-all` (reset stuck jobs)
+- `POST /scheduler/cancel/:jobType` (cancel running job)
+- `GET /scheduler/job-runs?jobType=&tenantId=&limit=` (persisted job run history)
 
 ## Frontend Pages
 - `/` - Tenant Dashboard (default single-tenant view with charts)
@@ -73,5 +80,18 @@ All prefixed with `/api`:
 - `/settings/tests` - Synthetic test configuration
 - `/settings/alerts` - Alert rule configuration
 
+## Scheduler
+- Adapted from Synozur Orbit multi-tenant scheduler pattern (https://github.com/chris-mcnulty/synozur-orbit)
+- Sweeps every 60 seconds, checks each test's configured interval vs last run time
+- Only runs tests for tenants with `consentStatus === "Connected"`
+- Stagers execution with 1-3s jitter between tests, 500ms between tenants (per spec throttling guidelines)
+- AbortController support for job cancellation
+- Stuck job cleanup every 15 minutes (auto-marks jobs running >1 hour as failed)
+- Startup sweep runs 10s after boot to catch any overdue tests
+- All job runs persisted to `scheduledJobRuns` table for history/audit
+
 ## Branding
 Reveille Cloud with custom logo assets in attached_assets/
+
+## External References
+- Synozur Orbit (competitive intelligence): https://github.com/chris-mcnulty/synozur-orbit — has multi-tenant task scheduler pattern used as basis for Reveille scheduler

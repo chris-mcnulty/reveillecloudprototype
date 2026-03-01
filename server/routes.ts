@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
+import { getSchedulerStatus, triggerSyntheticTestsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -249,6 +250,48 @@ export async function registerRoutes(
   app.get("/api/all-tests", async (_req, res) => {
     const tests = await storage.getAllTests();
     res.json(tests);
+  });
+
+  app.get("/api/scheduler/status", async (_req, res) => {
+    const status = getSchedulerStatus();
+    res.json(status);
+  });
+
+  app.post("/api/scheduler/trigger", async (_req, res) => {
+    await triggerSyntheticTestsNow();
+    res.json({ message: "Synthetic test sweep triggered" });
+  });
+
+  app.post("/api/scheduler/reset/:jobType", async (req, res) => {
+    const success = await resetStuckJob(req.params.jobType);
+    if (!success) return res.status(404).json({ message: "Unknown job type" });
+    res.json({ message: `Job ${req.params.jobType} reset` });
+  });
+
+  app.post("/api/scheduler/reset-all", async (_req, res) => {
+    const resetJobs = await resetAllStuckJobs();
+    res.json({ resetJobs });
+  });
+
+  app.post("/api/scheduler/cancel/:jobType", async (req, res) => {
+    const result = await cancelJob(req.params.jobType);
+    res.json(result);
+  });
+
+  app.get("/api/scheduler/job-runs", async (req, res) => {
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
+    const jobType = req.query.jobType as string | undefined;
+    const tenantId = req.query.tenantId as string | undefined;
+
+    let runs;
+    if (jobType) {
+      runs = await storage.getScheduledJobRunsByType(jobType, limit);
+    } else if (tenantId) {
+      runs = await storage.getScheduledJobRunsByTenant(tenantId, limit);
+    } else {
+      runs = await storage.getScheduledJobRuns(limit);
+    }
+    res.json(runs);
   });
 
   return httpServer;
