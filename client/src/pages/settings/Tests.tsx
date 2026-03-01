@@ -6,12 +6,44 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Clock, Globe, Search, ShieldCheck, FileUp, Play, Loader2, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Clock, Globe, Search, ShieldCheck, FileUp, Play, Loader2, CheckCircle2, XCircle, AlertTriangle, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useState, useRef, useEffect } from "react";
-import { useSyntheticTests, useRunTest, useTestRuns, useSharePointStatus, useUpdateTest, useDeleteTest } from "@/lib/api";
+import { useSyntheticTests, useRunTest, useTestRuns, useSharePointStatus, useUpdateTest, useDeleteTest, useCreateTest } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { useToast } from "@/hooks/use-toast";
+
+const testTypeDescriptions: Record<string, { label: string; description: string; targetLabel: string; targetPlaceholder: string; targetHint: string }> = {
+  "Page Load": {
+    label: "Page Load",
+    description: "Measures site resolution and list enumeration latency via Microsoft Graph",
+    targetLabel: "Site URL",
+    targetPlaceholder: "https://contoso.sharepoint.com/sites/marketing",
+    targetHint: "Full SharePoint site URL",
+  },
+  "File Transfer": {
+    label: "File Transfer",
+    description: "Uploads and downloads a test file to measure transfer performance",
+    targetLabel: "Target Path or URL",
+    targetPlaceholder: "https://contoso.sharepoint.com/sites/docs/Shared Documents",
+    targetHint: "Full URL or path like /sites/docs/Shared Documents",
+  },
+  "Search": {
+    label: "Search",
+    description: "Executes a search query and measures response time and result count",
+    targetLabel: "Search Query",
+    targetPlaceholder: "quarterly report",
+    targetHint: "The search query to execute",
+  },
+  "Authentication": {
+    label: "Authentication",
+    description: "Measures token acquisition and profile fetch latency",
+    targetLabel: "Target (ignored)",
+    targetPlaceholder: "auth-check",
+    targetHint: "Any value — this test checks auth token flow",
+  },
+};
 
 const typeIcons: Record<string, any> = {
   "Page Load": Globe,
@@ -29,6 +61,13 @@ export default function TestsConfig() {
   const updateTest = useUpdateTest();
   const deleteTest = useDeleteTest();
   const { toast } = useToast();
+
+  const createTest = useCreateTest();
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [newTestType, setNewTestType] = useState<string>("Page Load");
+  const [newTestName, setNewTestName] = useState("");
+  const [newTestTarget, setNewTestTarget] = useState("");
+  const [newTestInterval, setNewTestInterval] = useState("5");
 
   const tenant = orgTenants.find(t => t.id === activeTenantId);
   const testList = tests || [];
@@ -104,6 +143,31 @@ export default function TestsConfig() {
     });
   };
 
+  const handleCreateTest = () => {
+    if (!activeTenantId || !newTestName.trim() || !newTestTarget.trim()) return;
+    createTest.mutate({
+      tenantId: activeTenantId,
+      name: newTestName.trim(),
+      type: newTestType,
+      target: newTestTarget.trim(),
+      interval: `${newTestInterval} min`,
+      status: "Active",
+    }, {
+      onSuccess: (data: any) => {
+        setCreateDialogOpen(false);
+        setNewTestName("");
+        setNewTestTarget("");
+        setNewTestType("Page Load");
+        setNewTestInterval("5");
+        setSelectedTestId(data.id);
+        toast({ title: "Test Created", description: `${newTestName} is now active.` });
+      },
+      onError: (err: any) => {
+        toast({ title: "Create Failed", description: err.message, variant: "destructive" });
+      },
+    });
+  };
+
   const Icon = selectedTest ? (typeIcons[selectedTest.type] || Globe) : Globe;
 
   return (
@@ -131,10 +195,98 @@ export default function TestsConfig() {
         <div className="md:col-span-1 space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Test Profiles</CardTitle>
-              <CardDescription>
-                {testList.length} synthetic transaction{testList.length !== 1 ? "s" : ""} configured
-              </CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg">Test Profiles</CardTitle>
+                  <CardDescription>
+                    {testList.length} synthetic transaction{testList.length !== 1 ? "s" : ""} configured
+                  </CardDescription>
+                </div>
+                <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button variant="outline" size="sm" data-testid="button-add-test">
+                      <Plus className="h-4 w-4 mr-1" /> Add
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-[500px]">
+                    <DialogHeader>
+                      <DialogTitle>Create Synthetic Test</DialogTitle>
+                      <DialogDescription>
+                        Add a new monitoring test for {tenant?.name || "this tenant"}.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label>Test Type</Label>
+                        <Select value={newTestType} onValueChange={(v) => { setNewTestType(v); setNewTestTarget(""); }}>
+                          <SelectTrigger data-testid="select-new-test-type">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Object.entries(testTypeDescriptions).map(([key, info]) => {
+                              const TIcon = typeIcons[key] || Globe;
+                              return (
+                                <SelectItem key={key} value={key}>
+                                  <span className="flex items-center gap-2">
+                                    <TIcon className="h-4 w-4" /> {info.label}
+                                  </span>
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">{testTypeDescriptions[newTestType]?.description}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Test Name</Label>
+                        <Input
+                          value={newTestName}
+                          onChange={(e) => setNewTestName(e.target.value)}
+                          placeholder={`e.g. ${tenant?.name || "My"} ${testTypeDescriptions[newTestType]?.label}`}
+                          data-testid="input-new-test-name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{testTypeDescriptions[newTestType]?.targetLabel}</Label>
+                        <Input
+                          value={newTestTarget}
+                          onChange={(e) => setNewTestTarget(e.target.value)}
+                          placeholder={testTypeDescriptions[newTestType]?.targetPlaceholder}
+                          data-testid="input-new-test-target"
+                        />
+                        <p className="text-xs text-muted-foreground">{testTypeDescriptions[newTestType]?.targetHint}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Test Interval</Label>
+                        <Select value={newTestInterval} onValueChange={setNewTestInterval}>
+                          <SelectTrigger data-testid="select-new-test-interval">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="1">Every 1 minute</SelectItem>
+                            <SelectItem value="5">Every 5 minutes</SelectItem>
+                            <SelectItem value="10">Every 10 minutes</SelectItem>
+                            <SelectItem value="15">Every 15 minutes</SelectItem>
+                            <SelectItem value="30">Every 30 minutes</SelectItem>
+                            <SelectItem value="60">Every hour</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        onClick={handleCreateTest}
+                        disabled={createTest.isPending || !newTestName.trim() || !newTestTarget.trim()}
+                        data-testid="button-create-test-submit"
+                      >
+                        {createTest.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        Create Test
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </CardHeader>
             <CardContent className="p-0">
               <div className="flex flex-col divide-y">
@@ -206,8 +358,9 @@ export default function TestsConfig() {
                       <h3 className="text-sm font-medium mb-4">Target Configuration</h3>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <Label htmlFor="url">Target URL (Site or Page)</Label>
+                          <Label htmlFor="url">{testTypeDescriptions[selectedTest.type]?.targetLabel || "Target URL"}</Label>
                           <Input id="url" ref={targetRef} key={selectedTest.id + "-target"} defaultValue={selectedTest.target} data-testid="input-target-url" />
+                          <p className="text-xs text-muted-foreground">{testTypeDescriptions[selectedTest.type]?.targetHint}</p>
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="auth">Authentication Context</Label>

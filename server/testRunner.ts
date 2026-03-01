@@ -66,20 +66,42 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
     const fileName = `reveille-test-${Date.now()}.txt`;
 
     const driveStart = Date.now();
-    const targetPath = test.target.startsWith("/") ? test.target : `/${test.target}`;
+    let targetPath: string;
+    let hostname: string | null = null;
+    try {
+      const parsed = new URL(test.target);
+      hostname = parsed.hostname;
+      targetPath = parsed.pathname;
+    } catch {
+      targetPath = test.target.startsWith("/") ? test.target : `/${test.target}`;
+    }
 
     const parts = targetPath.split("/").filter(Boolean);
-    const siteName = parts[1] || "root";
-    const folderPath = parts.slice(2).join("/") || "General";
+    const decodedParts = parts.map(p => decodeURIComponent(p));
+    const siteIndex = decodedParts.indexOf("sites");
+    const siteName = siteIndex >= 0 && decodedParts[siteIndex + 1] ? decodedParts[siteIndex + 1] : null;
+    const folderPath = siteIndex >= 0 ? decodedParts.slice(siteIndex + 2).join("/") || "General" : decodedParts.join("/") || "General";
 
     let driveId: string;
     try {
-      const site = await client.api(`/sites/root:/sites/${siteName}`).get();
+      let site: any;
+      if (hostname && siteName) {
+        site = await client.api(`/sites/${hostname}:/sites/${siteName}`).get();
+      } else if (siteName) {
+        site = await client.api(`/sites/root:/sites/${siteName}`).get();
+      } else if (hostname) {
+        site = await client.api(`/sites/${hostname}`).get();
+      } else {
+        site = await client.api('/sites/root').get();
+      }
       const drives = await client.api(`/sites/${site.id}/drives`).get();
+      if (!drives.value?.length) throw new Error(`No document libraries found on site "${siteName || "root"}"`);
       driveId = drives.value[0].id;
-    } catch {
+    } catch (siteErr: any) {
+      if (siteErr.message?.includes("No document libraries")) throw siteErr;
       const rootSite = await client.api('/sites/root').get();
       const drives = await client.api(`/sites/${rootSite.id}/drives`).get();
+      if (!drives.value?.length) throw new Error("No document libraries found on root site");
       driveId = drives.value[0].id;
     }
     const driveResolveMs = Date.now() - driveStart;
