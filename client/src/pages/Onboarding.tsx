@@ -194,10 +194,39 @@ export default function Onboarding() {
                 <p className="text-sm text-muted-foreground text-center max-w-md mb-6">
                   You will be redirected to the Microsoft login portal to sign in as a Global Administrator and grant consent.
                 </p>
-                <Button size="lg" className="w-full sm:w-auto bg-[#0078D4] hover:bg-[#0078D4]/90 text-white" data-testid="button-grant-consent">
+                <Button
+                  size="lg"
+                  className="w-full sm:w-auto bg-[#0078D4] hover:bg-[#0078D4]/90 text-white"
+                  data-testid="button-grant-consent"
+                  disabled={!createdTenantId || isSubmitting}
+                  onClick={async () => {
+                    if (!createdTenantId) return;
+                    setIsSubmitting(true);
+                    try {
+                      const res = await fetch(`/api/auth/consent-url?tenantId=${createdTenantId}`);
+                      const data = await res.json();
+                      if (data.consentUrl) {
+                        window.location.href = data.consentUrl;
+                      } else {
+                        setError(data.message || "Failed to generate consent URL");
+                      }
+                    } catch (e: any) {
+                      setError(e?.message || "Failed to get consent URL");
+                    } finally {
+                      setIsSubmitting(false);
+                    }
+                  }}
+                >
+                  {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Grant Admin Consent
                 </Button>
+                <p className="text-xs text-muted-foreground mt-3">
+                  Or <button type="button" className="underline hover:text-foreground" onClick={() => setStep(3)}>skip this step</button> and configure consent later.
+                </p>
               </div>
+              {error && (
+                <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md">{error}</div>
+              )}
             </CardContent>
           </>
         )}
