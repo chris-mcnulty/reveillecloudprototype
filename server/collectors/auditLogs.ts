@@ -175,21 +175,43 @@ async function collectViaManagementApi(
     const token = await getManagementApiToken(azureTenantId);
     const baseUrl = `https://manage.office.com/api/v1.0/${azureTenantId}/activity/feed`;
 
+    let existingSubs: any[] = [];
     const subsResponse = await fetch(`${baseUrl}/subscriptions/list`, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
     if (!subsResponse.ok) {
+      const errBody = await subsResponse.text().catch(() => "");
+      console.warn(`[Audit Logs] Management API subscriptions/list failed for tenant ${azureTenantId}: ${subsResponse.status} ${errBody}`);
+
       if (subsResponse.status === 403) {
         console.warn("[Audit Logs] Management Activity API not authorized — needs ActivityFeed.Read permission on Office 365 Management APIs");
         return false;
       }
-      console.warn(`[Audit Logs] Management API subscriptions list failed: ${subsResponse.status}`);
+
+      const isTenantNotFound = errBody.toLowerCase().includes("tenant") && 
+        (errBody.toLowerCase().includes("not found") || errBody.toLowerCase().includes("does not exist") || errBody.toLowerCase().includes("not exist"));
+
+      if (isTenantNotFound || subsResponse.status === 400 || subsResponse.status === 404) {
+        console.log(`[Audit Logs] Tenant ${azureTenantId} not provisioned in Management API — attempting to start subscriptions to provision it...`);
+        let startedAny = false;
+        for (const contentType of MANAGEMENT_API_CONTENT_TYPES) {
+          const started = await ensureSubscription(baseUrl, token, contentType, []);
+          if (started) startedAny = true;
+        }
+        if (startedAny) {
+          result.sources.push("managementApi:tenantProvisioned");
+        } else {
+          result.sources.push("managementApi:provisioningStarted");
+        }
+        return startedAny;
+      }
+
       return false;
     }
 
     const subscriptions = await subsResponse.json();
-    const existingSubs = Array.isArray(subscriptions) ? subscriptions : [];
+    existingSubs = Array.isArray(subscriptions) ? subscriptions : [];
 
     let anyNewSubscriptions = false;
     for (const contentType of MANAGEMENT_API_CONTENT_TYPES) {
