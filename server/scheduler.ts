@@ -4,6 +4,7 @@ import { collectSharePointUsageReports } from "./collectors/graphReports";
 import { collectServiceHealthIncidents } from "./collectors/serviceHealth";
 import { collectAuditLogs } from "./collectors/auditLogs";
 import { collectSiteStructure } from "./collectors/siteStructure";
+import { collectPowerPlatformTelemetry } from "./collectors/powerPlatform";
 import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -21,6 +22,7 @@ const jobStatus: Record<string, JobStatus> = {
   serviceHealth: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   auditLogs: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   siteStructure: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  powerPlatform: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -444,11 +446,59 @@ async function runSiteStructureJob(): Promise<void> {
   }
 }
 
+async function runPowerPlatformJob(): Promise<void> {
+  if (jobStatus.powerPlatform.isRunning) {
+    console.log("[Scheduler] Power Platform already running, skipping...");
+    return;
+  }
+
+  jobStatus.powerPlatform.isRunning = true;
+  console.log("[Scheduler] Starting Power Platform collection...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+    const azureConfigured = isAzureAppConfigured();
+
+    for (const tenant of consentedTenants) {
+      if (!azureConfigured || !tenant.azureTenantId) continue;
+
+      const jobRunId = await trackJobStart("powerPlatform", tenant.id, undefined, `Power Platform for ${tenant.name}`);
+      jobStatus.powerPlatform.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectPowerPlatformTelemetry(tenant.id);
+        const hasErrors = result.errors.length > 0;
+        const totalResources = result.apps + result.flows + result.bots;
+        await trackJobComplete(jobRunId, hasErrors && totalResources === 0 ? "failed" : "completed", {
+          environments: result.environments,
+          apps: result.apps,
+          flows: result.flows,
+          bots: result.bots,
+        }, hasErrors ? result.errors.join("; ") : undefined);
+        console.log(`[Scheduler] Power Platform for ${tenant.name}: ${result.environments} envs, ${result.apps} apps, ${result.flows} flows, ${result.bots} bots`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] Power Platform failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] Power Platform job failed:", error);
+  } finally {
+    jobStatus.powerPlatform.isRunning = false;
+    jobStatus.powerPlatform.activeJobRunId = null;
+    jobStatus.powerPlatform.lastRun = new Date();
+  }
+}
+
 let syntheticTestInterval: NodeJS.Timeout | null = null;
 let graphReportsInterval: NodeJS.Timeout | null = null;
 let serviceHealthInterval: NodeJS.Timeout | null = null;
 let auditLogsInterval: NodeJS.Timeout | null = null;
 let siteStructureInterval: NodeJS.Timeout | null = null;
+let powerPlatformInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 export function startScheduler(): void {
@@ -459,6 +509,7 @@ export function startScheduler(): void {
   if (serviceHealthInterval) clearInterval(serviceHealthInterval);
   if (auditLogsInterval) clearInterval(auditLogsInterval);
   if (siteStructureInterval) clearInterval(siteStructureInterval);
+  if (powerPlatformInterval) clearInterval(powerPlatformInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -480,6 +531,10 @@ export function startScheduler(): void {
   siteStructureInterval = setInterval(() => {
     runSiteStructureJob();
   }, 60 * 60 * 1000);
+
+  powerPlatformInterval = setInterval(() => {
+    runPowerPlatformJob();
+  }, 30 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -516,12 +571,18 @@ export function startScheduler(): void {
     runSiteStructureJob();
   }, 45 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial Power Platform collection...");
+    runPowerPlatformJob();
+  }, 55 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
   console.log("  - Audit logs: every 15m (initial in 20s)");
   console.log("  - Graph reports: every 6h (initial in 30s)");
   console.log("  - Site structure: every 1h (initial in 45s)");
+  console.log("  - Power Platform: every 30m (initial in 55s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -531,6 +592,7 @@ export function stopScheduler(): void {
   if (serviceHealthInterval) { clearInterval(serviceHealthInterval); serviceHealthInterval = null; }
   if (auditLogsInterval) { clearInterval(auditLogsInterval); auditLogsInterval = null; }
   if (siteStructureInterval) { clearInterval(siteStructureInterval); siteStructureInterval = null; }
+  if (powerPlatformInterval) { clearInterval(powerPlatformInterval); powerPlatformInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -566,6 +628,10 @@ export async function triggerAuditLogsNow(): Promise<void> {
 
 export async function triggerSiteStructureNow(): Promise<void> {
   runSiteStructureJob();
+}
+
+export async function triggerPowerPlatformNow(): Promise<void> {
+  runPowerPlatformJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

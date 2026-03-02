@@ -213,3 +213,38 @@ export const adminAuditLog = pgTable("admin_audit_log", {
 export const insertAdminAuditLogSchema = createInsertSchema(adminAuditLog).omit({ id: true });
 export type InsertAdminAuditLog = z.infer<typeof insertAdminAuditLogSchema>;
 export type AdminAuditLog = typeof adminAuditLog.$inferSelect;
+
+export const powerPlatformEnvironments = pgTable("power_platform_environments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  environmentId: text("environment_id").notNull(),
+  displayName: text("display_name").notNull(),
+  environmentType: text("environment_type"),
+  region: text("region"),
+  state: text("state"),
+  properties: jsonb("properties").$type<Record<string, any>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertPowerPlatformEnvironmentSchema = createInsertSchema(powerPlatformEnvironments).omit({ id: true });
+export type InsertPowerPlatformEnvironment = z.infer<typeof insertPowerPlatformEnvironmentSchema>;
+export type PowerPlatformEnvironment = typeof powerPlatformEnvironments.$inferSelect;
+
+export const powerPlatformResources = pgTable("power_platform_resources", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  environmentId: text("environment_id").notNull(),
+  resourceType: text("resource_type").notNull(),
+  resourceId: text("resource_id").notNull(),
+  displayName: text("display_name").notNull(),
+  owner: text("owner"),
+  status: text("status"),
+  lastModifiedDate: text("last_modified_date"),
+  lastRunDate: text("last_run_date"),
+  details: jsonb("details").$type<Record<string, any>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertPowerPlatformResourceSchema = createInsertSchema(powerPlatformResources).omit({ id: true });
+export type InsertPowerPlatformResource = z.infer<typeof insertPowerPlatformResourceSchema>;
+export type PowerPlatformResource = typeof powerPlatformResources.$inferSelect;

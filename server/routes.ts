@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
 
 async function logAdminAction(
@@ -295,6 +295,9 @@ export async function registerRoutes(
       case "siteStructure":
         await triggerSiteStructureNow();
         break;
+      case "powerPlatform":
+        await triggerPowerPlatformNow();
+        break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
     }
@@ -375,6 +378,36 @@ export async function registerRoutes(
   app.get("/api/tenants/:tenantId/audit-log/stats", async (req, res) => {
     const stats = await storage.getAuditLogStats(req.params.tenantId);
     res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/power-platform/environments", async (req, res) => {
+    const envs = await storage.getPowerPlatformEnvironments(req.params.tenantId);
+    res.json(envs);
+  });
+
+  app.get("/api/tenants/:tenantId/power-platform/resources", async (req, res) => {
+    const envId = req.query.envId as string | undefined;
+    const resourceType = req.query.type as string | undefined;
+    const resources = await storage.getPowerPlatformResources(req.params.tenantId, envId, resourceType);
+    res.json(resources);
+  });
+
+  app.get("/api/tenants/:tenantId/power-platform/stats", async (req, res) => {
+    const stats = await storage.getPowerPlatformResourceStats(req.params.tenantId);
+    const envs = await storage.getPowerPlatformEnvironments(req.params.tenantId);
+    res.json({
+      environments: envs.length,
+      environmentsByType: envs.reduce((acc: Record<string, number>, e) => {
+        const type = e.environmentType || "Unknown";
+        acc[type] = (acc[type] || 0) + 1;
+        return acc;
+      }, {}),
+      resourcesByType: stats.reduce((acc: Record<string, number>, s) => {
+        acc[s.resourceType] = s.count;
+        return acc;
+      }, {}),
+      totalResources: stats.reduce((sum, s) => sum + s.count, 0),
+    });
   });
 
   app.get("/api/admin-audit", async (req, res) => {

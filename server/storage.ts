@@ -14,6 +14,8 @@ import {
   serviceHealthIncidents, type ServiceHealthIncident, type InsertServiceHealthIncident,
   auditLogEntries, type AuditLogEntry, type InsertAuditLogEntry,
   adminAuditLog, type AdminAuditLog, type InsertAdminAuditLog,
+  powerPlatformEnvironments, type PowerPlatformEnvironment, type InsertPowerPlatformEnvironment,
+  powerPlatformResources, type PowerPlatformResource, type InsertPowerPlatformResource,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -86,6 +88,12 @@ export interface IStorage {
 
   createAdminAuditEntry(entry: InsertAdminAuditLog): Promise<AdminAuditLog>;
   getAdminAuditLog(tenantId?: string, since?: Date, limit?: number): Promise<AdminAuditLog[]>;
+
+  upsertPowerPlatformEnvironment(data: InsertPowerPlatformEnvironment): Promise<PowerPlatformEnvironment>;
+  getPowerPlatformEnvironments(tenantId: string): Promise<PowerPlatformEnvironment[]>;
+  upsertPowerPlatformResource(data: InsertPowerPlatformResource): Promise<PowerPlatformResource>;
+  getPowerPlatformResources(tenantId: string, envId?: string, resourceType?: string): Promise<PowerPlatformResource[]>;
+  getPowerPlatformResourceStats(tenantId: string): Promise<{ resourceType: string; count: number }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -138,6 +146,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    await db.delete(powerPlatformResources).where(eq(powerPlatformResources.tenantId, id));
+    await db.delete(powerPlatformEnvironments).where(eq(powerPlatformEnvironments.tenantId, id));
     await db.delete(adminAuditLog).where(eq(adminAuditLog.tenantId, id));
     await db.delete(auditLogEntries).where(eq(auditLogEntries.tenantId, id));
     await db.delete(usageReports).where(eq(usageReports.tenantId, id));
@@ -466,6 +476,70 @@ export class DatabaseStorage implements IStorage {
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(adminAuditLog.timestamp))
       .limit(limit);
+  }
+
+  async upsertPowerPlatformEnvironment(data: InsertPowerPlatformEnvironment): Promise<PowerPlatformEnvironment> {
+    const existing = await db.select().from(powerPlatformEnvironments)
+      .where(and(
+        eq(powerPlatformEnvironments.tenantId, data.tenantId),
+        eq(powerPlatformEnvironments.environmentId, data.environmentId),
+      )).limit(1);
+
+    if (existing.length > 0) {
+      const [updated] = await db.update(powerPlatformEnvironments)
+        .set({ ...data, collectedAt: new Date() })
+        .where(eq(powerPlatformEnvironments.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(powerPlatformEnvironments).values(data).returning();
+    return created;
+  }
+
+  async getPowerPlatformEnvironments(tenantId: string): Promise<PowerPlatformEnvironment[]> {
+    return db.select().from(powerPlatformEnvironments)
+      .where(eq(powerPlatformEnvironments.tenantId, tenantId))
+      .orderBy(desc(powerPlatformEnvironments.collectedAt));
+  }
+
+  async upsertPowerPlatformResource(data: InsertPowerPlatformResource): Promise<PowerPlatformResource> {
+    const existing = await db.select().from(powerPlatformResources)
+      .where(and(
+        eq(powerPlatformResources.tenantId, data.tenantId),
+        eq(powerPlatformResources.resourceId, data.resourceId),
+        eq(powerPlatformResources.resourceType, data.resourceType),
+      )).limit(1);
+
+    if (existing.length > 0) {
+      const [updated] = await db.update(powerPlatformResources)
+        .set({ ...data, collectedAt: new Date() })
+        .where(eq(powerPlatformResources.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(powerPlatformResources).values(data).returning();
+    return created;
+  }
+
+  async getPowerPlatformResources(tenantId: string, envId?: string, resourceType?: string): Promise<PowerPlatformResource[]> {
+    const conditions: any[] = [eq(powerPlatformResources.tenantId, tenantId)];
+    if (envId) conditions.push(eq(powerPlatformResources.environmentId, envId));
+    if (resourceType) conditions.push(eq(powerPlatformResources.resourceType, resourceType));
+    return db.select().from(powerPlatformResources)
+      .where(and(...conditions))
+      .orderBy(desc(powerPlatformResources.collectedAt))
+      .limit(500);
+  }
+
+  async getPowerPlatformResourceStats(tenantId: string): Promise<{ resourceType: string; count: number }[]> {
+    const result = await db.select({
+      resourceType: powerPlatformResources.resourceType,
+      count: sql<string>`count(*)`,
+    }).from(powerPlatformResources)
+      .where(eq(powerPlatformResources.tenantId, tenantId))
+      .groupBy(powerPlatformResources.resourceType)
+      .orderBy(sql`count(*) desc`);
+    return result.map(r => ({ resourceType: r.resourceType, count: Number(r.count) }));
   }
 }
 
