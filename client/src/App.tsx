@@ -21,6 +21,7 @@ import ServiceHealth from "@/pages/ServiceHealth";
 import UsageReports from "@/pages/UsageReports";
 import AuditLog from "@/pages/AuditLog";
 import PowerPlatform from "@/pages/PowerPlatform";
+import AgentObservability from "@/pages/AgentObservability";
 
 function Router() {
   return (
@@ -34,6 +35,7 @@ function Router() {
       <Route path="/usage-reports" component={UsageReports}/>
       <Route path="/audit-log" component={AuditLog}/>
       <Route path="/power-platform" component={PowerPlatform}/>
+      <Route path="/agent-observability" component={AgentObservability}/>
       <Route path="/reports" component={Reports}/>
       <Route path="/onboarding" component={Onboarding}/>
       <Route path="/settings">

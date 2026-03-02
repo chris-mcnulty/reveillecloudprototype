@@ -11,6 +11,7 @@ import {
   FileBarChart,
   ScrollText,
   Layers,
+  ScanSearch,
 } from "lucide-react";
 import {
   Tooltip,
@@ -38,6 +39,7 @@ export function Sidebar() {
     { href: "/usage-reports", icon: FileBarChart, label: "Usage Reports" },
     { href: "/audit-log", icon: ScrollText, label: "Audit & Compliance" },
     { href: "/power-platform", icon: Layers, label: "Power Platform" },
+    { href: "/agent-observability", icon: ScanSearch, label: "Agent Observability" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
     ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
