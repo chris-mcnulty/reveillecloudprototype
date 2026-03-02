@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Layers, Zap, Bot, AppWindow, AlertCircle, Globe2, Server } from "lucide-react";
+import { Shell } from "@/components/layout/Shell";
 
 interface PPEnvironment {
   id: string;
@@ -125,6 +126,7 @@ export default function PowerPlatform() {
 
   if (!activeTenantId) {
     return (
+      <Shell>
       <div className="p-6">
         <div className="flex items-center gap-2 mb-6">
           <Layers className="h-6 w-6" />
@@ -137,10 +139,12 @@ export default function PowerPlatform() {
           </CardContent>
         </Card>
       </div>
+      </Shell>
     );
   }
 
   return (
+    <Shell>
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-2">
         <Layers className="h-6 w-6" />
@@ -395,5 +399,6 @@ export default function PowerPlatform() {
         </TabsContent>
       </Tabs>
     </div>
+    </Shell>
   );
 }
