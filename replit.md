@@ -164,4 +164,5 @@ All mutating API routes log to `adminAuditLog` table via `logAdminAction()` help
 Reveille Cloud with custom logo assets in attached_assets/
 
 ## External References
+- **Zenith** (M365 reporting & governance app): https://github.com/chris-mcnulty/synozur-zenith — Chris's app for reporting on and governing M365
 - Synozur Orbit (competitive intelligence): https://github.com/chris-mcnulty/synozur-orbit — has multi-tenant task scheduler pattern used as basis for Reveille scheduler
