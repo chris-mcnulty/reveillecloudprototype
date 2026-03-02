@@ -592,6 +592,160 @@ async function collectEmailActivity(client: any, tenantId: string): Promise<Repo
   }
 }
 
+async function collectCopilotUsageDetail(client: any, tenantId: string): Promise<ReportResult> {
+  try {
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUsageUserDetail(period='D7')");
+    if (!csv && !json) return { reportType: "copilotUsageDetail", recordsCollected: 0, error: "Permission denied or not available" };
+
+    let users: any[] = [];
+    let reportDate = new Date().toISOString().split("T")[0];
+
+    if (json && json.length > 0) {
+      reportDate = json[0].reportRefreshDate || reportDate;
+      users = json.map(r => ({
+        userPrincipal: r.userPrincipalName,
+        displayName: r.displayName,
+        lastActivityDate: r.lastActivityDate,
+        copilotChatLastActivityDate: r.microsoftTeamsCopilotLastActivityDate || r.copilotChatLastActivityDate || null,
+        wordCopilotLastActivityDate: r.wordCopilotLastActivityDate || null,
+        excelCopilotLastActivityDate: r.excelCopilotLastActivityDate || null,
+        powerPointCopilotLastActivityDate: r.powerPointCopilotLastActivityDate || null,
+        outlookCopilotLastActivityDate: r.outlookCopilotLastActivityDate || null,
+        oneNoteCopilotLastActivityDate: r.oneNoteCopilotLastActivityDate || null,
+        teamsCopilotLastActivityDate: r.microsoftTeamsCopilotLastActivityDate || null,
+      }));
+    } else if (csv) {
+      const rows = parseCSV(csv);
+      if (rows.length === 0) return { reportType: "copilotUsageDetail", recordsCollected: 0 };
+      reportDate = rows[0]["Report Refresh Date"] || reportDate;
+      users = rows.map(r => ({
+        userPrincipal: r["User Principal Name"],
+        displayName: r["Display Name"],
+        lastActivityDate: r["Last Activity Date"],
+        copilotChatLastActivityDate: r["Microsoft Teams Copilot Last Activity Date"] || r["Copilot Chat Last Activity Date"] || null,
+        wordCopilotLastActivityDate: r["Word Copilot Last Activity Date"] || null,
+        excelCopilotLastActivityDate: r["Excel Copilot Last Activity Date"] || null,
+        powerPointCopilotLastActivityDate: r["PowerPoint Copilot Last Activity Date"] || null,
+        outlookCopilotLastActivityDate: r["Outlook Copilot Last Activity Date"] || null,
+        oneNoteCopilotLastActivityDate: r["OneNote Copilot Last Activity Date"] || null,
+        teamsCopilotLastActivityDate: r["Microsoft Teams Copilot Last Activity Date"] || null,
+      }));
+    }
+
+    if (users.length === 0) return { reportType: "copilotUsageDetail", recordsCollected: 0 };
+
+    const activeUsers = users.filter(u => u.lastActivityDate);
+    const appsUsed: Record<string, number> = {};
+    for (const u of users) {
+      if (u.wordCopilotLastActivityDate) appsUsed["Word"] = (appsUsed["Word"] || 0) + 1;
+      if (u.excelCopilotLastActivityDate) appsUsed["Excel"] = (appsUsed["Excel"] || 0) + 1;
+      if (u.powerPointCopilotLastActivityDate) appsUsed["PowerPoint"] = (appsUsed["PowerPoint"] || 0) + 1;
+      if (u.outlookCopilotLastActivityDate) appsUsed["Outlook"] = (appsUsed["Outlook"] || 0) + 1;
+      if (u.oneNoteCopilotLastActivityDate) appsUsed["OneNote"] = (appsUsed["OneNote"] || 0) + 1;
+      if (u.teamsCopilotLastActivityDate) appsUsed["Teams"] = (appsUsed["Teams"] || 0) + 1;
+      if (u.copilotChatLastActivityDate) appsUsed["CopilotChat"] = (appsUsed["CopilotChat"] || 0) + 1;
+    }
+
+    await storage.createUsageReport({
+      tenantId, reportType: "copilotUsageDetail", reportDate,
+      data: { users, totalUsers: users.length, activeUsers: activeUsers.length, appsUsed },
+    });
+    return { reportType: "copilotUsageDetail", recordsCollected: users.length };
+  } catch (err: any) {
+    if (err.statusCode === 404 || err.code === "Request_ResourceNotFound") {
+      console.log("[Graph Reports] Copilot usage detail not available — tenant may not have Copilot licenses");
+      return { reportType: "copilotUsageDetail", recordsCollected: 0 };
+    }
+    return { reportType: "copilotUsageDetail", recordsCollected: 0, error: err.message };
+  }
+}
+
+async function collectCopilotUserCounts(client: any, tenantId: string): Promise<ReportResult> {
+  try {
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountSummary(period='D7')");
+    if (!csv && !json) return { reportType: "copilotUserCounts", recordsCollected: 0, error: "Permission denied or not available" };
+
+    let summary: any[] = [];
+    let reportDate = new Date().toISOString().split("T")[0];
+
+    if (json && json.length > 0) {
+      reportDate = json[0].reportDate || json[0].reportRefreshDate || reportDate;
+      summary = json.map(r => ({
+        reportDate: r.reportDate,
+        enabledUsers: r.enabledUsers || r.copilotEnabledUserCount || 0,
+        activeUsers: r.activeUsers || r.copilotActiveUserCount || 0,
+        app: r.copilotProduct || r.app || "All",
+      }));
+    } else if (csv) {
+      const rows = parseCSV(csv);
+      if (rows.length === 0) return { reportType: "copilotUserCounts", recordsCollected: 0 };
+      reportDate = rows[0]["Report Date"] || rows[0]["Report Refresh Date"] || reportDate;
+      summary = rows.map(r => ({
+        reportDate: r["Report Date"],
+        enabledUsers: parseInt(r["Enabled Users"] || r["Copilot Enabled User Count"] || "0"),
+        activeUsers: parseInt(r["Active Users"] || r["Copilot Active User Count"] || "0"),
+        app: r["Copilot Product"] || r["App"] || "All",
+      }));
+    }
+
+    if (summary.length === 0) return { reportType: "copilotUserCounts", recordsCollected: 0 };
+
+    await storage.createUsageReport({
+      tenantId, reportType: "copilotUserCounts", reportDate,
+      data: { summary },
+    });
+    return { reportType: "copilotUserCounts", recordsCollected: summary.length };
+  } catch (err: any) {
+    if (err.statusCode === 404 || err.code === "Request_ResourceNotFound") {
+      console.log("[Graph Reports] Copilot user counts not available — tenant may not have Copilot licenses");
+      return { reportType: "copilotUserCounts", recordsCollected: 0 };
+    }
+    return { reportType: "copilotUserCounts", recordsCollected: 0, error: err.message };
+  }
+}
+
+async function collectCopilotUserCountTrend(client: any, tenantId: string): Promise<ReportResult> {
+  try {
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountTrend(period='D7')");
+    if (!csv && !json) return { reportType: "copilotUserCountTrend", recordsCollected: 0, error: "Permission denied or not available" };
+
+    let daily: any[] = [];
+    let reportDate = new Date().toISOString().split("T")[0];
+
+    if (json && json.length > 0) {
+      reportDate = json[0].reportDate || json[0].reportRefreshDate || reportDate;
+      daily = json.map(r => ({
+        reportDate: r.reportDate,
+        enabledUsers: r.enabledUsers || r.copilotEnabledUserCount || 0,
+        activeUsers: r.activeUsers || r.copilotActiveUserCount || 0,
+      }));
+    } else if (csv) {
+      const rows = parseCSV(csv);
+      if (rows.length === 0) return { reportType: "copilotUserCountTrend", recordsCollected: 0 };
+      reportDate = rows[0]["Report Date"] || rows[0]["Report Refresh Date"] || reportDate;
+      daily = rows.map(r => ({
+        reportDate: r["Report Date"],
+        enabledUsers: parseInt(r["Enabled Users"] || r["Copilot Enabled User Count"] || "0"),
+        activeUsers: parseInt(r["Active Users"] || r["Copilot Active User Count"] || "0"),
+      }));
+    }
+
+    if (daily.length === 0) return { reportType: "copilotUserCountTrend", recordsCollected: 0 };
+
+    await storage.createUsageReport({
+      tenantId, reportType: "copilotUserCountTrend", reportDate,
+      data: { daily },
+    });
+    return { reportType: "copilotUserCountTrend", recordsCollected: daily.length };
+  } catch (err: any) {
+    if (err.statusCode === 404 || err.code === "Request_ResourceNotFound") {
+      console.log("[Graph Reports] Copilot user count trend not available — tenant may not have Copilot licenses");
+      return { reportType: "copilotUserCountTrend", recordsCollected: 0 };
+    }
+    return { reportType: "copilotUserCountTrend", recordsCollected: 0, error: err.message };
+  }
+}
+
 async function getGraphClientForTenant(tenantId: string) {
   const tenant = await storage.getTenant(tenantId);
   if (isAzureAppConfigured() && tenant?.azureTenantId) {
@@ -619,6 +773,9 @@ export async function collectSharePointUsageReports(tenantId: string): Promise<{
     () => collectM365AppUsage(client, tenantId),
     () => collectTeamsActivity(client, tenantId),
     () => collectEmailActivity(client, tenantId),
+    () => collectCopilotUsageDetail(client, tenantId),
+    () => collectCopilotUserCounts(client, tenantId),
+    () => collectCopilotUserCountTrend(client, tenantId),
   ];
 
   for (const collector of collectors) {
