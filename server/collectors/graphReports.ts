@@ -63,13 +63,14 @@ function parseCSV(csvText: string): Record<string, string>[] {
   return rows;
 }
 
-async function fetchReport(client: any, endpoint: string, azureTenantId?: string): Promise<{ csv: string | null; json: any[] | null }> {
+async function fetchReport(client: any, endpoint: string, azureTenantId?: string, useBeta = false): Promise<{ csv: string | null; json: any[] | null }> {
   const shortEndpoint = endpoint.split("/").pop()?.split("(")[0] || endpoint;
+  const apiVersion = useBeta ? "beta" : "v1.0";
 
   if (azureTenantId) {
     try {
       const token = await getClientCredentialsToken(azureTenantId);
-      const url = `https://graph.microsoft.com/v1.0${endpoint}`;
+      const url = `https://graph.microsoft.com/${apiVersion}${endpoint}`;
       const resp = await fetch(url, {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -111,7 +112,8 @@ async function fetchReport(client: any, endpoint: string, azureTenantId?: string
   }
 
   try {
-    const response = await client.api(endpoint).get();
+    const apiCall = useBeta ? client.api(endpoint).version("beta") : client.api(endpoint);
+    const response = await apiCall.get();
 
     if (typeof response === "string") {
       if (response.trim().startsWith("[") || response.trim().startsWith("{")) {
@@ -639,7 +641,8 @@ async function collectEmailActivity(client: any, tenantId: string, azureTenantId
 
 async function collectCopilotUsageDetail(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUsageUserDetail(period='D7')", azureTenantId);
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUsageUserDetail(period='D7')", azureTenantId, true);
+    console.log(`[Graph Reports] Copilot usage detail: csv=${csv ? csv.length + ' chars' : 'null'}, json=${json ? json.length + ' items' : 'null'}`);
     if (!csv && !json) return { reportType: "copilotUsageDetail", recordsCollected: 0, error: "Permission denied or not available" };
 
     let users: any[] = [];
@@ -701,13 +704,15 @@ async function collectCopilotUsageDetail(client: any, tenantId: string, azureTen
       console.log("[Graph Reports] Copilot usage detail not available — tenant may not have Copilot licenses");
       return { reportType: "copilotUsageDetail", recordsCollected: 0 };
     }
+    console.log(`[Graph Reports] Copilot usage detail error: ${err.statusCode || ''} ${err.code || ''} ${err.message}`);
     return { reportType: "copilotUsageDetail", recordsCollected: 0, error: err.message };
   }
 }
 
 async function collectCopilotUserCounts(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountSummary(period='D7')", azureTenantId);
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountSummary(period='D7')", azureTenantId, true);
+    console.log(`[Graph Reports] Copilot user counts: csv=${csv ? csv.length + ' chars' : 'null'}, json=${json ? json.length + ' items' : 'null'}`);
     if (!csv && !json) return { reportType: "copilotUserCounts", recordsCollected: 0, error: "Permission denied or not available" };
 
     let summary: any[] = [];
@@ -751,7 +756,8 @@ async function collectCopilotUserCounts(client: any, tenantId: string, azureTena
 
 async function collectCopilotUserCountTrend(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountTrend(period='D7')", azureTenantId);
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountTrend(period='D7')", azureTenantId, true);
+    console.log(`[Graph Reports] Copilot user count trend: csv=${csv ? csv.length + ' chars' : 'null'}, json=${json ? json.length + ' items' : 'null'}`);
     if (!csv && !json) return { reportType: "copilotUserCountTrend", recordsCollected: 0, error: "Permission denied or not available" };
 
     let daily: any[] = [];
