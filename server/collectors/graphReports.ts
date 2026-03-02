@@ -1,5 +1,5 @@
 import { getUncachableSharePointClient } from "../sharepoint";
-import { getAzureGraphClient, isAzureAppConfigured } from "../azureAuth";
+import { getAzureGraphClient, getClientCredentialsToken, isAzureAppConfigured } from "../azureAuth";
 import { storage } from "../storage";
 
 interface ReportResult {
@@ -63,11 +63,55 @@ function parseCSV(csvText: string): Record<string, string>[] {
   return rows;
 }
 
-async function fetchReport(client: any, endpoint: string): Promise<{ csv: string | null; json: any[] | null }> {
+async function fetchReport(client: any, endpoint: string, azureTenantId?: string): Promise<{ csv: string | null; json: any[] | null }> {
+  const shortEndpoint = endpoint.split("/").pop()?.split("(")[0] || endpoint;
+
+  if (azureTenantId) {
+    try {
+      const token = await getClientCredentialsToken(azureTenantId);
+      const url = `https://graph.microsoft.com/v1.0${endpoint}`;
+      const resp = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        redirect: "follow",
+      });
+
+      if (resp.status === 403 || resp.status === 401) {
+        console.warn(`[Graph Reports] Permission denied for ${shortEndpoint} (${resp.status})`);
+        return { csv: null, json: null };
+      }
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        throw new Error(`Graph API ${resp.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const contentType = resp.headers.get("content-type") || "";
+      const body = await resp.text();
+
+      if (contentType.includes("application/json")) {
+        try {
+          const parsed = JSON.parse(body);
+          const rows = Array.isArray(parsed) ? parsed : parsed.value || [parsed];
+          return { csv: null, json: rows };
+        } catch {
+          return { csv: body, json: null };
+        }
+      }
+
+      return { csv: body, json: null };
+    } catch (err: any) {
+      if (err.message?.includes("403") || err.message?.includes("Authorization_RequestDenied")) {
+        console.warn(`[Graph Reports] Permission denied for ${shortEndpoint}`);
+        return { csv: null, json: null };
+      }
+      throw err;
+    }
+  }
+
   try {
-    const response = await client.api(endpoint)
-      .header("Accept", "application/json")
-      .get();
+    const response = await client.api(endpoint).get();
 
     if (typeof response === "string") {
       if (response.trim().startsWith("[") || response.trim().startsWith("{")) {
@@ -113,9 +157,9 @@ function normalizeJsonReport(rows: any[], fieldMap: Record<string, string>): any
   });
 }
 
-async function collectSiteUsageDetail(client: any, tenantId: string): Promise<ReportResult> {
+async function collectSiteUsageDetail(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "siteUsageDetail", recordsCollected: 0, error: "Permission denied" };
 
     let sites: any[] = [];
@@ -124,17 +168,18 @@ async function collectSiteUsageDetail(client: any, tenantId: string): Promise<Re
     if (json && json.length > 0) {
       reportDate = json[0].reportRefreshDate || reportDate;
       sites = json.map(r => ({
-        siteUrl: r.siteUrl,
-        owner: r.ownerDisplayName,
-        storageUsedBytes: r.storageUsedInBytes || 0,
-        storageAllocatedBytes: r.storageAllocatedInBytes || 0,
-        fileCount: r.fileCount || 0,
-        activeFileCount: r.activeFileCount || 0,
-        pageViewCount: r.pageViewCount || 0,
-        visitedPageCount: r.visitedPageCount || 0,
-        lastActivityDate: r.lastActivityDate,
+        siteUrl: r.siteUrl || r["Site URL"],
+        owner: r.ownerDisplayName || r["Owner Display Name"],
+        storageUsedBytes: r.storageUsedInBytes || parseInt(r["Storage Used (Byte)"] || "0") || 0,
+        storageAllocatedBytes: r.storageAllocatedInBytes || parseInt(r["Storage Allocated (Byte)"] || "0") || 0,
+        fileCount: r.fileCount || parseInt(r["File Count"] || "0") || 0,
+        activeFileCount: r.activeFileCount || parseInt(r["Active File Count"] || "0") || 0,
+        pageViewCount: r.pageViewCount || parseInt(r["Page View Count"] || "0") || 0,
+        visitedPageCount: r.visitedPageCount || parseInt(r["Visited Page Count"] || "0") || 0,
+        lastActivityDate: r.lastActivityDate || r["Last Activity Date"],
       }));
-    } else if (csv) {
+    }
+    if (!sites.length && csv) {
       const rows = parseCSV(csv);
       if (rows.length === 0) return { reportType: "siteUsageDetail", recordsCollected: 0 };
       reportDate = rows[0]["Report Refresh Date"] || reportDate;
@@ -166,9 +211,9 @@ async function collectSiteUsageDetail(client: any, tenantId: string): Promise<Re
   }
 }
 
-async function collectSiteUsageSiteCounts(client: any, tenantId: string): Promise<ReportResult> {
+async function collectSiteUsageSiteCounts(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageSiteCounts(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageSiteCounts(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "siteUsageCounts", recordsCollected: 0, error: "Permission denied" };
 
     let daily: any[] = [];
@@ -201,9 +246,9 @@ async function collectSiteUsageSiteCounts(client: any, tenantId: string): Promis
   }
 }
 
-async function collectStorageUsage(client: any, tenantId: string): Promise<ReportResult> {
+async function collectStorageUsage(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageStorage(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageStorage(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "storageUsage", recordsCollected: 0, error: "Permission denied" };
 
     let daily: any[] = [];
@@ -234,9 +279,9 @@ async function collectStorageUsage(client: any, tenantId: string): Promise<Repor
   }
 }
 
-async function collectFileActivity(client: any, tenantId: string): Promise<ReportResult> {
+async function collectFileActivity(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageFileCounts(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getSharePointSiteUsageFileCounts(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "fileActivity", recordsCollected: 0, error: "Permission denied" };
 
     let daily: any[] = [];
@@ -269,9 +314,9 @@ async function collectFileActivity(client: any, tenantId: string): Promise<Repor
   }
 }
 
-async function collectActiveUsers(client: any, tenantId: string): Promise<ReportResult> {
+async function collectActiveUsers(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getSharePointActivityUserDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getSharePointActivityUserDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "activeUsers", recordsCollected: 0, error: "Permission denied" };
 
     let users: any[] = [];
@@ -315,9 +360,9 @@ async function collectActiveUsers(client: any, tenantId: string): Promise<Report
   }
 }
 
-async function collectOneDriveUsageDetail(client: any, tenantId: string): Promise<ReportResult> {
+async function collectOneDriveUsageDetail(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getOneDriveUsageAccountDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getOneDriveUsageAccountDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "onedriveUsageDetail", recordsCollected: 0, error: "Permission denied" };
 
     let accounts: any[] = [];
@@ -365,9 +410,9 @@ async function collectOneDriveUsageDetail(client: any, tenantId: string): Promis
   }
 }
 
-async function collectOneDriveActivityDetail(client: any, tenantId: string): Promise<ReportResult> {
+async function collectOneDriveActivityDetail(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getOneDriveActivityUserDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getOneDriveActivityUserDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "onedriveActivityDetail", recordsCollected: 0, error: "Permission denied" };
 
     let users: any[] = [];
@@ -409,9 +454,9 @@ async function collectOneDriveActivityDetail(client: any, tenantId: string): Pro
   }
 }
 
-async function collectOneDriveStorageUsage(client: any, tenantId: string): Promise<ReportResult> {
+async function collectOneDriveStorageUsage(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getOneDriveUsageStorage(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getOneDriveUsageStorage(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "onedriveStorageUsage", recordsCollected: 0, error: "Permission denied" };
 
     let daily: any[] = [];
@@ -444,9 +489,9 @@ async function collectOneDriveStorageUsage(client: any, tenantId: string): Promi
   }
 }
 
-async function collectM365AppUsage(client: any, tenantId: string): Promise<ReportResult> {
+async function collectM365AppUsage(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getM365AppUserDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getM365AppUserDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "m365AppUsage", recordsCollected: 0, error: "Permission denied" };
 
     let users: any[] = [];
@@ -503,9 +548,9 @@ async function collectM365AppUsage(client: any, tenantId: string): Promise<Repor
   }
 }
 
-async function collectTeamsActivity(client: any, tenantId: string): Promise<ReportResult> {
+async function collectTeamsActivity(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getTeamsUserActivityUserDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getTeamsUserActivityUserDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "teamsActivity", recordsCollected: 0, error: "Permission denied" };
 
     let users: any[] = [];
@@ -550,9 +595,9 @@ async function collectTeamsActivity(client: any, tenantId: string): Promise<Repo
   }
 }
 
-async function collectEmailActivity(client: any, tenantId: string): Promise<ReportResult> {
+async function collectEmailActivity(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getEmailActivityUserDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getEmailActivityUserDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "emailActivity", recordsCollected: 0, error: "Permission denied" };
 
     let users: any[] = [];
@@ -592,9 +637,9 @@ async function collectEmailActivity(client: any, tenantId: string): Promise<Repo
   }
 }
 
-async function collectCopilotUsageDetail(client: any, tenantId: string): Promise<ReportResult> {
+async function collectCopilotUsageDetail(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUsageUserDetail(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUsageUserDetail(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "copilotUsageDetail", recordsCollected: 0, error: "Permission denied or not available" };
 
     let users: any[] = [];
@@ -660,9 +705,9 @@ async function collectCopilotUsageDetail(client: any, tenantId: string): Promise
   }
 }
 
-async function collectCopilotUserCounts(client: any, tenantId: string): Promise<ReportResult> {
+async function collectCopilotUserCounts(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountSummary(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountSummary(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "copilotUserCounts", recordsCollected: 0, error: "Permission denied or not available" };
 
     let summary: any[] = [];
@@ -704,9 +749,9 @@ async function collectCopilotUserCounts(client: any, tenantId: string): Promise<
   }
 }
 
-async function collectCopilotUserCountTrend(client: any, tenantId: string): Promise<ReportResult> {
+async function collectCopilotUserCountTrend(client: any, tenantId: string, azureTenantId?: string): Promise<ReportResult> {
   try {
-    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountTrend(period='D7')");
+    const { csv, json } = await fetchReport(client, "/reports/getMicrosoft365CopilotUserCountTrend(period='D7')", azureTenantId);
     if (!csv && !json) return { reportType: "copilotUserCountTrend", recordsCollected: 0, error: "Permission denied or not available" };
 
     let daily: any[] = [];
@@ -746,36 +791,38 @@ async function collectCopilotUserCountTrend(client: any, tenantId: string): Prom
   }
 }
 
-async function getGraphClientForTenant(tenantId: string) {
+async function getGraphClientForTenant(tenantId: string): Promise<{ client: any; azureTenantId?: string }> {
   const tenant = await storage.getTenant(tenantId);
   if (isAzureAppConfigured() && tenant?.azureTenantId) {
-    return getAzureGraphClient(tenant.azureTenantId);
+    const client = await getAzureGraphClient(tenant.azureTenantId);
+    return { client, azureTenantId: tenant.azureTenantId };
   }
-  return getUncachableSharePointClient();
+  const client = await getUncachableSharePointClient();
+  return { client };
 }
 
 export async function collectSharePointUsageReports(tenantId: string): Promise<{
   results: ReportResult[];
   totalCollected: number;
 }> {
-  const client = await getGraphClientForTenant(tenantId);
+  const { client, azureTenantId } = await getGraphClientForTenant(tenantId);
 
   const results: ReportResult[] = [];
   const collectors = [
-    () => collectSiteUsageDetail(client, tenantId),
-    () => collectSiteUsageSiteCounts(client, tenantId),
-    () => collectStorageUsage(client, tenantId),
-    () => collectFileActivity(client, tenantId),
-    () => collectActiveUsers(client, tenantId),
-    () => collectOneDriveUsageDetail(client, tenantId),
-    () => collectOneDriveActivityDetail(client, tenantId),
-    () => collectOneDriveStorageUsage(client, tenantId),
-    () => collectM365AppUsage(client, tenantId),
-    () => collectTeamsActivity(client, tenantId),
-    () => collectEmailActivity(client, tenantId),
-    () => collectCopilotUsageDetail(client, tenantId),
-    () => collectCopilotUserCounts(client, tenantId),
-    () => collectCopilotUserCountTrend(client, tenantId),
+    () => collectSiteUsageDetail(client, tenantId, azureTenantId),
+    () => collectSiteUsageSiteCounts(client, tenantId, azureTenantId),
+    () => collectStorageUsage(client, tenantId, azureTenantId),
+    () => collectFileActivity(client, tenantId, azureTenantId),
+    () => collectActiveUsers(client, tenantId, azureTenantId),
+    () => collectOneDriveUsageDetail(client, tenantId, azureTenantId),
+    () => collectOneDriveActivityDetail(client, tenantId, azureTenantId),
+    () => collectOneDriveStorageUsage(client, tenantId, azureTenantId),
+    () => collectM365AppUsage(client, tenantId, azureTenantId),
+    () => collectTeamsActivity(client, tenantId, azureTenantId),
+    () => collectEmailActivity(client, tenantId, azureTenantId),
+    () => collectCopilotUsageDetail(client, tenantId, azureTenantId),
+    () => collectCopilotUserCounts(client, tenantId, azureTenantId),
+    () => collectCopilotUserCountTrend(client, tenantId, azureTenantId),
   ];
 
   for (const collector of collectors) {
