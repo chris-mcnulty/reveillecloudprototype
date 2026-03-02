@@ -50,6 +50,8 @@ shared/
 - **serviceHealthIncidents**: M365 Service Health incidents/advisories (global, not per-tenant)
 - **auditLogEntries**: SharePoint audit log events (per-tenant)
 - **adminAuditLog**: Internal Reveille admin actions (tracks all mutating API operations)
+- **agentTraces**: End-to-end agent invocation traces (Copilot, GPT, Agentforce) with status, duration, error summary
+- **agentTraceSpans**: Individual spans within an agent trace (auth, content, mcp, license, api, inference)
 
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
@@ -73,6 +75,13 @@ All prefixed with `/api`:
 - `GET/POST /alerts`, `PATCH /alerts/:id/acknowledge`
 - `GET /stats` (global MSP stats)
 - `GET /sharepoint/status` (Graph API connection check)
+- `GET /agent-traces` (list traces, ?tenantId, ?platform, ?status, ?limit)
+- `GET /agent-traces/:id` (trace with spans)
+- `POST /agent-traces` (create trace)
+- `POST /agent-traces/:id/spans` (add span to trace)
+- `DELETE /agent-traces/:id` (delete trace + spans)
+- `GET /agent-health` (health summary per agent, ?tenantId)
+- `POST /agent-traces/seed-demo` (seed 12 demo traces with realistic spans)
 - `POST /tests/:id/run` (execute synthetic test)
 - `GET /tests/:id/runs` (test execution history)
 - `GET /tenants/:tenantId/test-runs` (all runs for a tenant)

@@ -16,6 +16,8 @@ import {
   adminAuditLog, type AdminAuditLog, type InsertAdminAuditLog,
   powerPlatformEnvironments, type PowerPlatformEnvironment, type InsertPowerPlatformEnvironment,
   powerPlatformResources, type PowerPlatformResource, type InsertPowerPlatformResource,
+  agentTraces, type AgentTrace, type InsertAgentTrace,
+  agentTraceSpans, type AgentTraceSpan, type InsertAgentTraceSpan,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -94,6 +96,15 @@ export interface IStorage {
   upsertPowerPlatformResource(data: InsertPowerPlatformResource): Promise<PowerPlatformResource>;
   getPowerPlatformResources(tenantId: string, envId?: string, resourceType?: string): Promise<PowerPlatformResource[]>;
   getPowerPlatformResourceStats(tenantId: string): Promise<{ resourceType: string; count: number }[]>;
+
+  createAgentTrace(data: InsertAgentTrace): Promise<AgentTrace>;
+  getAgentTraces(tenantId?: string, platform?: string, status?: string, limit?: number): Promise<AgentTrace[]>;
+  getAgentTrace(id: string): Promise<AgentTrace | undefined>;
+  getAgentTraceWithSpans(id: string): Promise<{ trace: AgentTrace; spans: AgentTraceSpan[] } | undefined>;
+  createAgentTraceSpan(data: InsertAgentTraceSpan): Promise<AgentTraceSpan>;
+  getAgentTraceSpans(traceId: string): Promise<AgentTraceSpan[]>;
+  getAgentHealthSummary(tenantId?: string): Promise<{ agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[]>;
+  deleteAgentTrace(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -146,6 +157,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    const traces = await db.select({ id: agentTraces.id }).from(agentTraces).where(eq(agentTraces.tenantId, id));
+    for (const t of traces) {
+      await db.delete(agentTraceSpans).where(eq(agentTraceSpans.traceId, t.id));
+    }
+    await db.delete(agentTraces).where(eq(agentTraces.tenantId, id));
     await db.delete(powerPlatformResources).where(eq(powerPlatformResources.tenantId, id));
     await db.delete(powerPlatformEnvironments).where(eq(powerPlatformEnvironments.tenantId, id));
     await db.delete(adminAuditLog).where(eq(adminAuditLog.tenantId, id));
@@ -540,6 +556,98 @@ export class DatabaseStorage implements IStorage {
       .groupBy(powerPlatformResources.resourceType)
       .orderBy(sql`count(*) desc`);
     return result.map(r => ({ resourceType: r.resourceType, count: Number(r.count) }));
+  }
+
+  async createAgentTrace(data: InsertAgentTrace): Promise<AgentTrace> {
+    const [created] = await db.insert(agentTraces).values(data).returning();
+    return created;
+  }
+
+  async getAgentTraces(tenantId?: string, platform?: string, status?: string, limit = 50): Promise<AgentTrace[]> {
+    const conditions: any[] = [];
+    if (tenantId) conditions.push(eq(agentTraces.tenantId, tenantId));
+    if (platform) conditions.push(eq(agentTraces.platform, platform));
+    if (status) conditions.push(eq(agentTraces.status, status));
+    return db.select().from(agentTraces)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(agentTraces.startedAt))
+      .limit(limit);
+  }
+
+  async getAgentTrace(id: string): Promise<AgentTrace | undefined> {
+    const [trace] = await db.select().from(agentTraces).where(eq(agentTraces.id, id));
+    return trace;
+  }
+
+  async getAgentTraceWithSpans(id: string): Promise<{ trace: AgentTrace; spans: AgentTraceSpan[] } | undefined> {
+    const [trace] = await db.select().from(agentTraces).where(eq(agentTraces.id, id));
+    if (!trace) return undefined;
+    const spans = await db.select().from(agentTraceSpans)
+      .where(eq(agentTraceSpans.traceId, id))
+      .orderBy(agentTraceSpans.sortOrder);
+    return { trace, spans };
+  }
+
+  async createAgentTraceSpan(data: InsertAgentTraceSpan): Promise<AgentTraceSpan> {
+    const [created] = await db.insert(agentTraceSpans).values(data).returning();
+    return created;
+  }
+
+  async getAgentTraceSpans(traceId: string): Promise<AgentTraceSpan[]> {
+    return db.select().from(agentTraceSpans)
+      .where(eq(agentTraceSpans.traceId, traceId))
+      .orderBy(agentTraceSpans.sortOrder);
+  }
+
+  async getAgentHealthSummary(tenantId?: string): Promise<{ agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[]> {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const conditions: any[] = [];
+    if (tenantId) conditions.push(eq(agentTraces.tenantId, tenantId));
+
+    const allTraces = await db.select().from(agentTraces)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(agentTraces.startedAt));
+
+    const agentMap = new Map<string, { agentName: string; platform: string; traces: AgentTrace[] }>();
+    for (const trace of allTraces) {
+      const key = `${trace.agentName}::${trace.platform}`;
+      if (!agentMap.has(key)) {
+        agentMap.set(key, { agentName: trace.agentName, platform: trace.platform, traces: [] });
+      }
+      agentMap.get(key)!.traces.push(trace);
+    }
+
+    const results: { agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[] = [];
+
+    for (const [, agent] of agentMap) {
+      const latest = agent.traces[0];
+      const recent24h = agent.traces.filter(t => t.startedAt && new Date(t.startedAt) >= since24h);
+      const successes = recent24h.filter(t => t.status === "success").length;
+      const successRate = recent24h.length > 0 ? Math.round((successes / recent24h.length) * 100) : 0;
+      const durations = recent24h.filter(t => t.totalDurationMs != null).map(t => t.totalDurationMs!);
+      const avgLatency = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+
+      let status = "healthy";
+      if (latest?.status === "failed") status = "failed";
+      else if (latest?.status === "degraded" || latest?.status === "running") status = latest.status;
+      else if (successRate < 80 && recent24h.length > 0) status = "degraded";
+
+      results.push({
+        agentName: agent.agentName,
+        platform: agent.platform,
+        status,
+        lastInvocation: latest?.startedAt || null,
+        successRate24h: successRate,
+        avgLatency,
+      });
+    }
+
+    return results;
+  }
+
+  async deleteAgentTrace(id: string): Promise<void> {
+    await db.delete(agentTraceSpans).where(eq(agentTraceSpans.traceId, id));
+    await db.delete(agentTraces).where(eq(agentTraces.id, id));
   }
 }
 

@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
@@ -636,6 +636,176 @@ export async function registerRoutes(
     });
     await logAdminAction(req.params.id, "tenant.consent_revoked", "tenant", req.params.id, { previousConsentedBy: tenant.consentedBy });
     res.json(updated);
+  });
+
+  app.get("/api/agent-traces", async (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const platform = req.query.platform as string | undefined;
+    const status = req.query.status as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+    const traces = await storage.getAgentTraces(tenantId, platform, status, limit);
+    res.json(traces);
+  });
+
+  app.post("/api/agent-traces/seed-demo", async (req, res) => {
+    const allTenants = await storage.getTenants();
+    const tenant = allTenants.find(t => t.consentStatus === "Connected") || allTenants[0];
+    if (!tenant) return res.status(400).json({ message: "No tenants available for seeding" });
+    const tid = tenant.id;
+    const now = Date.now();
+
+    const demoTraces = [
+      {
+        trace: { tenantId: tid, agentName: "SharePoint Content Copilot", platform: "copilot", status: "success", totalDurationMs: 3480, startedAt: new Date(now - 120000), completedAt: new Date(now - 116520), metadata: { userId: "user1@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 245, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/drive/items", durationMs: 1820, statusCode: 200, status: "success", startOffset: 245, sortOrder: 1 },
+          { spanName: "MCP Tool: Document Search", spanType: "mcp", serviceName: "MCP Server", endpoint: "mcp.contoso.com/tools/document-search", durationMs: 980, statusCode: 200, status: "success", startOffset: 2065, sortOrder: 2 },
+          { spanName: "License Validation", spanType: "license", serviceName: "AI Builder Licensing", endpoint: "api.powerplatform.com/licensing/check", durationMs: 435, statusCode: 200, status: "success", startOffset: 3045, sortOrder: 3 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "SharePoint Content Copilot", platform: "copilot", status: "failed", totalDurationMs: 890, errorSummary: "AADSTS50076: MFA claim required", startedAt: new Date(now - 3600000), completedAt: new Date(now - 3599110), metadata: { userId: "user2@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 890, statusCode: 401, status: "failed", errorMessage: "AADSTS50076: Due to a configuration change made by your administrator, you must use multi-factor authentication to access this resource.", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/drive/items", durationMs: 0, status: "skipped", startOffset: 890, sortOrder: 1 },
+          { spanName: "MCP Tool: Document Search", spanType: "mcp", serviceName: "MCP Server", endpoint: "mcp.contoso.com/tools/document-search", durationMs: 0, status: "skipped", startOffset: 890, sortOrder: 2 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "HR Policy Assistant", platform: "copilot", status: "failed", totalDurationMs: 32400, errorSummary: "MCP tool timeout after 30s", startedAt: new Date(now - 1800000), completedAt: new Date(now - 1767600), metadata: { userId: "user3@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 310, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items", durationMs: 2090, statusCode: 200, status: "success", startOffset: 310, sortOrder: 1 },
+          { spanName: "MCP Tool: HR Policy Lookup", spanType: "mcp", serviceName: "MCP Server", endpoint: "mcp.contoso.com/tools/hr-policy-search", durationMs: 30000, statusCode: 504, status: "failed", errorMessage: "Request timeout: MCP server did not respond within 30 seconds", startOffset: 2400, sortOrder: 2 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "SharePoint Content Copilot", platform: "copilot", status: "failed", totalDurationMs: 2950, errorSummary: "License limit exceeded: 0 AI units remaining", startedAt: new Date(now - 7200000), completedAt: new Date(now - 7197050), metadata: { userId: "user4@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 220, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/drive/items", durationMs: 1680, statusCode: 200, status: "success", startOffset: 220, sortOrder: 1 },
+          { spanName: "MCP Tool: Document Search", spanType: "mcp", serviceName: "MCP Server", endpoint: "mcp.contoso.com/tools/document-search", durationMs: 650, statusCode: 200, status: "success", startOffset: 1900, sortOrder: 2 },
+          { spanName: "License Validation", spanType: "license", serviceName: "AI Builder Licensing", endpoint: "api.powerplatform.com/licensing/check", durationMs: 400, statusCode: 403, status: "failed", errorMessage: "License limit exceeded: tenant has consumed 500/500 AI Builder credits. Resets March 15.", startOffset: 2550, sortOrder: 3 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "HR Policy Assistant", platform: "copilot", status: "degraded", totalDurationMs: 4200, errorSummary: "MCP returned incomplete results", startedAt: new Date(now - 5400000), completedAt: new Date(now - 5395800), metadata: { userId: "user5@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 280, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items", durationMs: 1950, statusCode: 200, status: "success", startOffset: 280, sortOrder: 1 },
+          { spanName: "MCP Tool: HR Policy Lookup", spanType: "mcp", serviceName: "MCP Server", endpoint: "mcp.contoso.com/tools/hr-policy-search", durationMs: 1970, statusCode: 206, status: "degraded", errorMessage: "Partial results: 3 of 8 policy documents returned due to index rebuild in progress", startOffset: 2230, sortOrder: 2 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "SharePoint Content Copilot", platform: "copilot", status: "success", totalDurationMs: 12400, startedAt: new Date(now - 900000), completedAt: new Date(now - 887600), metadata: { userId: "user6@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 190, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/drive/items", durationMs: 9800, statusCode: 200, status: "success", errorMessage: "SharePoint throttled (429) — retried after 3s backoff", startOffset: 190, sortOrder: 1 },
+          { spanName: "MCP Tool: Document Search", spanType: "mcp", serviceName: "MCP Server", endpoint: "mcp.contoso.com/tools/document-search", durationMs: 1650, statusCode: 200, status: "success", startOffset: 9990, sortOrder: 2 },
+          { spanName: "License Validation", spanType: "license", serviceName: "AI Builder Licensing", endpoint: "api.powerplatform.com/licensing/check", durationMs: 760, statusCode: 200, status: "success", startOffset: 11640, sortOrder: 3 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "SharePoint Content Copilot", platform: "copilot", status: "running", totalDurationMs: null, startedAt: new Date(now - 5000), completedAt: null, metadata: { userId: "user7@contoso.com" } },
+        spans: [
+          { spanName: "Entra ID Authentication", spanType: "auth", serviceName: "Entra ID", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", durationMs: 310, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "M365 Content Retrieval", spanType: "content", serviceName: "SharePoint Online", endpoint: "graph.microsoft.com/v1.0/sites/{siteId}/drive/items", durationMs: 2100, statusCode: 200, status: "success", startOffset: 310, sortOrder: 1 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "Customer Research GPT", platform: "gpt", status: "success", totalDurationMs: 5240, startedAt: new Date(now - 300000), completedAt: new Date(now - 294760), metadata: { model: "gpt-4-turbo" } },
+        spans: [
+          { spanName: "API Authentication", spanType: "auth", serviceName: "OpenAI", endpoint: "api.openai.com/v1/auth", durationMs: 180, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "RAG Document Retrieval", spanType: "content", serviceName: "Vector Store", endpoint: "pinecone.io/query", durationMs: 1200, statusCode: 200, status: "success", startOffset: 180, sortOrder: 1 },
+          { spanName: "GPT-4 Inference", spanType: "inference", serviceName: "OpenAI", endpoint: "api.openai.com/v1/chat/completions", durationMs: 3200, statusCode: 200, status: "success", startOffset: 1380, sortOrder: 2, metadata: { tokens: 4500, model: "gpt-4-turbo" } },
+          { spanName: "Response Formatting", spanType: "api", serviceName: "API Gateway", endpoint: "api.contoso.com/format", durationMs: 660, statusCode: 200, status: "success", startOffset: 4580, sortOrder: 3 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "Customer Research GPT", platform: "gpt", status: "failed", totalDurationMs: 1850, errorSummary: "HTTP 429: Rate limit exceeded (TPM)", startedAt: new Date(now - 600000), completedAt: new Date(now - 598150), metadata: { model: "gpt-4-turbo" } },
+        spans: [
+          { spanName: "API Authentication", spanType: "auth", serviceName: "OpenAI", endpoint: "api.openai.com/v1/auth", durationMs: 150, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "RAG Document Retrieval", spanType: "content", serviceName: "Vector Store", endpoint: "pinecone.io/query", durationMs: 980, statusCode: 200, status: "success", startOffset: 150, sortOrder: 1 },
+          { spanName: "GPT-4 Inference", spanType: "inference", serviceName: "OpenAI", endpoint: "api.openai.com/v1/chat/completions", durationMs: 720, statusCode: 429, status: "failed", errorMessage: "Rate limit exceeded: 89,000/90,000 TPM used. Retry after 12 seconds.", startOffset: 1130, sortOrder: 2 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "Customer Research GPT", platform: "gpt", status: "failed", totalDurationMs: 2100, errorSummary: "Context window exceeded: 142k > 128k token limit", startedAt: new Date(now - 1200000), completedAt: new Date(now - 1197900), metadata: { model: "gpt-4-turbo" } },
+        spans: [
+          { spanName: "API Authentication", spanType: "auth", serviceName: "OpenAI", endpoint: "api.openai.com/v1/auth", durationMs: 160, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "RAG Document Retrieval", spanType: "content", serviceName: "Vector Store", endpoint: "pinecone.io/query", durationMs: 1100, statusCode: 200, status: "success", startOffset: 160, sortOrder: 1, metadata: { documentsRetrieved: 47, totalTokens: 142000 } },
+          { spanName: "GPT-4 Inference", spanType: "inference", serviceName: "OpenAI", endpoint: "api.openai.com/v1/chat/completions", durationMs: 840, statusCode: 400, status: "failed", errorMessage: "Context length exceeded: input 142,000 tokens exceeds maximum of 128,000 tokens", startOffset: 1260, sortOrder: 2 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "Case Routing Agent", platform: "agentforce", status: "success", totalDurationMs: 4120, startedAt: new Date(now - 240000), completedAt: new Date(now - 235880), metadata: { orgId: "00D5e000000XXXXX" } },
+        spans: [
+          { spanName: "Salesforce OAuth", spanType: "auth", serviceName: "Salesforce", endpoint: "login.salesforce.com/services/oauth2/token", durationMs: 420, statusCode: 200, status: "success", startOffset: 0, sortOrder: 0 },
+          { spanName: "SOQL Case Query", spanType: "api", serviceName: "Salesforce Data", endpoint: "instance.salesforce.com/services/data/v59.0/query", durationMs: 1350, statusCode: 200, status: "success", startOffset: 420, sortOrder: 1, metadata: { recordsReturned: 12 } },
+          { spanName: "Einstein AI Classification", spanType: "inference", serviceName: "Einstein AI", endpoint: "api.salesforce.com/einstein/prediction", durationMs: 1650, statusCode: 200, status: "success", startOffset: 1770, sortOrder: 2 },
+          { spanName: "Case Record Update", spanType: "api", serviceName: "Salesforce Data", endpoint: "instance.salesforce.com/services/data/v59.0/sobjects/Case", durationMs: 700, statusCode: 200, status: "success", startOffset: 3420, sortOrder: 3 },
+        ],
+      },
+      {
+        trace: { tenantId: tid, agentName: "Case Routing Agent", platform: "agentforce", status: "failed", totalDurationMs: 1450, errorSummary: "Salesforce OAuth token refresh failed", startedAt: new Date(now - 2700000), completedAt: new Date(now - 2698550), metadata: { orgId: "00D5e000000XXXXX" } },
+        spans: [
+          { spanName: "Salesforce OAuth", spanType: "auth", serviceName: "Salesforce", endpoint: "login.salesforce.com/services/oauth2/token", durationMs: 1450, statusCode: 401, status: "failed", errorMessage: "invalid_grant: expired access/refresh token. Re-authentication required.", startOffset: 0, sortOrder: 0 },
+          { spanName: "SOQL Case Query", spanType: "api", serviceName: "Salesforce Data", endpoint: "instance.salesforce.com/services/data/v59.0/query", durationMs: 0, status: "skipped", startOffset: 1450, sortOrder: 1 },
+          { spanName: "Einstein AI Classification", spanType: "inference", serviceName: "Einstein AI", endpoint: "api.salesforce.com/einstein/prediction", durationMs: 0, status: "skipped", startOffset: 1450, sortOrder: 2 },
+        ],
+      },
+    ];
+
+    let tracesCreated = 0;
+    let spansCreated = 0;
+
+    for (const demo of demoTraces) {
+      const trace = await storage.createAgentTrace(demo.trace as any);
+      tracesCreated++;
+
+      for (const span of demo.spans) {
+        await storage.createAgentTraceSpan({ ...span, traceId: trace.id } as any);
+        spansCreated++;
+      }
+    }
+
+    await logAdminAction(null, "agentTrace.demoSeeded", "agentTrace", null, { tracesCreated, spansCreated });
+    res.json({ message: "Demo data seeded", tracesCreated, spansCreated });
+  });
+
+  app.get("/api/agent-traces/:id", async (req, res) => {
+    const result = await storage.getAgentTraceWithSpans(req.params.id);
+    if (!result) return res.status(404).json({ message: "Trace not found" });
+    res.json(result);
+  });
+
+  app.post("/api/agent-traces", async (req, res) => {
+    const parsed = insertAgentTraceSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid trace data", errors: parsed.error.flatten() });
+    const trace = await storage.createAgentTrace(parsed.data);
+    res.status(201).json(trace);
+  });
+
+  app.post("/api/agent-traces/:id/spans", async (req, res) => {
+    const trace = await storage.getAgentTrace(req.params.id);
+    if (!trace) return res.status(404).json({ message: "Trace not found" });
+    const parsed = insertAgentTraceSpanSchema.safeParse({ ...req.body, traceId: req.params.id });
+    if (!parsed.success) return res.status(400).json({ message: "Invalid span data", errors: parsed.error.flatten() });
+    const span = await storage.createAgentTraceSpan(parsed.data);
+    res.status(201).json(span);
+  });
+
+  app.delete("/api/agent-traces/:id", async (req, res) => {
+    await storage.deleteAgentTrace(req.params.id);
+    await logAdminAction(null, "agentTrace.deleted", "agentTrace", req.params.id);
+    res.json({ message: "Trace deleted" });
+  });
+
+  app.get("/api/agent-health", async (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const summary = await storage.getAgentHealthSummary(tenantId);
+    res.json(summary);
   });
 
   return httpServer;

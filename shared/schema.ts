@@ -248,3 +248,40 @@ export const powerPlatformResources = pgTable("power_platform_resources", {
 export const insertPowerPlatformResourceSchema = createInsertSchema(powerPlatformResources).omit({ id: true });
 export type InsertPowerPlatformResource = z.infer<typeof insertPowerPlatformResourceSchema>;
 export type PowerPlatformResource = typeof powerPlatformResources.$inferSelect;
+
+export const agentTraces = pgTable("agent_traces", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  agentName: text("agent_name").notNull(),
+  platform: text("platform").notNull(),
+  status: text("status").notNull().default("running"),
+  totalDurationMs: real("total_duration_ms"),
+  errorSummary: text("error_summary"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+});
+
+export const insertAgentTraceSchema = createInsertSchema(agentTraces).omit({ id: true });
+export type InsertAgentTrace = z.infer<typeof insertAgentTraceSchema>;
+export type AgentTrace = typeof agentTraces.$inferSelect;
+
+export const agentTraceSpans = pgTable("agent_trace_spans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  traceId: varchar("trace_id").notNull().references(() => agentTraces.id),
+  spanName: text("span_name").notNull(),
+  spanType: text("span_type").notNull(),
+  serviceName: text("service_name").notNull(),
+  endpoint: text("endpoint"),
+  durationMs: real("duration_ms"),
+  statusCode: integer("status_code"),
+  status: text("status").notNull().default("success"),
+  errorMessage: text("error_message"),
+  startOffset: real("start_offset").notNull().default(0),
+  sortOrder: integer("sort_order").notNull().default(0),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+});
+
+export const insertAgentTraceSpanSchema = createInsertSchema(agentTraceSpans).omit({ id: true });
+export type InsertAgentTraceSpan = z.infer<typeof insertAgentTraceSpanSchema>;
+export type AgentTraceSpan = typeof agentTraceSpans.$inferSelect;

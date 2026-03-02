@@ -670,6 +670,7 @@ export default function AgentObservability() {
       <div className="flex items-center gap-2">
         <ScanSearch className="h-6 w-6" />
         <h1 className="text-2xl font-bold" data-testid="text-page-title">Agent Observability</h1>
+        <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/30 text-xs font-medium" data-testid="badge-demo-data">Demo Data</Badge>
       </div>
 
       <div className="grid gap-4 md:grid-cols-5">
