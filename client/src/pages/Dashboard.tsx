@@ -1,11 +1,21 @@
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2, HardDrive, Users, Activity, ShieldAlert } from "lucide-react";
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell,
 } from "recharts";
-import { useMetrics, useMetricsSummary, useLatestMetrics } from "@/lib/api";
+import { useMetrics, useMetricsSummary, useLatestMetrics, useLatestUsageReport, useServiceHealth } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
+
+const CHART_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6"];
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes === 0) return "0 B";
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
+}
 
 export default function Dashboard() {
   const { activeTenantId, orgTenants } = useActiveTenant();
@@ -15,6 +25,12 @@ export default function Dashboard() {
   const { data: allMetrics, isLoading: loadingMetrics } = useMetrics(tenantId);
   const { data: summary, isLoading: loadingSummary } = useMetricsSummary(tenantId);
   const { data: latestMetrics } = useLatestMetrics(tenantId, 20);
+  const { data: siteUsage } = useLatestUsageReport(tenantId, "siteUsageDetail");
+  const { data: storageUsage } = useLatestUsageReport(tenantId, "storageUsage");
+  const { data: activeUsers } = useLatestUsageReport(tenantId, "activeUsers");
+  const { data: fileActivity } = useLatestUsageReport(tenantId, "fileActivity");
+  const { data: teamsActivity } = useLatestUsageReport(tenantId, "teamsActivity");
+  const { data: serviceHealthData } = useServiceHealth();
 
   if (!tenantId || loadingMetrics || loadingSummary) {
     return (
@@ -95,6 +111,15 @@ export default function Dashboard() {
         </Card>
       </div>
 
+      <M365InsightsSection
+        siteUsage={siteUsage}
+        storageUsage={storageUsage}
+        activeUsers={activeUsers}
+        fileActivity={fileActivity}
+        teamsActivity={teamsActivity}
+        serviceHealth={serviceHealthData || []}
+      />
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
         <Card className="col-span-4">
           <CardHeader>
@@ -174,6 +199,149 @@ export default function Dashboard() {
         </CardContent>
       </Card>
     </Shell>
+  );
+}
+
+function M365InsightsSection({ siteUsage, storageUsage, activeUsers, fileActivity, teamsActivity, serviceHealth }: {
+  siteUsage: any; storageUsage: any; activeUsers: any; fileActivity: any; teamsActivity: any; serviceHealth: any[];
+}) {
+  const sites = siteUsage?.data?.sites || [];
+  const users = activeUsers?.data?.users || [];
+  const teamsUsers = teamsActivity?.data?.users || [];
+  const storageDays = storageUsage?.data?.daily || [];
+  const activeIncidents = (serviceHealth || []).filter((i: any) => i.status !== "resolved" && i.status !== "postIncidentReviewPublished");
+
+  const totalSites = sites.length;
+  const activeSites = sites.filter((s: any) => (s.pageViewCount || 0) > 0 || (s.activeFileCount || 0) > 0).length;
+  const totalStorage = sites.reduce((sum: number, s: any) => sum + (s.storageUsedBytes || 0), 0);
+  const totalFiles = sites.reduce((sum: number, s: any) => sum + (s.fileCount || 0), 0);
+  const activeUserCount = users.length;
+  const totalPageViews = sites.reduce((sum: number, s: any) => sum + (s.pageViewCount || 0), 0);
+
+  const hasData = totalSites > 0 || activeUserCount > 0 || activeIncidents.length > 0;
+  if (!hasData) return null;
+
+  const storageChartData = storageDays.length > 0
+    ? storageDays.map((d: any) => ({
+        date: d.reportDate?.slice(5) || "",
+        storageGB: Math.round((d.storageUsedBytes || 0) / (1024 * 1024 * 1024) * 100) / 100,
+      }))
+    : sites.filter((s: any) => s.storageUsedBytes > 0)
+        .sort((a: any, b: any) => (b.storageUsedBytes || 0) - (a.storageUsedBytes || 0))
+        .slice(0, 6)
+        .map((s: any) => ({
+          date: (s.siteUrl || "").replace(/https?:\/\/[^/]+/, '').slice(0, 15) || "/",
+          storageGB: Math.round((s.storageUsedBytes || 0) / (1024 * 1024 * 1024) * 100) / 100,
+        }));
+
+  const activityPieData = [
+    { name: "Page Views", value: totalPageViews },
+    { name: "Active Files", value: sites.reduce((sum: number, s: any) => sum + (s.activeFileCount || 0), 0) },
+    ...(teamsUsers.length > 0 ? [
+      { name: "Teams Messages", value: teamsUsers.reduce((sum: number, u: any) => sum + (u.teamChatMessageCount || 0) + (u.privateChatMessageCount || 0), 0) },
+      { name: "Teams Meetings", value: teamsUsers.reduce((sum: number, u: any) => sum + (u.meetingCount || 0), 0) },
+    ] : []),
+  ].filter(d => d.value > 0);
+
+  return (
+    <>
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">SharePoint Sites</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div data-testid="text-active-sites" className="text-2xl font-bold">{activeSites}<span className="text-sm font-normal text-muted-foreground">/{totalSites}</span></div>
+            <p className="text-xs text-muted-foreground mt-1">Active sites (7-day window)</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Storage Used</CardTitle>
+            <HardDrive className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div data-testid="text-total-storage" className="text-2xl font-bold">{formatBytes(totalStorage)}</div>
+            <p className="text-xs text-muted-foreground mt-1">{totalFiles.toLocaleString()} files across all sites</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Active Users</CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div data-testid="text-active-users" className="text-2xl font-bold">{activeUserCount}</div>
+            <p className="text-xs text-muted-foreground mt-1">{totalPageViews.toLocaleString()} page views (7d)</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Service Health</CardTitle>
+            <ShieldAlert className={`h-4 w-4 ${activeIncidents.length > 0 ? "text-destructive" : "text-emerald-500"}`} />
+          </CardHeader>
+          <CardContent>
+            <div data-testid="text-service-health" className="text-2xl font-bold">
+              {activeIncidents.length > 0
+                ? <span className="text-destructive">{activeIncidents.length} issue{activeIncidents.length > 1 ? "s" : ""}</span>
+                : <span className="text-emerald-500">Healthy</span>}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {activeIncidents.length > 0
+                ? activeIncidents.map((i: any) => i.service).filter((v: string, idx: number, arr: string[]) => arr.indexOf(v) === idx).join(", ")
+                : "All M365 services operational"}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {(storageChartData.length > 0 || activityPieData.length > 0) && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {storageChartData.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Storage {storageDays.length > 0 ? "Trend" : "by Site"}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[200px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={storageChartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="date" stroke="#888888" fontSize={10} tickLine={false} />
+                      <YAxis stroke="#888888" fontSize={10} tickLine={false} tickFormatter={(v) => `${v}GB`} />
+                      <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} />
+                      <Area type="monotone" dataKey="storageGB" name="Storage (GB)" stroke="#6366f1" fill="#6366f1" fillOpacity={0.2} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          {activityPieData.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">M365 Activity Breakdown</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[200px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={activityPieData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={4} dataKey="value" label={({ name, value }) => `${name}: ${value.toLocaleString()}`}>
+                        {activityPieData.map((_, index) => (
+                          <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 

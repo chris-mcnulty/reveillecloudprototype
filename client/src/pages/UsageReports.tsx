@@ -53,7 +53,10 @@ function ReportDataTable({ data }: { data: any }) {
     : reportData.users || reportData.sites || reportData.accounts || reportData.daily || reportData.summary || null;
 
   if (arrayData && arrayData.length > 0) {
-    const cols = Object.keys(arrayData[0]).slice(0, 8);
+    const cols = Object.keys(arrayData[0]).filter(col => {
+      const sample = arrayData[0][col];
+      return sample === null || sample === undefined || typeof sample !== "object";
+    }).slice(0, 8);
     return (
       <div className="overflow-auto max-h-[400px]">
         <Table>
@@ -71,7 +74,11 @@ function ReportDataTable({ data }: { data: any }) {
                   <TableCell key={col} className="text-xs">
                     {typeof row[col] === "number"
                       ? (col.toLowerCase().includes("bytes") ? formatBytes(row[col]) : row[col].toLocaleString())
-                      : String(row[col] ?? "—")}
+                      : typeof row[col] === "boolean"
+                        ? (row[col] ? "Yes" : "No")
+                        : typeof row[col] === "object" && row[col] !== null
+                          ? JSON.stringify(row[col]).slice(0, 60)
+                          : String(row[col] ?? "—")}
                   </TableCell>
                 ))}
               </TableRow>
@@ -86,15 +93,65 @@ function ReportDataTable({ data }: { data: any }) {
   }
 
   if (typeof reportData === "object" && !Array.isArray(reportData)) {
-    const entries = Object.entries(reportData).filter(([k]) => !Array.isArray(reportData[k]) && typeof reportData[k] !== 'object');
+    const scalarEntries = Object.entries(reportData).filter(([, v]) => typeof v !== 'object' || v === null);
+    const arrayEntries = Object.entries(reportData).filter(([, v]) => Array.isArray(v));
     return (
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {entries.map(([key, value]: [string, any]) => (
-          <div key={key} className="flex justify-between items-center p-3 bg-muted/50 rounded-lg">
-            <span className="text-sm text-muted-foreground">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
-            <span className="text-sm font-medium">{typeof value === "number" ? value.toLocaleString() : String(value)}</span>
+      <div className="space-y-4">
+        {scalarEntries.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {scalarEntries.map(([key, value]: [string, any]) => (
+              <div key={key} className="flex justify-between items-center p-3 bg-muted/50 rounded-lg">
+                <span className="text-sm text-muted-foreground">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
+                <span className="text-sm font-medium">
+                  {typeof value === "number"
+                    ? (key.toLowerCase().includes("bytes") ? formatBytes(value) : value.toLocaleString())
+                    : typeof value === "boolean" ? (value ? "Yes" : "No") : String(value ?? "—")}
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
+        {arrayEntries.map(([key, arr]: [string, any]) => {
+          if (!Array.isArray(arr) || arr.length === 0) return null;
+          const cols = Object.keys(arr[0]).filter(c => {
+            const sample = arr[0][c];
+            return sample === null || sample === undefined || typeof sample !== "object";
+          }).slice(0, 8);
+          return (
+            <div key={key}>
+              <h4 className="text-sm font-medium mb-2">{key.replace(/([A-Z])/g, ' $1').trim()} ({arr.length})</h4>
+              <div className="overflow-auto max-h-[300px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      {cols.map(col => (
+                        <TableHead key={col} className="text-xs whitespace-nowrap">{col.replace(/([A-Z])/g, ' $1').trim()}</TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {arr.slice(0, 50).map((row: any, i: number) => (
+                      <TableRow key={i} data-testid={`row-${key}-${i}`}>
+                        {cols.map(col => (
+                          <TableCell key={col} className="text-xs">
+                            {typeof row[col] === "number"
+                              ? (col.toLowerCase().includes("bytes") ? formatBytes(row[col]) : row[col].toLocaleString())
+                              : typeof row[col] === "boolean"
+                                ? (row[col] ? "Yes" : "No")
+                                : String(row[col] ?? "—")}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {arr.length > 50 && (
+                  <p className="text-xs text-muted-foreground text-center py-2">Showing 50 of {arr.length}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     );
   }
