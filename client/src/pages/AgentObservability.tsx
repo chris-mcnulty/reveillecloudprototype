@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +41,10 @@ import {
   Minus,
   CircleDot,
   Zap,
+  Database,
+  Loader2,
+  RefreshCw,
+  Trash2,
 } from "lucide-react";
 import {
   BarChart,
@@ -52,52 +57,47 @@ import {
   Legend,
 } from "recharts";
 
-type AgentPlatform = "copilot" | "openai" | "agentforce";
-type TraceStatus = "success" | "failed" | "partial" | "running";
-type SpanStatus = "success" | "failed" | "skipped" | "running";
+type AgentPlatform = "copilot" | "gpt" | "openai" | "agentforce";
+type TraceStatus = "success" | "failed" | "degraded" | "running";
+type SpanStatus = "success" | "failed" | "skipped" | "running" | "degraded";
 type SpanType = "auth" | "content" | "mcp" | "license" | "api" | "inference";
 
-interface AgentCard {
-  id: string;
-  name: string;
-  platform: AgentPlatform;
-  status: "healthy" | "degraded" | "failed";
-  lastInvocation: string;
-  successRate24h: number;
-  avgLatencyMs: number;
-  invocations24h: number;
-  issue?: string;
-}
-
-interface Span {
-  id: string;
-  name: string;
-  type: SpanType;
-  endpoint: string;
-  method: string;
-  startMs: number;
-  durationMs: number;
-  status: SpanStatus;
-  statusCode?: number;
-  errorMessage?: string;
-}
-
-interface Trace {
-  id: string;
+interface AgentHealthItem {
   agentName: string;
-  platform: AgentPlatform;
-  status: TraceStatus;
-  durationMs: number;
-  timestamp: string;
-  userId?: string;
-  errorSummary?: string;
-  spans: Span[];
-  diagnosis?: {
-    rootCause: string;
-    impact: string;
-    pattern: string;
-  };
-  actions?: ActionItem[];
+  platform: string;
+  status: string;
+  lastInvocation: string | null;
+  successRate24h: number;
+  avgLatency: number;
+}
+
+interface ApiTrace {
+  id: string;
+  tenantId: string;
+  agentName: string;
+  platform: string;
+  status: string;
+  totalDurationMs: number | null;
+  errorSummary: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  metadata: Record<string, any> | null;
+}
+
+interface ApiSpan {
+  id: string;
+  traceId: string;
+  spanName: string;
+  spanType: string;
+  serviceName: string;
+  endpoint: string | null;
+  durationMs: number | null;
+  statusCode: number | null;
+  status: string;
+  errorMessage: string | null;
+  startOffset: number;
+  sortOrder: number;
+  metadata: Record<string, any> | null;
 }
 
 interface ActionItem {
@@ -107,358 +107,56 @@ interface ActionItem {
   description?: string;
 }
 
-interface ActionHistoryEntry {
-  action: string;
-  user: string;
-  time: string;
-  result: "success" | "failed";
+interface Diagnosis {
+  rootCause: string;
+  impact: string;
+  pattern: string;
 }
 
-const AGENTS: AgentCard[] = [
-  {
-    id: "a1",
-    name: "SharePoint Content Copilot",
-    platform: "copilot",
-    status: "healthy",
-    lastInvocation: "2 min ago",
-    successRate24h: 94.2,
-    avgLatencyMs: 3480,
-    invocations24h: 142,
-  },
-  {
-    id: "a2",
-    name: "HR Policy Assistant",
-    platform: "copilot",
-    status: "degraded",
-    lastInvocation: "45 sec ago",
-    successRate24h: 68.5,
-    avgLatencyMs: 8920,
-    invocations24h: 87,
-    issue: "MCP tool latency high (avg 6.2s)",
-  },
-  {
-    id: "a3",
-    name: "Customer Research GPT",
-    platform: "openai",
-    status: "healthy",
-    lastInvocation: "5 min ago",
-    successRate24h: 91.0,
-    avgLatencyMs: 5210,
-    invocations24h: 63,
-  },
-  {
-    id: "a4",
-    name: "Case Routing Agent",
-    platform: "agentforce",
-    status: "failed",
-    lastInvocation: "12 min ago",
-    successRate24h: 0,
-    avgLatencyMs: 0,
-    invocations24h: 28,
-    issue: "Salesforce OAuth token refresh failed",
-  },
-];
+function normalizePlatform(p: string): AgentPlatform {
+  if (p === "openai") return "gpt";
+  return p as AgentPlatform;
+}
 
-const CHART_DATA = [
-  { day: "Feb 24", success: 32, failed: 4, partial: 2 },
-  { day: "Feb 25", success: 41, failed: 6, partial: 1 },
-  { day: "Feb 26", success: 38, failed: 3, partial: 3 },
-  { day: "Feb 27", success: 45, failed: 8, partial: 2 },
-  { day: "Feb 28", success: 36, failed: 5, partial: 4 },
-  { day: "Mar 1", success: 43, failed: 9, partial: 1 },
-  { day: "Mar 2", success: 28, failed: 7, partial: 3 },
-];
-
-const TRACES: Trace[] = [
-  {
-    id: "t1",
-    agentName: "SharePoint Content Copilot",
-    platform: "copilot",
-    status: "success",
-    durationMs: 3480,
-    timestamp: "2026-03-02T16:48:00Z",
-    userId: "sarah.chen@contoso.com",
-    spans: [
-      { id: "s1", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 340, status: "success", statusCode: 200 },
-      { id: "s2", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites/contoso.sharepoint.com/drives", method: "GET", startMs: 340, durationMs: 1820, status: "success", statusCode: 200 },
-      { id: "s3", name: "MCP Tool: document-search", type: "mcp", endpoint: "mcp.contoso.com/tools/document-search", method: "POST", startMs: 2160, durationMs: 980, status: "success", statusCode: 200 },
-      { id: "s4", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 3140, durationMs: 340, status: "success", statusCode: 200 },
-    ],
-  },
-  {
-    id: "t2",
-    agentName: "SharePoint Content Copilot",
-    platform: "copilot",
-    status: "failed",
-    durationMs: 620,
-    timestamp: "2026-03-02T16:32:00Z",
-    userId: "james.park@contoso.com",
-    errorSummary: "Entra ID: MFA claim expired",
-    spans: [
-      { id: "s5", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 620, status: "failed", statusCode: 401, errorMessage: "AADSTS50076: Due to a configuration change by your administrator, you must use multi-factor authentication to access this resource." },
-      { id: "s6", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites", method: "GET", startMs: 620, durationMs: 0, status: "skipped" },
-      { id: "s7", name: "MCP Tool: document-search", type: "mcp", endpoint: "mcp.contoso.com/tools/document-search", method: "POST", startMs: 620, durationMs: 0, status: "skipped" },
-      { id: "s8", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 620, durationMs: 0, status: "skipped" },
-    ],
-    diagnosis: {
-      rootCause: "Entra ID returned AADSTS50076 indicating the user's MFA claim has expired. The user james.park@contoso.com needs to re-authenticate with multi-factor verification. This is a Conditional Access policy enforcement — not a system error.",
-      impact: "1 user affected. Agent invocations for this user will continue to fail until MFA is completed.",
-      pattern: "This is an isolated incident for this user. No broader authentication issues detected across the tenant.",
-    },
-    actions: [
-      { label: "View Entra Sign-in Logs", icon: "logs", variant: "outline" },
-      { label: "Notify User", icon: "escalate", variant: "default" },
-    ],
-  },
-  {
-    id: "t3",
-    agentName: "HR Policy Assistant",
-    platform: "copilot",
-    status: "failed",
-    durationMs: 32400,
-    timestamp: "2026-03-02T16:25:00Z",
-    userId: "maria.gonzalez@contoso.com",
-    errorSummary: "MCP tool timed out after 30s",
-    spans: [
-      { id: "s9", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 280, status: "success", statusCode: 200 },
-      { id: "s10", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites/contoso.sharepoint.com/lists/HR-Policies", method: "GET", startMs: 280, durationMs: 2120, status: "success", statusCode: 200 },
-      { id: "s11", name: "MCP Tool: policy-analyzer", type: "mcp", endpoint: "mcp.contoso.com/tools/policy-analyzer", method: "POST", startMs: 2400, durationMs: 30000, status: "failed", statusCode: 504, errorMessage: "Connection timed out after 30000ms. The MCP server did not respond within the configured timeout." },
-      { id: "s12", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 32400, durationMs: 0, status: "skipped" },
-    ],
-    diagnosis: {
-      rootCause: "The MCP tool 'policy-analyzer' at mcp.contoso.com failed to respond within 30 seconds. This is the 3rd timeout in the last hour. The MCP server may be under heavy load or experiencing connectivity issues. The policy-analyzer tool processes large document sets which can exceed the timeout threshold.",
-      impact: "4 users affected in the last hour. All HR Policy Assistant invocations involving document analysis are failing.",
-      pattern: "This failure has occurred 12 times in the last 24 hours, trending upward. First observed at 8:15 AM today. Correlates with a 3x increase in HR document uploads yesterday.",
-    },
-    actions: [
-      { label: "Retry Trace", icon: "retry", variant: "default" },
-      { label: "View MCP Server Logs", icon: "logs", variant: "outline" },
-      { label: "Escalate to Admin", icon: "escalate", variant: "default" },
-      { label: "Disable Agent", icon: "disable", variant: "destructive" },
-    ],
-  },
-  {
-    id: "t4",
-    agentName: "SharePoint Content Copilot",
-    platform: "copilot",
-    status: "failed",
-    durationMs: 4820,
-    timestamp: "2026-03-02T15:58:00Z",
-    userId: "alex.kumar@contoso.com",
-    errorSummary: "License capacity exhausted",
-    spans: [
-      { id: "s13", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 310, status: "success", statusCode: 200 },
-      { id: "s14", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites/contoso.sharepoint.com/drives", method: "GET", startMs: 310, durationMs: 2240, status: "success", statusCode: 200 },
-      { id: "s15", name: "MCP Tool: document-search", type: "mcp", endpoint: "mcp.contoso.com/tools/document-search", method: "POST", startMs: 2550, durationMs: 1890, status: "success", statusCode: 200 },
-      { id: "s16", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 4440, durationMs: 380, status: "failed", statusCode: 403, errorMessage: "Capacity limit reached: 0 AI Builder credits remaining out of 500 allocated. Billing cycle resets March 15, 2026." },
-    ],
-    diagnosis: {
-      rootCause: "The tenant has consumed all 500 allocated AI Builder credits for this billing cycle. Credits reset on March 15, 2026. Current usage: 500/500 credits. The agent completed all processing steps successfully but was blocked at the final capacity gate.",
-      impact: "All AI Builder-dependent agents are affected. 23 users have been impacted since credits were exhausted at 2:40 PM today.",
-      pattern: "Credit consumption has increased 40% month-over-month. At current run rate, credits will be exhausted by day 18 of each 30-day cycle.",
-    },
-    actions: [
-      { label: "Increase Capacity", icon: "capacity", variant: "default" },
-      { label: "Escalate to Admin", icon: "escalate", variant: "default" },
-      { label: "View Usage Report", icon: "logs", variant: "outline" },
-    ],
-  },
-  {
-    id: "t5",
-    agentName: "HR Policy Assistant",
-    platform: "copilot",
-    status: "partial",
-    durationMs: 6750,
-    timestamp: "2026-03-02T15:42:00Z",
-    userId: "li.wei@contoso.com",
-    errorSummary: "MCP returned incomplete results",
-    spans: [
-      { id: "s17", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 290, status: "success", statusCode: 200 },
-      { id: "s18", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites/contoso.sharepoint.com/lists/HR-Policies", method: "GET", startMs: 290, durationMs: 1980, status: "success", statusCode: 200 },
-      { id: "s19", name: "MCP Tool: policy-analyzer", type: "mcp", endpoint: "mcp.contoso.com/tools/policy-analyzer", method: "POST", startMs: 2270, durationMs: 4100, status: "failed", statusCode: 206, errorMessage: "Partial content: Tool returned 3 of 8 requested policy sections. Context window limit reached (28,000/32,000 tokens used)." },
-      { id: "s20", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 6370, durationMs: 380, status: "success", statusCode: 200 },
-    ],
-    diagnosis: {
-      rootCause: "The MCP policy-analyzer tool hit its context window limit (32k tokens) while processing 8 HR policy documents. It returned results for 3 of 8 sections. The agent delivered a partial response to the user. Consider chunking large document sets or upgrading to a model with a larger context window.",
-      impact: "User received incomplete policy guidance. The missing sections covered Benefits and Compensation policies.",
-      pattern: "Partial results occur on ~15% of HR Policy Assistant invocations, primarily when users query across multiple policy categories simultaneously.",
-    },
-    actions: [
-      { label: "Retry with Chunking", icon: "retry", variant: "default" },
-      { label: "View MCP Server Logs", icon: "logs", variant: "outline" },
-    ],
-  },
-  {
-    id: "t6",
-    agentName: "SharePoint Content Copilot",
-    platform: "copilot",
-    status: "success",
-    durationMs: 12340,
-    timestamp: "2026-03-02T15:20:00Z",
-    userId: "omar.hassan@contoso.com",
-    spans: [
-      { id: "s21", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 350, status: "success", statusCode: 200 },
-      { id: "s22", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites/contoso.sharepoint.com/drives", method: "GET", startMs: 350, durationMs: 9800, status: "success", statusCode: 200 },
-      { id: "s23", name: "MCP Tool: document-search", type: "mcp", endpoint: "mcp.contoso.com/tools/document-search", method: "POST", startMs: 10150, durationMs: 1850, status: "success", statusCode: 200 },
-      { id: "s24", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 12000, durationMs: 340, status: "success", statusCode: 200 },
-    ],
-  },
-  {
-    id: "t7",
-    agentName: "SharePoint Content Copilot",
-    platform: "copilot",
-    status: "running",
-    durationMs: 2600,
-    timestamp: "2026-03-02T16:50:00Z",
-    userId: "nina.patel@contoso.com",
-    spans: [
-      { id: "s25", name: "Entra ID Authentication", type: "auth", endpoint: "login.microsoftonline.com/oauth2/v2.0/token", method: "POST", startMs: 0, durationMs: 310, status: "success", statusCode: 200 },
-      { id: "s26", name: "M365 Content Retrieval", type: "content", endpoint: "graph.microsoft.com/v1.0/sites/contoso.sharepoint.com/drives", method: "GET", startMs: 310, durationMs: 2290, status: "running" },
-      { id: "s27", name: "MCP Tool: document-search", type: "mcp", endpoint: "mcp.contoso.com/tools/document-search", method: "POST", startMs: 2600, durationMs: 0, status: "skipped" },
-      { id: "s28", name: "License & Capacity Check", type: "license", endpoint: "admin.microsoft.com/api/capacity", method: "GET", startMs: 2600, durationMs: 0, status: "skipped" },
-    ],
-  },
-  {
-    id: "t8",
-    agentName: "Customer Research GPT",
-    platform: "openai",
-    status: "success",
-    durationMs: 5210,
-    timestamp: "2026-03-02T16:45:00Z",
-    userId: "david.liu@contoso.com",
-    spans: [
-      { id: "s29", name: "API Key Authentication", type: "auth", endpoint: "api.openai.com/v1/models", method: "GET", startMs: 0, durationMs: 180, status: "success", statusCode: 200 },
-      { id: "s30", name: "RAG: Vector Retrieval", type: "content", endpoint: "pinecone.io/query", method: "POST", startMs: 180, durationMs: 890, status: "success", statusCode: 200 },
-      { id: "s31", name: "GPT-4o Inference", type: "inference", endpoint: "api.openai.com/v1/chat/completions", method: "POST", startMs: 1070, durationMs: 3940, status: "success", statusCode: 200 },
-      { id: "s32", name: "Response Formatting", type: "api", endpoint: "internal/format-response", method: "POST", startMs: 5010, durationMs: 200, status: "success", statusCode: 200 },
-    ],
-  },
-  {
-    id: "t9",
-    agentName: "Customer Research GPT",
-    platform: "openai",
-    status: "failed",
-    durationMs: 1240,
-    timestamp: "2026-03-02T16:15:00Z",
-    userId: "rachel.kim@contoso.com",
-    errorSummary: "OpenAI rate limit exceeded (429)",
-    spans: [
-      { id: "s33", name: "API Key Authentication", type: "auth", endpoint: "api.openai.com/v1/models", method: "GET", startMs: 0, durationMs: 190, status: "success", statusCode: 200 },
-      { id: "s34", name: "RAG: Vector Retrieval", type: "content", endpoint: "pinecone.io/query", method: "POST", startMs: 190, durationMs: 810, status: "success", statusCode: 200 },
-      { id: "s35", name: "GPT-4o Inference", type: "inference", endpoint: "api.openai.com/v1/chat/completions", method: "POST", startMs: 1000, durationMs: 240, status: "failed", statusCode: 429, errorMessage: "Rate limit exceeded: You have exceeded your tokens per minute (TPM) rate limit of 90,000. Current usage: 89,200 TPM. Please retry after 42 seconds." },
-      { id: "s36", name: "Response Formatting", type: "api", endpoint: "internal/format-response", method: "POST", startMs: 1240, durationMs: 0, status: "skipped" },
-    ],
-    diagnosis: {
-      rootCause: "OpenAI API returned HTTP 429. The organization is hitting the TPM (tokens per minute) rate limit on GPT-4o. Current usage: 89,200/90,000 TPM. The rate limit window resets in 42 seconds. This is a transient issue caused by burst traffic — 8 concurrent users submitted queries within a 15-second window.",
-      impact: "3 users received rate limit errors in the last 10 minutes. Requests will auto-recover after the rate limit window resets.",
-      pattern: "Rate limiting occurs 2-3 times daily during peak hours (10-11 AM, 2-3 PM). Consider implementing request queuing or upgrading the OpenAI tier.",
-    },
-    actions: [
-      { label: "Retry Trace", icon: "retry", variant: "default" },
-      { label: "Contact Vendor", icon: "vendor", variant: "outline", description: "OpenAI Status: status.openai.com" },
-      { label: "Increase Capacity", icon: "capacity", variant: "default", description: "Upgrade OpenAI API tier" },
-    ],
-  },
-  {
-    id: "t10",
-    agentName: "Customer Research GPT",
-    platform: "openai",
-    status: "failed",
-    durationMs: 2890,
-    timestamp: "2026-03-02T14:55:00Z",
-    userId: "tom.wright@contoso.com",
-    errorSummary: "Context window exceeded (128k limit)",
-    spans: [
-      { id: "s37", name: "API Key Authentication", type: "auth", endpoint: "api.openai.com/v1/models", method: "GET", startMs: 0, durationMs: 175, status: "success", statusCode: 200 },
-      { id: "s38", name: "RAG: Vector Retrieval", type: "content", endpoint: "pinecone.io/query", method: "POST", startMs: 175, durationMs: 920, status: "success", statusCode: 200 },
-      { id: "s39", name: "GPT-4o Inference", type: "inference", endpoint: "api.openai.com/v1/chat/completions", method: "POST", startMs: 1095, durationMs: 1795, status: "failed", statusCode: 400, errorMessage: "This model's maximum context length is 128,000 tokens. However, your messages resulted in 142,380 tokens. Please reduce the length of the messages." },
-      { id: "s40", name: "Response Formatting", type: "api", endpoint: "internal/format-response", method: "POST", startMs: 2890, durationMs: 0, status: "skipped" },
-    ],
-    diagnosis: {
-      rootCause: "The RAG retrieval step returned too many document chunks (142,380 tokens) exceeding GPT-4o's 128k context window. The vector search returned 48 document chunks when the typical safe limit is 35. This was caused by a broad query ('all customer research for Q1') that matched an unusually large number of documents.",
-      impact: "1 user affected. The query was unusually broad — typical queries stay well within token limits.",
-      pattern: "Context window errors are rare (< 2% of invocations). They correlate with queries containing broad temporal ranges like 'all', 'everything', or 'entire year'.",
-    },
-    actions: [
-      { label: "Retry with Reduced Context", icon: "retry", variant: "default" },
-      { label: "View RAG Configuration", icon: "logs", variant: "outline" },
-    ],
-  },
-  {
-    id: "t11",
-    agentName: "Case Routing Agent",
-    platform: "agentforce",
-    status: "success",
-    durationMs: 4120,
-    timestamp: "2026-03-02T15:30:00Z",
-    userId: "system@contoso.salesforce.com",
-    spans: [
-      { id: "s41", name: "Salesforce OAuth", type: "auth", endpoint: "login.salesforce.com/services/oauth2/token", method: "POST", startMs: 0, durationMs: 420, status: "success", statusCode: 200 },
-      { id: "s42", name: "SOQL: Case Query", type: "content", endpoint: "contoso.my.salesforce.com/services/data/v59.0/query", method: "GET", startMs: 420, durationMs: 1340, status: "success", statusCode: 200 },
-      { id: "s43", name: "Einstein AI: Classification", type: "inference", endpoint: "contoso.my.salesforce.com/services/data/v59.0/einstein/prediction", method: "POST", startMs: 1760, durationMs: 1980, status: "success", statusCode: 200 },
-      { id: "s44", name: "Case Update: Route to Queue", type: "api", endpoint: "contoso.my.salesforce.com/services/data/v59.0/sobjects/Case", method: "PATCH", startMs: 3740, durationMs: 380, status: "success", statusCode: 200 },
-    ],
-  },
-  {
-    id: "t12",
-    agentName: "Case Routing Agent",
-    platform: "agentforce",
-    status: "failed",
-    durationMs: 890,
-    timestamp: "2026-03-02T16:38:00Z",
-    userId: "system@contoso.salesforce.com",
-    errorSummary: "Salesforce OAuth token refresh failed",
-    spans: [
-      { id: "s45", name: "Salesforce OAuth", type: "auth", endpoint: "login.salesforce.com/services/oauth2/token", method: "POST", startMs: 0, durationMs: 890, status: "failed", statusCode: 401, errorMessage: "invalid_grant: expired access/refresh token. The Connected App authorization has been revoked by the Salesforce administrator." },
-      { id: "s46", name: "SOQL: Case Query", type: "content", endpoint: "contoso.my.salesforce.com/services/data/v59.0/query", method: "GET", startMs: 890, durationMs: 0, status: "skipped" },
-      { id: "s47", name: "Einstein AI: Classification", type: "inference", endpoint: "contoso.my.salesforce.com/services/data/v59.0/einstein/prediction", method: "POST", startMs: 890, durationMs: 0, status: "skipped" },
-      { id: "s48", name: "Case Update: Route to Queue", type: "api", endpoint: "contoso.my.salesforce.com/services/data/v59.0/sobjects/Case", method: "PATCH", startMs: 890, durationMs: 0, status: "skipped" },
-    ],
-    diagnosis: {
-      rootCause: "The Salesforce Connected App authorization was revoked by an administrator. The OAuth refresh token is no longer valid, and all API calls will fail until the Connected App is re-authorized. This typically happens after a security review or when Connected App policies are updated.",
-      impact: "All Case Routing Agent invocations are blocked. 28 cases have not been routed since the authorization was revoked 12 minutes ago.",
-      pattern: "This is the first occurrence. The Connected App was previously stable for 45 days since its last authorization.",
-    },
-    actions: [
-      { label: "View Salesforce Setup", icon: "logs", variant: "outline", description: "Setup > Connected Apps" },
-      { label: "Escalate to Admin", icon: "escalate", variant: "default" },
-      { label: "Contact Vendor", icon: "vendor", variant: "outline", description: "Salesforce Trust: trust.salesforce.com" },
-      { label: "Disable Agent", icon: "disable", variant: "destructive" },
-    ],
-  },
-];
-
-const ACTION_HISTORY: ActionHistoryEntry[] = [
-  { action: "Retry attempted on HR Policy Assistant", user: "admin@contoso.com", time: "2:15 PM", result: "failed" },
-  { action: "Escalated MCP timeout to Infra team", user: "admin@contoso.com", time: "1:45 PM", result: "success" },
-  { action: "Disabled Case Routing Agent temporarily", user: "ops@contoso.com", time: "12:30 PM", result: "success" },
-];
-
-function platformBadge(platform: AgentPlatform) {
+function platformLabel(platform: string): string {
   switch (platform) {
-    case "copilot":
-      return <Badge data-testid={`badge-platform-${platform}`} className="bg-blue-600 text-white text-[10px] px-1.5">Copilot</Badge>;
-    case "openai":
-      return <Badge data-testid={`badge-platform-${platform}`} className="bg-emerald-700 text-white text-[10px] px-1.5">OpenAI GPT</Badge>;
-    case "agentforce":
-      return <Badge data-testid={`badge-platform-${platform}`} className="bg-indigo-600 text-white text-[10px] px-1.5">Agentforce</Badge>;
+    case "copilot": return "Copilot";
+    case "gpt": case "openai": return "OpenAI GPT";
+    case "agentforce": return "Agentforce";
+    default: return platform;
   }
 }
 
-function statusBadge(status: TraceStatus) {
+function platformBadge(platform: string) {
+  const p = normalizePlatform(platform);
+  switch (p) {
+    case "copilot":
+      return <Badge data-testid={`badge-platform-${p}`} className="bg-blue-600 text-white text-[10px] px-1.5">Copilot</Badge>;
+    case "gpt":
+      return <Badge data-testid={`badge-platform-${p}`} className="bg-emerald-700 text-white text-[10px] px-1.5">OpenAI GPT</Badge>;
+    case "agentforce":
+      return <Badge data-testid={`badge-platform-${p}`} className="bg-indigo-600 text-white text-[10px] px-1.5">Agentforce</Badge>;
+    default:
+      return <Badge className="text-[10px] px-1.5">{platform}</Badge>;
+  }
+}
+
+function statusBadge(status: string) {
   switch (status) {
     case "success":
       return <Badge data-testid="badge-status-success" className="bg-green-600 text-white"><CheckCircle2 className="h-3 w-3 mr-1" />Success</Badge>;
     case "failed":
       return <Badge data-testid="badge-status-failed" variant="destructive"><XCircle className="h-3 w-3 mr-1" />Failed</Badge>;
-    case "partial":
-      return <Badge data-testid="badge-status-partial" className="bg-amber-500 text-white"><AlertTriangle className="h-3 w-3 mr-1" />Partial</Badge>;
+    case "degraded":
+      return <Badge data-testid="badge-status-degraded" className="bg-amber-500 text-white"><AlertTriangle className="h-3 w-3 mr-1" />Degraded</Badge>;
     case "running":
       return <Badge data-testid="badge-status-running" className="bg-blue-500 text-white"><Clock className="h-3 w-3 mr-1" />Running</Badge>;
+    default:
+      return <Badge>{status}</Badge>;
   }
 }
 
-function agentStatusIndicator(status: "healthy" | "degraded" | "failed") {
+function agentStatusIndicator(status: string) {
   switch (status) {
     case "healthy":
       return <span className="relative flex h-3 w-3"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" /><span className="relative inline-flex rounded-full h-3 w-3 bg-green-500" /></span>;
@@ -466,10 +164,12 @@ function agentStatusIndicator(status: "healthy" | "degraded" | "failed") {
       return <span className="relative flex h-3 w-3"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" /><span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500" /></span>;
     case "failed":
       return <span className="relative flex h-3 w-3"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" /><span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" /></span>;
+    default:
+      return <span className="relative flex h-3 w-3"><span className="relative inline-flex rounded-full h-3 w-3 bg-gray-400" /></span>;
   }
 }
 
-function spanTypeIcon(type: SpanType) {
+function spanTypeIcon(type: string) {
   switch (type) {
     case "auth": return <Shield className="h-4 w-4 text-amber-500" />;
     case "content": return <FileText className="h-4 w-4 text-blue-500" />;
@@ -477,21 +177,24 @@ function spanTypeIcon(type: SpanType) {
     case "license": return <Key className="h-4 w-4 text-orange-500" />;
     case "api": return <Globe className="h-4 w-4 text-cyan-500" />;
     case "inference": return <Bot className="h-4 w-4 text-green-500" />;
+    default: return <Activity className="h-4 w-4 text-gray-400" />;
   }
 }
 
-function spanStatusColor(status: SpanStatus): string {
+function spanStatusColor(status: string): string {
   switch (status) {
     case "success": return "bg-green-500";
     case "failed": return "bg-red-500";
     case "skipped": return "bg-gray-400";
     case "running": return "bg-blue-500";
+    case "degraded": return "bg-amber-500";
+    default: return "bg-gray-400";
   }
 }
 
-function formatDuration(ms: number): string {
-  if (ms === 0) return "—";
-  if (ms < 1000) return `${ms}ms`;
+function formatDuration(ms: number | null | undefined): string {
+  if (ms == null || ms === 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
@@ -502,6 +205,15 @@ function formatTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function formatTimeAgo(iso: string | null): string {
+  if (!iso) return "—";
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60000) return `${Math.round(diff / 1000)}s ago`;
+  if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+  return `${Math.round(diff / 86400000)}d ago`;
 }
 
 function actionIcon(type: ActionItem["icon"]) {
@@ -515,20 +227,117 @@ function actionIcon(type: ActionItem["icon"]) {
   }
 }
 
-function WaterfallView({ trace }: { trace: Trace }) {
-  const maxDuration = Math.max(trace.durationMs, 1);
+function inferDiagnosis(trace: ApiTrace, spans: ApiSpan[]): Diagnosis | null {
+  const failedSpan = spans.find(s => s.status === "failed");
+  if (!failedSpan) return null;
+
+  const errorMsg = failedSpan.errorMessage || trace.errorSummary || "";
+
+  if (errorMsg.includes("AADSTS50076") || errorMsg.includes("MFA")) {
+    return {
+      rootCause: `Entra ID returned an MFA challenge. The user needs to re-authenticate with multi-factor verification. This is Conditional Access policy enforcement.`,
+      impact: "1 user affected. Agent invocations for this user will fail until MFA is completed.",
+      pattern: "This is typically an isolated user-level incident, not a systemic issue.",
+    };
+  }
+  if (errorMsg.includes("timeout") || errorMsg.includes("timed out") || (failedSpan.statusCode === 504)) {
+    return {
+      rootCause: `${failedSpan.spanName} did not respond within the configured timeout. The service may be under heavy load or experiencing connectivity issues.`,
+      impact: "Users requesting this agent capability will experience failures until the upstream service recovers.",
+      pattern: "Check if this is a recurring pattern — frequent timeouts suggest capacity or reliability issues with the upstream service.",
+    };
+  }
+  if (errorMsg.includes("rate limit") || errorMsg.includes("Rate limit") || failedSpan.statusCode === 429) {
+    return {
+      rootCause: `${failedSpan.serviceName} returned HTTP 429 (Rate Limit Exceeded). The API usage has hit the configured TPM/RPM limits.`,
+      impact: "Concurrent users may receive rate limit errors. Requests will auto-recover after the rate limit window resets.",
+      pattern: "Rate limiting typically occurs during peak usage hours. Consider implementing request queuing or upgrading the API tier.",
+    };
+  }
+  if (errorMsg.includes("context") || errorMsg.includes("Context length") || errorMsg.includes("token")) {
+    return {
+      rootCause: `The input exceeded the model's maximum context window. Too many documents were retrieved in the RAG step, producing more tokens than the model can handle.`,
+      impact: "1 user affected. The query was unusually broad.",
+      pattern: "Context window errors are rare and correlate with queries containing broad temporal ranges.",
+    };
+  }
+  if (errorMsg.includes("License") || errorMsg.includes("license") || errorMsg.includes("capacity") || errorMsg.includes("credits")) {
+    return {
+      rootCause: `License or capacity limit reached. ${errorMsg}`,
+      impact: "All agents depending on this license/capacity will be blocked until limits reset or are increased.",
+      pattern: "Monitor license consumption trends to avoid future exhaustion.",
+    };
+  }
+  if (errorMsg.includes("invalid_grant") || errorMsg.includes("token refresh") || errorMsg.includes("OAuth")) {
+    return {
+      rootCause: `OAuth authorization has been revoked or the refresh token has expired. Re-authentication is required.`,
+      impact: "All agent invocations using this OAuth connection will fail until re-authorized.",
+      pattern: "This is the first occurrence if the Connected App was previously stable.",
+    };
+  }
+
+  return {
+    rootCause: errorMsg || "Unknown error occurred.",
+    impact: "Impact assessment requires further investigation.",
+    pattern: "Check recent trace history for similar failures.",
+  };
+}
+
+function inferActions(trace: ApiTrace, spans: ApiSpan[]): ActionItem[] {
+  const failedSpan = spans.find(s => s.status === "failed");
+  if (!failedSpan) return [];
+
+  const actions: ActionItem[] = [];
+  const errorMsg = failedSpan.errorMessage || "";
+
+  if (failedSpan.statusCode === 429 || errorMsg.includes("timeout") || failedSpan.statusCode === 504) {
+    actions.push({ label: "Retry Trace", icon: "retry", variant: "default" });
+  }
+  if (errorMsg.includes("MFA") || errorMsg.includes("AADSTS")) {
+    actions.push({ label: "View Entra Sign-in Logs", icon: "logs", variant: "outline" });
+    actions.push({ label: "Notify User", icon: "escalate", variant: "default" });
+  }
+  if (errorMsg.includes("invalid_grant") || errorMsg.includes("OAuth")) {
+    actions.push({ label: "Escalate to Admin", icon: "escalate", variant: "default" });
+    actions.push({ label: "Disable Agent", icon: "disable", variant: "destructive" });
+  }
+  if (errorMsg.includes("License") || errorMsg.includes("credits") || errorMsg.includes("capacity")) {
+    actions.push({ label: "Increase Capacity", icon: "capacity", variant: "default" });
+    actions.push({ label: "Escalate to Admin", icon: "escalate", variant: "default" });
+  }
+  if (failedSpan.spanType === "mcp") {
+    actions.push({ label: "View MCP Server Logs", icon: "logs", variant: "outline" });
+  }
+  if (failedSpan.spanType === "inference" && failedSpan.serviceName?.includes("OpenAI")) {
+    actions.push({ label: "Contact Vendor", icon: "vendor", variant: "outline", description: "OpenAI Status: status.openai.com" });
+  }
+  if (failedSpan.spanType === "auth" && failedSpan.serviceName?.includes("Salesforce")) {
+    actions.push({ label: "View Salesforce Setup", icon: "logs", variant: "outline", description: "Setup > Connected Apps" });
+    actions.push({ label: "Contact Vendor", icon: "vendor", variant: "outline", description: "Salesforce Trust: trust.salesforce.com" });
+  }
+
+  if (actions.length === 0) {
+    actions.push({ label: "View Logs", icon: "logs", variant: "outline" });
+    actions.push({ label: "Escalate to Admin", icon: "escalate", variant: "default" });
+  }
+
+  return actions;
+}
+
+function WaterfallView({ spans, totalDurationMs }: { spans: ApiSpan[]; totalDurationMs: number }) {
+  const maxDuration = Math.max(totalDurationMs, 1);
 
   return (
-    <div className="space-y-1.5 py-2" data-testid={`waterfall-${trace.id}`}>
-      {trace.spans.map((span) => {
-        const leftPct = (span.startMs / maxDuration) * 100;
-        const widthPct = Math.max((span.durationMs / maxDuration) * 100, span.status === "skipped" ? 0 : 1.5);
+    <div className="space-y-1.5 py-2" data-testid="waterfall-view">
+      {spans.map((span) => {
+        const leftPct = (span.startOffset / maxDuration) * 100;
+        const widthPct = Math.max(((span.durationMs || 0) / maxDuration) * 100, span.status === "skipped" ? 0 : 1.5);
 
         return (
           <div key={span.id} className="flex items-center gap-3 group" data-testid={`span-${span.id}`}>
             <div className="flex items-center gap-2 w-52 shrink-0">
-              {spanTypeIcon(span.type)}
-              <span className="text-xs font-medium truncate">{span.name}</span>
+              {spanTypeIcon(span.spanType)}
+              <span className="text-xs font-medium truncate">{span.spanName}</span>
             </div>
             <div className="flex-1 relative h-7 bg-muted/40 rounded overflow-hidden">
               {span.status !== "skipped" ? (
@@ -555,20 +364,18 @@ function WaterfallView({ trace }: { trace: Trace }) {
           </div>
         );
       })}
-      {trace.spans.filter(s => s.errorMessage).map((span) => (
+      {spans.filter(s => s.errorMessage).map((span) => (
         <div key={`err-${span.id}`} className="ml-[220px] mt-1 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
-          <span className="font-semibold">{span.name}:</span> {span.errorMessage}
+          <span className="font-semibold">{span.spanName}:</span> {span.errorMessage}
         </div>
       ))}
     </div>
   );
 }
 
-function DiagnosisPanel({ trace }: { trace: Trace }) {
-  if (!trace.diagnosis) return null;
-
+function DiagnosisPanel({ diagnosis }: { diagnosis: Diagnosis }) {
   return (
-    <Card className="border-purple-500/30 bg-purple-500/5" data-testid={`diagnosis-${trace.id}`}>
+    <Card className="border-purple-500/30 bg-purple-500/5" data-testid="diagnosis-panel">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-purple-400" />
@@ -578,25 +385,25 @@ function DiagnosisPanel({ trace }: { trace: Trace }) {
       <CardContent className="space-y-3 text-sm">
         <div>
           <span className="font-semibold text-foreground">Root Cause:</span>
-          <p className="text-muted-foreground mt-0.5 leading-relaxed">{trace.diagnosis.rootCause}</p>
+          <p className="text-muted-foreground mt-0.5 leading-relaxed">{diagnosis.rootCause}</p>
         </div>
         <div className="flex gap-6">
           <div>
             <span className="font-semibold text-foreground">Impact:</span>
-            <p className="text-muted-foreground mt-0.5">{trace.diagnosis.impact}</p>
+            <p className="text-muted-foreground mt-0.5">{diagnosis.impact}</p>
           </div>
         </div>
         <div className="flex items-start gap-2">
-          {trace.diagnosis.pattern.includes("trending upward") || trace.diagnosis.pattern.includes("increased") ? (
+          {diagnosis.pattern.includes("trending upward") || diagnosis.pattern.includes("increased") ? (
             <TrendingUp className="h-4 w-4 text-red-400 mt-0.5 shrink-0" />
-          ) : trace.diagnosis.pattern.includes("rare") || trace.diagnosis.pattern.includes("isolated") || trace.diagnosis.pattern.includes("first") ? (
+          ) : diagnosis.pattern.includes("rare") || diagnosis.pattern.includes("isolated") || diagnosis.pattern.includes("first") ? (
             <Minus className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
           ) : (
             <TrendingDown className="h-4 w-4 text-green-400 mt-0.5 shrink-0" />
           )}
           <div>
             <span className="font-semibold text-foreground">Pattern:</span>
-            <p className="text-muted-foreground mt-0.5">{trace.diagnosis.pattern}</p>
+            <p className="text-muted-foreground mt-0.5">{diagnosis.pattern}</p>
           </div>
         </div>
       </CardContent>
@@ -604,11 +411,11 @@ function DiagnosisPanel({ trace }: { trace: Trace }) {
   );
 }
 
-function ActionsPanel({ trace }: { trace: Trace }) {
-  if (!trace.actions || trace.actions.length === 0) return null;
+function ActionsPanel({ actions }: { actions: ActionItem[] }) {
+  if (actions.length === 0) return null;
 
   return (
-    <Card data-testid={`actions-${trace.id}`}>
+    <Card data-testid="actions-panel">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm flex items-center gap-2">
           <Zap className="h-4 w-4 text-amber-400" />
@@ -617,22 +424,22 @@ function ActionsPanel({ trace }: { trace: Trace }) {
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap gap-2">
-          {trace.actions.map((action, i) => (
+          {actions.map((action, i) => (
             <Button
               key={i}
               variant={action.variant as any}
               size="sm"
               className="text-xs gap-1.5"
-              data-testid={`action-${action.icon}-${trace.id}`}
+              data-testid={`action-${action.icon}-${i}`}
             >
               {actionIcon(action.icon)}
               {action.label}
             </Button>
           ))}
         </div>
-        {trace.actions.some(a => a.description) && (
+        {actions.some(a => a.description) && (
           <div className="text-[11px] text-muted-foreground space-y-0.5">
-            {trace.actions.filter(a => a.description).map((a, i) => (
+            {actions.filter(a => a.description).map((a, i) => (
               <div key={i} className="flex items-center gap-1">
                 <CircleDot className="h-2.5 w-2.5" /> {a.label}: {a.description}
               </div>
@@ -644,293 +451,425 @@ function ActionsPanel({ trace }: { trace: Trace }) {
   );
 }
 
+function TraceDetailRow({ traceId }: { traceId: string }) {
+  const { data, isLoading } = useQuery<{ trace: ApiTrace; spans: ApiSpan[] }>({
+    queryKey: ["/api/agent-traces", traceId],
+    queryFn: async () => {
+      const res = await fetch(`/api/agent-traces/${traceId}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-4">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span className="text-sm text-muted-foreground">Loading trace details...</span>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const { trace, spans } = data;
+  const diagnosis = inferDiagnosis(trace, spans);
+  const actions = inferActions(trace, spans);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+          <Activity className="h-4 w-4" />
+          Execution Waterfall
+          <span className="text-xs font-normal text-muted-foreground">
+            Total: {formatDuration(trace.totalDurationMs)}
+          </span>
+        </h4>
+        <WaterfallView spans={spans} totalDurationMs={trace.totalDurationMs || 0} />
+      </div>
+      {(diagnosis || actions.length > 0) && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {diagnosis && <DiagnosisPanel diagnosis={diagnosis} />}
+          {actions.length > 0 && <ActionsPanel actions={actions} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AgentObservability() {
+  const queryClient = useQueryClient();
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [agentSearch, setAgentSearch] = useState("");
 
-  const filteredTraces = useMemo(() => {
-    return TRACES.filter(t => {
-      if (statusFilter !== "all" && t.status !== statusFilter) return false;
-      if (platformFilter !== "all" && t.platform !== platformFilter) return false;
-      if (agentSearch && !t.agentName.toLowerCase().includes(agentSearch.toLowerCase())) return false;
-      return true;
-    });
-  }, [statusFilter, platformFilter, agentSearch]);
+  const { data: healthData = [], isLoading: healthLoading } = useQuery<AgentHealthItem[]>({
+    queryKey: ["/api/agent-health"],
+    queryFn: async () => {
+      const res = await fetch("/api/agent-health");
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
 
-  const healthyCount = AGENTS.filter(a => a.status === "healthy").length;
-  const degradedCount = AGENTS.filter(a => a.status === "degraded").length;
-  const failedAgentCount = AGENTS.filter(a => a.status === "failed").length;
-  const avgSuccessRate = Math.round(AGENTS.reduce((s, a) => s + a.successRate24h, 0) / AGENTS.length * 10) / 10;
+  const traceParams = new URLSearchParams();
+  if (platformFilter !== "all") traceParams.set("platform", platformFilter);
+  if (statusFilter !== "all") traceParams.set("status", statusFilter);
+  traceParams.set("limit", "50");
+  const traceUrl = `/api/agent-traces?${traceParams.toString()}`;
+
+  const { data: traces = [], isLoading: tracesLoading } = useQuery<ApiTrace[]>({
+    queryKey: ["/api/agent-traces", platformFilter, statusFilter],
+    queryFn: async () => {
+      const res = await fetch(traceUrl);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 15000,
+  });
+
+  const seedMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/agent-traces/seed-demo", { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-traces"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-health"] });
+    },
+  });
+
+  const filteredTraces = useMemo(() => {
+    if (!agentSearch) return traces;
+    return traces.filter(t =>
+      t.agentName.toLowerCase().includes(agentSearch.toLowerCase())
+    );
+  }, [traces, agentSearch]);
+
+  const healthyCount = healthData.filter(a => a.status === "healthy").length;
+  const degradedCount = healthData.filter(a => a.status === "degraded").length;
+  const failedAgentCount = healthData.filter(a => a.status === "failed").length;
+  const avgSuccessRate = healthData.length > 0
+    ? Math.round(healthData.reduce((s, a) => s + a.successRate24h, 0) / healthData.length * 10) / 10
+    : 0;
+
+  const chartData = useMemo(() => {
+    const days = new Map<string, { success: number; failed: number; degraded: number }>();
+    for (const trace of traces) {
+      const d = new Date(trace.startedAt);
+      const label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      if (!days.has(label)) days.set(label, { success: 0, failed: 0, degraded: 0 });
+      const bucket = days.get(label)!;
+      if (trace.status === "success") bucket.success++;
+      else if (trace.status === "failed") bucket.failed++;
+      else if (trace.status === "degraded") bucket.degraded++;
+    }
+    return Array.from(days.entries()).map(([day, counts]) => ({ day, ...counts }));
+  }, [traces]);
+
+  const hasData = traces.length > 0 || healthData.length > 0;
 
   return (
     <Shell>
     <div className="p-6 space-y-6">
-      <div className="flex items-center gap-2">
-        <ScanSearch className="h-6 w-6" />
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Agent Observability</h1>
-        <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/30 text-xs font-medium" data-testid="badge-demo-data">Demo Data</Badge>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <ScanSearch className="h-6 w-6" />
+          <h1 className="text-2xl font-bold" data-testid="text-page-title">Agent Observability</h1>
+          {hasData && (
+            <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30 text-xs font-medium" data-testid="badge-live-data">
+              <Activity className="h-3 w-3 mr-1" />Live
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              queryClient.invalidateQueries({ queryKey: ["/api/agent-traces"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/agent-health"] });
+            }}
+            data-testid="button-refresh"
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => seedMutation.mutate()}
+            disabled={seedMutation.isPending}
+            data-testid="button-seed-demo"
+          >
+            {seedMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <Database className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Seed Demo Data
+          </Button>
+        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-5">
-        <Card data-testid="card-total-agents">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Agents</CardTitle>
-            <Bot className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold" data-testid="text-total-agents">{AGENTS.length}</div>
-            <p className="text-xs text-muted-foreground">Across 3 platforms</p>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-healthy">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Healthy</CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-500" data-testid="text-healthy-count">{healthyCount}</div>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-degraded">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Degraded</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-amber-500" data-testid="text-degraded-count">{degradedCount}</div>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-failed-agents">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Failed</CardTitle>
-            <XCircle className="h-4 w-4 text-red-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-500" data-testid="text-failed-agent-count">{failedAgentCount}</div>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-success-rate">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Success Rate</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold" data-testid="text-avg-success-rate">{avgSuccessRate}%</div>
-            <p className="text-xs text-muted-foreground">Last 24 hours</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div>
-        <h2 className="text-lg font-semibold mb-3" data-testid="text-section-current-state">Current State</h2>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {AGENTS.map((agent) => (
-            <Card
-              key={agent.id}
-              className={`cursor-pointer transition-all hover:shadow-md ${
-                agent.status === "failed" ? "border-red-500/40" :
-                agent.status === "degraded" ? "border-amber-500/40" : ""
-              }`}
-              data-testid={`card-agent-${agent.id}`}
+      {!hasData && !healthLoading && !tracesLoading && (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <Database className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-2">No Agent Traces Yet</h3>
+            <p className="text-sm text-muted-foreground mb-4 max-w-md">
+              Seed demo data to see how Agent Observability works with Copilot, OpenAI GPT, and Agentforce agent traces.
+            </p>
+            <Button
+              onClick={() => seedMutation.mutate()}
+              disabled={seedMutation.isPending}
+              data-testid="button-seed-demo-empty"
             >
-              <CardContent className="p-4 space-y-3">
-                <div className="flex items-start justify-between">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      {agentStatusIndicator(agent.status)}
-                      <span className="text-sm font-semibold">{agent.name}</span>
-                    </div>
-                    {platformBadge(agent.platform)}
+              {seedMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4 mr-2" />
+              )}
+              Seed Demo Data
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {(hasData || healthLoading || tracesLoading) && (
+        <>
+          <div className="grid gap-4 md:grid-cols-5">
+            <Card data-testid="card-total-agents">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Total Agents</CardTitle>
+                <Bot className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-total-agents">{healthData.length}</div>
+                <p className="text-xs text-muted-foreground">
+                  {new Set(healthData.map(a => a.platform)).size} platform{new Set(healthData.map(a => a.platform)).size !== 1 ? "s" : ""}
+                </p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-healthy">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Healthy</CardTitle>
+                <CheckCircle2 className="h-4 w-4 text-green-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-green-500" data-testid="text-healthy-count">{healthyCount}</div>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-degraded">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Degraded</CardTitle>
+                <AlertTriangle className="h-4 w-4 text-amber-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-amber-500" data-testid="text-degraded-count">{degradedCount}</div>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-failed-agents">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Failed</CardTitle>
+                <XCircle className="h-4 w-4 text-red-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-red-500" data-testid="text-failed-agent-count">{failedAgentCount}</div>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-success-rate">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Avg Success Rate</CardTitle>
+                <Activity className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-avg-success-rate">{avgSuccessRate}%</div>
+                <p className="text-xs text-muted-foreground">Last 24 hours</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div>
+            <h2 className="text-lg font-semibold mb-3" data-testid="text-section-current-state">Current State</h2>
+            {healthLoading ? (
+              <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span>Loading agent health...</span>
+              </div>
+            ) : healthData.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4">No agent health data available.</p>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                {healthData.map((agent, i) => (
+                  <Card
+                    key={`${agent.agentName}-${agent.platform}`}
+                    className={`transition-all ${
+                      agent.status === "failed" ? "border-red-500/40" :
+                      agent.status === "degraded" ? "border-amber-500/40" : ""
+                    }`}
+                    data-testid={`card-agent-${i}`}
+                  >
+                    <CardContent className="p-4 space-y-3">
+                      <div className="flex items-start justify-between">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            {agentStatusIndicator(agent.status)}
+                            <span className="text-sm font-semibold">{agent.agentName}</span>
+                          </div>
+                          {platformBadge(agent.platform)}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-center">
+                        <div>
+                          <div className="text-xs text-muted-foreground">Success</div>
+                          <div className={`text-sm font-bold ${agent.successRate24h >= 90 ? "text-green-500" : agent.successRate24h >= 70 ? "text-amber-500" : "text-red-500"}`}>
+                            {agent.successRate24h}%
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">Latency</div>
+                          <div className="text-sm font-bold">{formatDuration(agent.avgLatency)}</div>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Last: {formatTimeAgo(agent.lastInvocation)}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h2 className="text-lg font-semibold mb-3" data-testid="text-section-history">Trace History</h2>
+            {chartData.length > 0 && (
+              <Card className="mb-4">
+                <CardContent className="pt-4">
+                  <ResponsiveContainer width="100%" height={180}>
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                      <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "hsl(var(--card))",
+                          border: "1px solid hsl(var(--border))",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                        }}
+                      />
+                      <Legend iconSize={8} wrapperStyle={{ fontSize: "11px" }} />
+                      <Bar dataKey="success" stackId="a" fill="#22c55e" name="Success" radius={[0, 0, 0, 0]} />
+                      <Bar dataKey="degraded" stackId="a" fill="#f59e0b" name="Degraded" />
+                      <Bar dataKey="failed" stackId="a" fill="#ef4444" name="Failed" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            )}
+
+            <div className="flex gap-3 mb-4 flex-wrap">
+              <Select value={platformFilter} onValueChange={setPlatformFilter}>
+                <SelectTrigger className="w-40" data-testid="filter-platform">
+                  <SelectValue placeholder="Platform" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Platforms</SelectItem>
+                  <SelectItem value="copilot">Copilot</SelectItem>
+                  <SelectItem value="gpt">OpenAI GPT</SelectItem>
+                  <SelectItem value="agentforce">Agentforce</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-36" data-testid="filter-status">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="success">Success</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="degraded">Degraded</SelectItem>
+                  <SelectItem value="running">Running</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Search agent name..."
+                value={agentSearch}
+                onChange={(e) => setAgentSearch(e.target.value)}
+                className="w-56"
+                data-testid="input-agent-search"
+              />
+            </div>
+
+            <Card>
+              <CardContent className="p-0">
+                {tracesLoading ? (
+                  <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span>Loading traces...</span>
                   </div>
-                </div>
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <div className="text-xs text-muted-foreground">Success</div>
-                    <div className={`text-sm font-bold ${agent.successRate24h >= 90 ? "text-green-500" : agent.successRate24h >= 70 ? "text-amber-500" : "text-red-500"}`}>
-                      {agent.successRate24h}%
-                    </div>
+                ) : filteredTraces.length === 0 ? (
+                  <div className="py-8 text-center text-sm text-muted-foreground">
+                    No traces match the current filters.
                   </div>
-                  <div>
-                    <div className="text-xs text-muted-foreground">Latency</div>
-                    <div className="text-sm font-bold">{formatDuration(agent.avgLatencyMs)}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-muted-foreground">24h</div>
-                    <div className="text-sm font-bold">{agent.invocations24h}</div>
-                  </div>
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  Last invocation: {agent.lastInvocation}
-                </div>
-                {agent.issue && (
-                  <div className="text-[11px] p-1.5 rounded bg-red-500/10 text-red-400 border border-red-500/20">
-                    {agent.issue}
-                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-8"></TableHead>
+                        <TableHead>Platform</TableHead>
+                        <TableHead>Agent</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Duration</TableHead>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Error</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredTraces.map((trace) => (
+                        <>
+                          <TableRow
+                            key={trace.id}
+                            className="cursor-pointer hover:bg-muted/50"
+                            onClick={() => setExpandedTraceId(expandedTraceId === trace.id ? null : trace.id)}
+                            data-testid={`row-trace-${trace.id}`}
+                          >
+                            <TableCell className="px-3">
+                              {expandedTraceId === trace.id ?
+                                <ChevronDown className="h-4 w-4 text-muted-foreground" /> :
+                                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                              }
+                            </TableCell>
+                            <TableCell>{platformBadge(trace.platform)}</TableCell>
+                            <TableCell className="font-medium text-sm">{trace.agentName}</TableCell>
+                            <TableCell>{statusBadge(trace.status)}</TableCell>
+                            <TableCell className="text-sm">{formatDuration(trace.totalDurationMs)}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{formatTime(trace.startedAt)}</TableCell>
+                            <TableCell className="text-xs text-red-400 max-w-[200px] truncate">{trace.errorSummary || ""}</TableCell>
+                          </TableRow>
+                          {expandedTraceId === trace.id && (
+                            <TableRow key={`${trace.id}-detail`}>
+                              <TableCell colSpan={7} className="bg-muted/20 p-4">
+                                <TraceDetailRow traceId={trace.id} />
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </>
+                      ))}
+                    </TableBody>
+                  </Table>
                 )}
               </CardContent>
             </Card>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <h2 className="text-lg font-semibold mb-3" data-testid="text-section-history">Trace History</h2>
-        <Card className="mb-4">
-          <CardContent className="pt-4">
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={CHART_DATA}>
-                <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
-                <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--card))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                  }}
-                />
-                <Legend iconSize={8} wrapperStyle={{ fontSize: "11px" }} />
-                <Bar dataKey="success" stackId="a" fill="#22c55e" name="Success" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="partial" stackId="a" fill="#f59e0b" name="Partial" />
-                <Bar dataKey="failed" stackId="a" fill="#ef4444" name="Failed" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <div className="flex gap-3 mb-4 flex-wrap">
-          <Select value={platformFilter} onValueChange={setPlatformFilter}>
-            <SelectTrigger className="w-40" data-testid="filter-platform">
-              <SelectValue placeholder="Platform" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Platforms</SelectItem>
-              <SelectItem value="copilot">Copilot</SelectItem>
-              <SelectItem value="openai">OpenAI GPT</SelectItem>
-              <SelectItem value="agentforce">Agentforce</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-36" data-testid="filter-status">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="success">Success</SelectItem>
-              <SelectItem value="failed">Failed</SelectItem>
-              <SelectItem value="partial">Partial</SelectItem>
-              <SelectItem value="running">Running</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input
-            placeholder="Search agent name..."
-            value={agentSearch}
-            onChange={(e) => setAgentSearch(e.target.value)}
-            className="w-56"
-            data-testid="input-agent-search"
-          />
-        </div>
-
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8"></TableHead>
-                  <TableHead>Platform</TableHead>
-                  <TableHead>Agent</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>User</TableHead>
-                  <TableHead>Time</TableHead>
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredTraces.map((trace) => (
-                  <>
-                    <TableRow
-                      key={trace.id}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => setExpandedTraceId(expandedTraceId === trace.id ? null : trace.id)}
-                      data-testid={`row-trace-${trace.id}`}
-                    >
-                      <TableCell className="px-3">
-                        {expandedTraceId === trace.id ?
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" /> :
-                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                        }
-                      </TableCell>
-                      <TableCell>{platformBadge(trace.platform)}</TableCell>
-                      <TableCell className="font-medium text-sm">{trace.agentName}</TableCell>
-                      <TableCell>{statusBadge(trace.status)}</TableCell>
-                      <TableCell className="text-sm">{formatDuration(trace.durationMs)}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate">{trace.userId || "—"}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{formatTime(trace.timestamp)}</TableCell>
-                      <TableCell className="text-xs text-red-400 max-w-[200px] truncate">{trace.errorSummary || ""}</TableCell>
-                    </TableRow>
-                    {expandedTraceId === trace.id && (
-                      <TableRow key={`${trace.id}-detail`}>
-                        <TableCell colSpan={8} className="bg-muted/20 p-4">
-                          <div className="space-y-4">
-                            <div>
-                              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                                <Activity className="h-4 w-4" />
-                                Execution Waterfall
-                                <span className="text-xs font-normal text-muted-foreground">
-                                  Total: {formatDuration(trace.durationMs)}
-                                </span>
-                              </h4>
-                              <WaterfallView trace={trace} />
-                            </div>
-                            {(trace.diagnosis || trace.actions) && (
-                              <div className="grid gap-4 md:grid-cols-2">
-                                <DiagnosisPanel trace={trace} />
-                                <ActionsPanel trace={trace} />
-                              </div>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div>
-        <h2 className="text-lg font-semibold mb-3" data-testid="text-section-action-history">Recent Actions</h2>
-        <Card>
-          <CardContent className="p-4">
-            <div className="space-y-2">
-              {ACTION_HISTORY.map((entry, i) => (
-                <div key={i} className="flex items-center justify-between text-sm py-1.5 border-b last:border-0" data-testid={`action-history-${i}`}>
-                  <div className="flex items-center gap-2">
-                    {entry.result === "success" ?
-                      <CheckCircle2 className="h-3.5 w-3.5 text-green-500" /> :
-                      <XCircle className="h-3.5 w-3.5 text-red-500" />
-                    }
-                    <span>{entry.action}</span>
-                  </div>
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span>{entry.user}</span>
-                    <span>{entry.time}</span>
-                    <Badge variant={entry.result === "success" ? "outline" : "destructive"} className="text-[10px]">
-                      {entry.result}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </>
+      )}
     </div>
     </Shell>
   );
