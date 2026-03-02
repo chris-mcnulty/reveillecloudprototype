@@ -21,6 +21,8 @@ import {
   FileText,
   BarChart3,
   RefreshCw,
+  Globe,
+  Layers,
 } from "lucide-react";
 import { useState } from "react";
 import {
@@ -58,6 +60,18 @@ const JOB_META: Record<string, { label: string; icon: any; interval: string; des
     icon: BarChart3,
     interval: "Every 6 hrs",
     description: "Pulls SharePoint usage reports (site usage, storage, file activity, active users)",
+  },
+  siteStructure: {
+    label: "Site Structure",
+    icon: Globe,
+    interval: "Every 1 hr",
+    description: "Discovers and catalogs SharePoint sites, lists, libraries, and content types per tenant",
+  },
+  powerPlatform: {
+    label: "Power Platform",
+    icon: Layers,
+    interval: "Every 30 min",
+    description: "Collects Power Platform environments, apps, flows, bots, and M365 agents via Graph beta",
   },
 };
 
