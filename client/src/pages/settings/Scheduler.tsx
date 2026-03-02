@@ -432,6 +432,16 @@ function summarizeResult(jobType: string, result: any): string {
     }
     case "auditLogs":
       return `${result.entriesCollected || 0} entries collected`;
+    case "siteStructure":
+      return `${result.totalCollected || 0} records collected`;
+    case "powerPlatform": {
+      const pp: string[] = [];
+      if (result.environments) pp.push(`${result.environments} envs`);
+      if (result.apps) pp.push(`${result.apps} apps`);
+      if (result.flows) pp.push(`${result.flows} flows`);
+      if (result.bots) pp.push(`${result.bots} bots`);
+      return pp.length > 0 ? pp.join(", ") : "No resources found";
+    }
     default:
       return JSON.stringify(result).substring(0, 60);
   }
