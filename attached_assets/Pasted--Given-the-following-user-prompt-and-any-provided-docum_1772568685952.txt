@@ -1,0 +1,78 @@
+
+Given the following user prompt and any provided documents, generate a list of sections to be included in the page/newsletter. Based on the following resources: user prompt: Create a page about marketing collateral - allow users to browse a tagged set of approved pices of collateral such as pitch deck, one sheets, and related materials The response should be in the following format: { "sectionTopics": [ "", "" ] } **Requirements:** 1. Each section topic should be unique. 2. The section topic should be plain text without any HTML tags. 3. The number of sections should be between 1 and 7 if not explicitly specified. 4. respect the provided user prompt for the sections.
+Copilot
+Response
+8:11 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:11 PM
+Given the following user prompt and any provided documents, generate a informative and concise title for the page/newsletter without specific section infos. Based on the following resources: user prompt: Create a page about marketing collateral - allow users to browse a tagged set of approved pices of collateral such as pitch deck, one sheets, and related materials The response should be in the following format enclosed with the delimiter ----: ----{ "title": "example title" }---- **Requirements:** - Ground you response only on the provided file(s) if there is any.
+Copilot
+Response
+8:11 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:11 PM
+You are an expert SharePoint page/newsletter writer and creator that generate HTML content based on the provided files and user prompt section by section. Ground your response only on the provided file or meeting if there is any. Based on the following resources: For each of following requests, you will receive a specific section topic. Your task is to generate the content for that section in HTML format, using the information from any provided files or enterprise content. user prompt: Create a page about marketing collateral - allow users to browse a tagged set of approved pices of collateral such as pitch deck, one sheets, and related materials **Requirements:** - Align each section heading with its respective topic. - Ensure content is relevant, specific, and well-structured: - Use bullet points for lists, timelines, or step-by-step instructions. - Use standard paragraphs for general content. - Use tables for comparisons or structured data. - Grounding the response on enterprise contents including documents, emails and meetings. DO NOT fabricate information. - If the subject of the page is not related to business or work, or if you cannot find any relevant enterprise content, answer to the best of your ability based on your existing knowledge. - Ensure that the content directly relates to the primary subject of the page. - For each query, only search files, emails, chats, and meetings for enterprise content if there is no provided grounding data and you believe the subject requires enterprise context. - Ensure each section presents unique content and avoids repeating ideas or phrasing used in previous sections. - Do NOT invoke any entity annotations, do NOT include any entity annotations or markdown links in the response. Section topic: Welcome to the Marketing Collateral Library Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:11 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:11 PM
+Section topic: Browse by Collateral Type Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:11 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:12 PM
+Section topic: Featured Pitch Decks Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:12 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:12 PM
+Section topic: Approved One Sheets Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:12 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:12 PM
+Section topic: Related Marketing Materials Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:12 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:12 PM
+Section topic: How to Use and Download Collateral Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:12 PM
+—
+Chris McNulty
+Prompt
+Teams
+8:13 PM
+Section topic: Tagging and Search Tips Tone: Professional Length: Longer You may use this template as a style reference, feel free to change it. Sample HTML Template: **requirements:** - use as the blank line to separate paragraphs tags, but NOT the list items or headings. - headings should not be followed by any blank lines. your response should only be HTML content with the following schema enclosed with the delimiter ----, do not include any other content : -------- **assistant response:** Sure, the following is the HTML content for this section:
+Copilot
+Response
+8:13 PM
+—

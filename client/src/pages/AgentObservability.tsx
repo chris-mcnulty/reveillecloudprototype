@@ -535,15 +535,20 @@ interface CopilotStats {
 function appClassLabel(appClass: string | null): string {
   if (!appClass) return "Unknown";
   const lower = appClass.toLowerCase();
+  if (lower.includes("bizchat")) return "BizChat";
+  if (lower.includes("webchat")) return "Web Chat";
   if (lower.includes("teams")) return "Teams";
   if (lower.includes("word")) return "Word";
   if (lower.includes("excel")) return "Excel";
   if (lower.includes("powerpoint")) return "PowerPoint";
   if (lower.includes("outlook")) return "Outlook";
-  if (lower.includes("copilot")) return "Copilot";
+  if (lower.includes("sharepoint")) return "SharePoint";
+  if (lower.includes("stream")) return "Stream";
+  if (lower.includes("onenote")) return "OneNote";
+  if (lower.includes("searchanswer") || lower.includes("officecopi")) return "Search";
   if (lower.includes("bing")) return "Bing Chat";
-  if (lower.includes("oneNote")) return "OneNote";
-  return appClass;
+  if (lower.includes("copilot")) return "Copilot";
+  return appClass.replace(/^IPM\.SkypeTeams\.Message\.Copilot\./i, "");
 }
 
 function appClassColor(appClass: string | null): string {
@@ -554,6 +559,12 @@ function appClassColor(appClass: string | null): string {
     case "Excel": return "bg-green-700 text-white";
     case "PowerPoint": return "bg-orange-600 text-white";
     case "Outlook": return "bg-sky-600 text-white";
+    case "SharePoint": return "bg-teal-600 text-white";
+    case "BizChat": return "bg-indigo-600 text-white";
+    case "Web Chat": return "bg-violet-600 text-white";
+    case "Stream": return "bg-red-600 text-white";
+    case "Search": return "bg-amber-600 text-white";
+    case "OneNote": return "bg-purple-800 text-white";
     case "Copilot": return "bg-blue-500 text-white";
     default: return "bg-gray-500 text-white";
   }
@@ -564,6 +575,39 @@ function truncateContent(content: string | null, maxLength = 120): string {
   const stripped = content.replace(/<[^>]*>/g, "").trim();
   if (stripped.length <= maxLength) return stripped;
   return stripped.slice(0, maxLength) + "…";
+}
+
+function extractResponseContent(interaction: CopilotInteraction): string {
+  const atts = interaction.attachments as any[] | null;
+  if (atts && atts.length > 0) {
+    for (const att of atts) {
+      if (att.content) {
+        try {
+          const card = JSON.parse(att.content);
+          if (card.body) {
+            return card.body
+              .filter((b: any) => b.type === "TextBlock" && b.text)
+              .map((b: any) => b.text)
+              .join("\n\n");
+          }
+        } catch {}
+      }
+    }
+  }
+  if (interaction.bodyContent) {
+    const stripped = interaction.bodyContent.replace(/<attachment[^>]*><\/attachment>/g, "").replace(/<[^>]*>/g, "").trim();
+    if (stripped) return stripped;
+  }
+  return "";
+}
+
+function extractLinks(interaction: CopilotInteraction): { url: string; name: string }[] {
+  const links = interaction.links as any[] | null;
+  if (!links || links.length === 0) return [];
+  return links.filter(l => l.linkUrl).map(l => ({
+    url: l.linkUrl,
+    name: l.displayName || new URL(l.linkUrl).hostname,
+  }));
 }
 
 function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
@@ -612,17 +656,29 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   });
 
   const sessionPairs = useMemo(() => {
-    const byRequest = new Map<string, { prompt?: CopilotInteraction; response?: CopilotInteraction }>();
+    const byRequest = new Map<string, { prompt?: CopilotInteraction; thinking?: CopilotInteraction; answer?: CopilotInteraction; responses: CopilotInteraction[] }>();
     for (const i of sessionInteractions) {
       const rid = i.requestId || i.id;
-      if (!byRequest.has(rid)) byRequest.set(rid, {});
-      const pair = byRequest.get(rid)!;
-      if (i.interactionType === "userPrompt") pair.prompt = i;
-      else if (i.interactionType === "aiResponse") pair.response = i;
+      if (!byRequest.has(rid)) byRequest.set(rid, { responses: [] });
+      const group = byRequest.get(rid)!;
+      if (i.interactionType === "userPrompt") {
+        group.prompt = i;
+      } else if (i.interactionType === "aiResponse") {
+        group.responses.push(i);
+      }
+    }
+    for (const group of byRequest.values()) {
+      if (group.responses.length === 1) {
+        group.answer = group.responses[0];
+      } else if (group.responses.length > 1) {
+        group.answer = group.responses.find(r => r.bodyContentType === "html" || (r.attachments && (r.attachments as any[]).length > 0));
+        group.thinking = group.responses.find(r => r !== group.answer && r.bodyContentType === "text");
+        if (!group.answer) group.answer = group.responses[group.responses.length - 1];
+      }
     }
     return Array.from(byRequest.values()).sort((a, b) => {
-      const aTime = a.prompt?.createdAt || a.response?.createdAt || "";
-      const bTime = b.prompt?.createdAt || b.response?.createdAt || "";
+      const aTime = a.prompt?.createdAt || a.answer?.createdAt || "";
+      const bTime = b.prompt?.createdAt || b.answer?.createdAt || "";
       return aTime.localeCompare(bTime);
     });
   }, [sessionInteractions]);
@@ -723,11 +779,13 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Apps</SelectItem>
-            <SelectItem value="Teams">Teams</SelectItem>
-            <SelectItem value="Word">Word</SelectItem>
-            <SelectItem value="Excel">Excel</SelectItem>
-            <SelectItem value="PowerPoint">PowerPoint</SelectItem>
-            <SelectItem value="Outlook">Outlook</SelectItem>
+            {stats?.appBreakdown && Object.keys(stats.appBreakdown)
+              .sort((a, b) => (stats.appBreakdown[b] || 0) - (stats.appBreakdown[a] || 0))
+              .map((rawApp) => (
+                <SelectItem key={rawApp} value={rawApp}>
+                  {appClassLabel(rawApp)} ({stats.appBreakdown[rawApp]})
+                </SelectItem>
+              ))}
           </SelectContent>
         </Select>
         <Input
@@ -757,58 +815,101 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
           </div>
 
           <div className="space-y-4" data-testid="conversation-thread">
-            {sessionPairs.map((pair, idx) => (
+            {sessionPairs.map((group, idx) => (
               <div key={idx} className="space-y-2">
-                {pair.prompt && (
+                {group.prompt && (
                   <div className="flex gap-3 items-start" data-testid={`pair-prompt-${idx}`}>
                     <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center shrink-0 mt-1">
                       <User className="h-4 w-4 text-white" />
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-medium">{pair.prompt.userName || pair.prompt.userId || "User"}</span>
-                        <Badge className="bg-blue-100 text-blue-800 text-[10px]">Prompt</Badge>
-                        {pair.prompt.appClass && (
-                          <Badge className={`${appClassColor(pair.prompt.appClass)} text-[10px]`}>{appClassLabel(pair.prompt.appClass)}</Badge>
+                        <span className="text-xs font-medium">{group.prompt.userName || group.prompt.userId || "User"}</span>
+                        <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 text-[10px]">Prompt</Badge>
+                        {group.prompt.appClass && (
+                          <Badge className={`${appClassColor(group.prompt.appClass)} text-[10px]`}>{appClassLabel(group.prompt.appClass)}</Badge>
                         )}
-                        <span className="text-[11px] text-muted-foreground">{formatTime(pair.prompt.createdAt)}</span>
+                        <span className="text-[11px] text-muted-foreground">{formatTime(group.prompt.createdAt)}</span>
                       </div>
                       <Card className="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800">
-                        <CardContent className="p-3 text-sm">
-                          {pair.prompt.bodyContent?.replace(/<[^>]*>/g, "") || "—"}
+                        <CardContent className="p-3 text-sm whitespace-pre-wrap">
+                          {group.prompt.bodyContent?.replace(/<[^>]*>/g, "").trim() || "—"}
                         </CardContent>
                       </Card>
                     </div>
                   </div>
                 )}
-                {pair.response && (
-                  <div className="flex gap-3 items-start" data-testid={`pair-response-${idx}`}>
-                    <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center shrink-0 mt-1">
-                      <Sparkles className="h-4 w-4 text-white" />
+                {group.thinking && (
+                  <div className="flex gap-3 items-start" data-testid={`pair-thinking-${idx}`}>
+                    <div className="w-8 h-8 rounded-full bg-amber-500 flex items-center justify-center shrink-0 mt-1">
+                      <Loader2 className="h-4 w-4 text-white" />
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs font-medium">Copilot</span>
-                        <Badge className="bg-green-100 text-green-800 text-[10px]">Response</Badge>
-                        <span className="text-[11px] text-muted-foreground">{formatTime(pair.response.createdAt)}</span>
+                        <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 text-[10px]">Reasoning</Badge>
+                        <span className="text-[11px] text-muted-foreground">{formatTime(group.thinking.createdAt)}</span>
                       </div>
-                      <Card className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
-                        <CardContent className="p-3 text-sm">
-                          {pair.response.bodyContent?.replace(/<[^>]*>/g, "") || "—"}
+                      <Card className="bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800">
+                        <CardContent className="p-3 text-sm text-muted-foreground italic whitespace-pre-wrap">
+                          {group.thinking.bodyContent?.replace(/<[^>]*>/g, "").trim() || "—"}
                         </CardContent>
                       </Card>
-                      {pair.response.contexts && pair.response.contexts.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {pair.response.contexts.map((ctx: any, ci: number) => (
-                            <Badge key={ci} variant="outline" className="text-[10px]">
-                              {ctx.displayName || ctx.contextReference || "Source"}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   </div>
                 )}
+                {group.answer && (() => {
+                  const answerContent = extractResponseContent(group.answer!);
+                  const answerLinks = extractLinks(group.answer!);
+                  return (
+                    <div className="flex gap-3 items-start" data-testid={`pair-response-${idx}`}>
+                      <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center shrink-0 mt-1">
+                        <Sparkles className="h-4 w-4 text-white" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs font-medium">Copilot</span>
+                          <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 text-[10px]">Response</Badge>
+                          <span className="text-[11px] text-muted-foreground">{formatTime(group.answer!.createdAt)}</span>
+                        </div>
+                        <Card className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                          <CardContent className="p-3 text-sm whitespace-pre-wrap">
+                            {answerContent || "—"}
+                          </CardContent>
+                        </Card>
+                        {answerLinks.length > 0 && (
+                          <div className="mt-2">
+                            <span className="text-[11px] text-muted-foreground font-medium">Citations:</span>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {answerLinks.map((link, li) => (
+                                <a
+                                  key={li}
+                                  href={link.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border bg-muted/50 hover:bg-muted text-foreground no-underline"
+                                  data-testid={`link-citation-${idx}-${li}`}
+                                >
+                                  <ExternalLink className="h-2.5 w-2.5" />
+                                  {link.name.length > 50 ? link.name.slice(0, 50) + "…" : link.name}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {group.answer!.contexts && (group.answer!.contexts as any[]).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {(group.answer!.contexts as any[]).map((ctx: any, ci: number) => (
+                              <Badge key={ci} variant="outline" className="text-[10px]">
+                                {ctx.displayName || ctx.contextReference || "Source"}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
             {sessionPairs.length === 0 && (
@@ -846,11 +947,14 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                 </TableHeader>
                 <TableBody>
                   {uniqueSessions.map((session) => {
-                    const firstPrompt = session.interactions.find(i => i.interactionType === "userPrompt");
-                    const user = firstPrompt?.userName || firstPrompt?.userId || session.interactions[0]?.userName || "Unknown";
+                    const prompts = session.interactions.filter(i => i.interactionType === "userPrompt");
+                    const firstPrompt = prompts[0];
+                    const firstUserInteraction = session.interactions.find(i => i.interactionType === "userPrompt");
+                    const user = firstUserInteraction?.userName || firstUserInteraction?.userId || session.interactions[0]?.userId || "Unknown";
                     const app = firstPrompt?.appClass || session.interactions[0]?.appClass;
-                    const turns = Math.ceil(session.interactions.length / 2);
-                    const preview = truncateContent(firstPrompt?.bodyContent || session.interactions[0]?.bodyContent, 80);
+                    const turns = prompts.length || Math.ceil(session.interactions.length / 2);
+                    const previewText = firstPrompt?.bodyContent?.replace(/<[^>]*>/g, "").trim() || "";
+                    const preview = previewText ? truncateContent(previewText, 80) : "—";
 
                     return (
                       <TableRow
