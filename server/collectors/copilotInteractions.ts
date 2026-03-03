@@ -79,8 +79,9 @@ export async function collectCopilotInteractions(tenantId: string): Promise<Coll
     return { usersProcessed: 0, interactionsCollected: 0, errors: ["No users found to process"] };
   }
 
-  const lastDate = await storage.getLatestCopilotInteractionDate(tenantId);
-  const filterParam = lastDate
+  const lastDateRaw = await storage.getLatestCopilotInteractionDate(tenantId);
+  const lastDate = lastDateRaw ? new Date(lastDateRaw) : null;
+  const filterParam = lastDate && !isNaN(lastDate.getTime())
     ? `&$filter=createdDateTime gt ${lastDate.toISOString()}`
     : "";
 
