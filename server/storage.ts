@@ -111,9 +111,9 @@ export interface IStorage {
   getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number }): Promise<CopilotInteraction[]>;
   getCopilotInteractionsByRequestId(tenantId: string, requestId: string): Promise<CopilotInteraction[]>;
   getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
-  getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number> }>;
+  getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
-  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null }[]; total: number }>;
+  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -688,7 +688,7 @@ export class DatabaseStorage implements IStorage {
       .orderBy(copilotInteractions.createdAt);
   }
 
-  async getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number> }> {
+  async getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }> {
     const [counts] = await db.select({
       totalInteractions: sql<number>`count(*)`,
       uniqueUsers: sql<number>`count(distinct ${copilotInteractions.userId})`,
@@ -708,11 +708,23 @@ export class DatabaseStorage implements IStorage {
       appBreakdown[row.appClass || "unknown"] = Number(row.count);
     }
 
+    const successResult = await db.execute(sql`
+      SELECT
+        count(distinct case when ${copilotInteractions.interactionType} = 'userPrompt' then ${copilotInteractions.requestId} end) as "totalRequests",
+        count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end) as "answeredRequests"
+      FROM ${copilotInteractions}
+      WHERE ${copilotInteractions.tenantId} = ${tenantId}
+    `);
+    const totalRequests = Number((successResult.rows[0] as any)?.totalRequests || 0);
+    const answeredRequests = Number((successResult.rows[0] as any)?.answeredRequests || 0);
+    const successRate = totalRequests > 0 ? Math.round((answeredRequests / totalRequests) * 100) : 100;
+
     return {
       totalInteractions: Number(counts?.totalInteractions || 0),
       uniqueUsers: Number(counts?.uniqueUsers || 0),
       uniqueSessions: Number(counts?.uniqueSessions || 0),
       appBreakdown,
+      successRate,
     };
   }
 
@@ -743,7 +755,9 @@ export class DatabaseStorage implements IStorage {
         max(${copilotInteractions.appClass}) as "appClass",
         count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end)::int as "turns",
         max(${copilotInteractions.createdAt})::text as "latestTime",
-        (array_agg(${copilotInteractions.bodyContent} order by ${copilotInteractions.createdAt}) filter (where ${copilotInteractions.interactionType} = 'userPrompt'))[1] as "firstPrompt"
+        (array_agg(${copilotInteractions.bodyContent} order by ${copilotInteractions.createdAt}) filter (where ${copilotInteractions.interactionType} = 'userPrompt'))[1] as "firstPrompt",
+        count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end)::int as "promptCount",
+        count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end)::int as "responseCount"
       FROM ${copilotInteractions}
       WHERE ${and(...conditions)}
       GROUP BY ${copilotInteractions.sessionId}
@@ -752,15 +766,25 @@ export class DatabaseStorage implements IStorage {
       OFFSET ${options?.offset ?? 0}
     `);
 
-    const sessions = (rows.rows as any[]).map(r => ({
-      sessionId: r.sessionId || "",
-      userId: r.userId || "Unknown",
-      userName: r.userName || null,
-      appClass: r.appClass || null,
-      turns: Number(r.turns) || 0,
-      latestTime: r.latestTime || "",
-      firstPrompt: r.firstPrompt || null,
-    }));
+    const sessions = (rows.rows as any[]).map(r => {
+      const promptCount = Number(r.promptCount) || 0;
+      const responseCount = Number(r.responseCount) || 0;
+      let status = "success";
+      if (promptCount > 0 && responseCount === 0) status = "failed";
+      else if (promptCount > responseCount) status = "partial";
+      return {
+        sessionId: r.sessionId || "",
+        userId: r.userId || "Unknown",
+        userName: r.userName || null,
+        appClass: r.appClass || null,
+        turns: Number(r.turns) || 0,
+        latestTime: r.latestTime || "",
+        firstPrompt: r.firstPrompt || null,
+        promptCount,
+        responseCount,
+        status,
+      };
+    });
 
     return { sessions, total };
   }

@@ -530,6 +530,7 @@ interface CopilotStats {
   uniqueUsers: number;
   uniqueSessions: number;
   appBreakdown: Record<string, number>;
+  successRate: number;
 }
 
 function appClassLabel(appClass: string | null): string {
@@ -618,6 +619,9 @@ interface SessionSummary {
   turns: number;
   latestTime: string;
   firstPrompt: string | null;
+  promptCount: number;
+  responseCount: number;
+  status: string;
 }
 
 function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
@@ -774,13 +778,18 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
             <div className="text-2xl font-bold" data-testid="text-copilot-sessions">{stats?.uniqueSessions || 0}</div>
           </CardContent>
         </Card>
-        <Card data-testid="card-copilot-top-app">
+        <Card data-testid="card-copilot-success-rate">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Top App</CardTitle>
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
+            <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold" data-testid="text-copilot-top-app">{appClassLabel(topApp)}</div>
+            <div className="text-2xl font-bold" data-testid="text-copilot-success-rate">
+              <span className={stats?.successRate === 100 ? "text-green-600" : stats?.successRate && stats.successRate >= 80 ? "text-yellow-600" : "text-red-600"}>
+                {stats?.successRate ?? 100}%
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">Top: {appClassLabel(topApp)}</p>
           </CardContent>
         </Card>
       </div>
@@ -953,6 +962,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                       <TableHead>Session</TableHead>
                       <TableHead>User</TableHead>
                       <TableHead>App</TableHead>
+                      <TableHead>Status</TableHead>
                       <TableHead>Turns</TableHead>
                       <TableHead>Last Activity</TableHead>
                       <TableHead>Preview</TableHead>
@@ -973,6 +983,21 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                         <TableCell className="text-sm">{session.userName || session.userId}</TableCell>
                         <TableCell>
                           {session.appClass && <Badge className={`${appClassColor(session.appClass)} text-[10px]`}>{appClassLabel(session.appClass)}</Badge>}
+                        </TableCell>
+                        <TableCell>
+                          {session.status === "success" ? (
+                            <Badge variant="outline" className="text-green-600 border-green-300 text-[10px] gap-1" data-testid={`status-session-${session.sessionId}`}>
+                              <CheckCircle2 className="h-3 w-3" /> {session.responseCount}/{session.promptCount}
+                            </Badge>
+                          ) : session.status === "partial" ? (
+                            <Badge variant="outline" className="text-amber-600 border-amber-300 text-[10px] gap-1" data-testid={`status-session-${session.sessionId}`}>
+                              <AlertTriangle className="h-3 w-3" /> {session.responseCount}/{session.promptCount}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-red-600 border-red-300 text-[10px] gap-1" data-testid={`status-session-${session.sessionId}`}>
+                              <XCircle className="h-3 w-3" /> 0/{session.promptCount}
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell className="text-sm">{session.turns} turn{session.turns !== 1 ? "s" : ""}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{formatTime(session.latestTime)}</TableCell>
