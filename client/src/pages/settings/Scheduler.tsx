@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Globe,
   Layers,
+  MessageSquare,
 } from "lucide-react";
 import { useState } from "react";
 import {
@@ -72,6 +73,12 @@ const JOB_META: Record<string, { label: string; icon: any; interval: string; des
     icon: Layers,
     interval: "Every 30 min",
     description: "Collects Power Platform environments, apps, flows, bots, and M365 agents via Graph beta",
+  },
+  copilotInteractions: {
+    label: "Copilot Interactions",
+    icon: MessageSquare,
+    interval: "Every 1 hr",
+    description: "Collects Microsoft 365 Copilot prompt/response interaction history per user via Graph beta",
   },
 };
 
@@ -156,7 +163,7 @@ export default function SchedulerPage() {
 
         <SettingsNav />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {jobTypes.map((jobType) => {
             const meta = JOB_META[jobType];
             const status = schedulerStatus?.[jobType];
@@ -441,6 +448,13 @@ function summarizeResult(jobType: string, result: any): string {
       if (result.flows) pp.push(`${result.flows} flows`);
       if (result.bots) pp.push(`${result.bots} bots`);
       return pp.length > 0 ? pp.join(", ") : "No resources found";
+    }
+    case "copilotInteractions": {
+      const ci: string[] = [];
+      if (result.usersProcessed) ci.push(`${result.usersProcessed} users`);
+      if (result.interactionsCollected) ci.push(`${result.interactionsCollected} interactions`);
+      if (result.errors?.length) ci.push(`${result.errors.length} errors`);
+      return ci.length > 0 ? ci.join(", ") : "No interactions found";
     }
     default:
       return JSON.stringify(result).substring(0, 60);
