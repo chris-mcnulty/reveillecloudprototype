@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -45,7 +46,13 @@ import {
   Loader2,
   RefreshCw,
   Trash2,
+  MessageSquare,
+  Users,
+  Hash,
+  ArrowRight,
+  User,
 } from "lucide-react";
+import { useActiveTenant } from "@/lib/tenant-context";
 import {
   BarChart,
   Bar,
@@ -498,8 +505,389 @@ function TraceDetailRow({ traceId }: { traceId: string }) {
   );
 }
 
+interface CopilotInteraction {
+  id: string;
+  tenantId: string;
+  interactionId: string;
+  requestId: string | null;
+  sessionId: string | null;
+  interactionType: string;
+  appClass: string | null;
+  userId: string | null;
+  userName: string | null;
+  bodyContent: string | null;
+  bodyContentType: string | null;
+  contexts: any[] | null;
+  attachments: any[] | null;
+  links: any[] | null;
+  mentions: any[] | null;
+  createdAt: string;
+  collectedAt: string;
+}
+
+interface CopilotStats {
+  totalInteractions: number;
+  uniqueUsers: number;
+  uniqueSessions: number;
+  appBreakdown: Record<string, number>;
+}
+
+function appClassLabel(appClass: string | null): string {
+  if (!appClass) return "Unknown";
+  const lower = appClass.toLowerCase();
+  if (lower.includes("teams")) return "Teams";
+  if (lower.includes("word")) return "Word";
+  if (lower.includes("excel")) return "Excel";
+  if (lower.includes("powerpoint")) return "PowerPoint";
+  if (lower.includes("outlook")) return "Outlook";
+  if (lower.includes("copilot")) return "Copilot";
+  if (lower.includes("bing")) return "Bing Chat";
+  if (lower.includes("oneNote")) return "OneNote";
+  return appClass;
+}
+
+function appClassColor(appClass: string | null): string {
+  const label = appClassLabel(appClass);
+  switch (label) {
+    case "Teams": return "bg-purple-600 text-white";
+    case "Word": return "bg-blue-700 text-white";
+    case "Excel": return "bg-green-700 text-white";
+    case "PowerPoint": return "bg-orange-600 text-white";
+    case "Outlook": return "bg-sky-600 text-white";
+    case "Copilot": return "bg-blue-500 text-white";
+    default: return "bg-gray-500 text-white";
+  }
+}
+
+function truncateContent(content: string | null, maxLength = 120): string {
+  if (!content) return "—";
+  const stripped = content.replace(/<[^>]*>/g, "").trim();
+  if (stripped.length <= maxLength) return stripped;
+  return stripped.slice(0, maxLength) + "…";
+}
+
+function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
+  const [appFilter, setAppFilter] = useState<string>("all");
+  const [userSearch, setUserSearch] = useState("");
+  const [expandedSession, setExpandedSession] = useState<string | null>(null);
+
+  const { data: stats } = useQuery<CopilotStats>({
+    queryKey: ["/api/copilot-interactions/stats", tenantId],
+    queryFn: async () => {
+      if (!tenantId) return { totalInteractions: 0, uniqueUsers: 0, uniqueSessions: 0, appBreakdown: {} };
+      const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions/stats`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: !!tenantId,
+    refetchInterval: 30000,
+  });
+
+  const params = new URLSearchParams();
+  if (appFilter !== "all") params.set("appClass", appFilter);
+  if (userSearch) params.set("userId", userSearch);
+  params.set("limit", "100");
+
+  const { data: interactions = [], isLoading } = useQuery<CopilotInteraction[]>({
+    queryKey: ["/api/copilot-interactions", tenantId, appFilter, userSearch],
+    queryFn: async () => {
+      if (!tenantId) return [];
+      const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions?${params.toString()}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: !!tenantId,
+    refetchInterval: 30000,
+  });
+
+  const { data: sessionInteractions = [] } = useQuery<CopilotInteraction[]>({
+    queryKey: ["/api/copilot-interactions/session", tenantId, expandedSession],
+    queryFn: async () => {
+      if (!tenantId || !expandedSession) return [];
+      const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions/sessions/${expandedSession}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: !!tenantId && !!expandedSession,
+  });
+
+  const sessionPairs = useMemo(() => {
+    const byRequest = new Map<string, { prompt?: CopilotInteraction; response?: CopilotInteraction }>();
+    for (const i of sessionInteractions) {
+      const rid = i.requestId || i.id;
+      if (!byRequest.has(rid)) byRequest.set(rid, {});
+      const pair = byRequest.get(rid)!;
+      if (i.interactionType === "userPrompt") pair.prompt = i;
+      else if (i.interactionType === "aiResponse") pair.response = i;
+    }
+    return Array.from(byRequest.values()).sort((a, b) => {
+      const aTime = a.prompt?.createdAt || a.response?.createdAt || "";
+      const bTime = b.prompt?.createdAt || b.response?.createdAt || "";
+      return aTime.localeCompare(bTime);
+    });
+  }, [sessionInteractions]);
+
+  const uniqueSessions = useMemo(() => {
+    const sessions = new Map<string, { sessionId: string; interactions: CopilotInteraction[]; latestTime: string }>();
+    for (const i of interactions) {
+      const sid = i.sessionId || i.id;
+      if (!sessions.has(sid)) {
+        sessions.set(sid, { sessionId: sid, interactions: [], latestTime: i.createdAt });
+      }
+      const s = sessions.get(sid)!;
+      s.interactions.push(i);
+      if (i.createdAt > s.latestTime) s.latestTime = i.createdAt;
+    }
+    return Array.from(sessions.values()).sort((a, b) => b.latestTime.localeCompare(a.latestTime));
+  }, [interactions]);
+
+  const topApp = stats?.appBreakdown
+    ? Object.entries(stats.appBreakdown).sort((a, b) => b[1] - a[1])[0]?.[0] || "—"
+    : "—";
+
+  if (!tenantId) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+          <MessageSquare className="h-12 w-12 text-muted-foreground mb-4" />
+          <h3 className="text-lg font-semibold mb-2">No Tenant Selected</h3>
+          <p className="text-sm text-muted-foreground">Select a tenant to view Copilot interaction history.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!isLoading && interactions.length === 0 && (!stats || stats.totalInteractions === 0)) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+          <MessageSquare className="h-12 w-12 text-muted-foreground mb-4" />
+          <h3 className="text-lg font-semibold mb-2" data-testid="text-copilot-empty">No Copilot Interactions Yet</h3>
+          <p className="text-sm text-muted-foreground max-w-md">
+            Copilot interaction history will appear after the next scheduled collection.
+            The collector runs every hour and retrieves prompt/response pairs from the Microsoft Graph API.
+          </p>
+          <p className="text-xs text-muted-foreground mt-2">
+            Requires <code className="bg-muted px-1 rounded">AiEnterpriseInteraction.Read.All</code> application permission.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card data-testid="card-copilot-total">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Interactions</CardTitle>
+            <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold" data-testid="text-copilot-total">{stats?.totalInteractions || 0}</div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-copilot-users">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Unique Users</CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold" data-testid="text-copilot-users">{stats?.uniqueUsers || 0}</div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-copilot-sessions">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Unique Sessions</CardTitle>
+            <Hash className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold" data-testid="text-copilot-sessions">{stats?.uniqueSessions || 0}</div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-copilot-top-app">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Top App</CardTitle>
+            <Sparkles className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold" data-testid="text-copilot-top-app">{appClassLabel(topApp)}</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="flex gap-3 flex-wrap">
+        <Select value={appFilter} onValueChange={setAppFilter}>
+          <SelectTrigger className="w-40" data-testid="filter-copilot-app">
+            <SelectValue placeholder="App" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Apps</SelectItem>
+            <SelectItem value="Teams">Teams</SelectItem>
+            <SelectItem value="Word">Word</SelectItem>
+            <SelectItem value="Excel">Excel</SelectItem>
+            <SelectItem value="PowerPoint">PowerPoint</SelectItem>
+            <SelectItem value="Outlook">Outlook</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input
+          placeholder="Search by user..."
+          value={userSearch}
+          onChange={(e) => setUserSearch(e.target.value)}
+          className="w-56"
+          data-testid="input-copilot-user-search"
+        />
+      </div>
+
+      {expandedSession ? (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setExpandedSession(null)}
+              data-testid="button-back-sessions"
+            >
+              <ChevronRight className="h-3.5 w-3.5 mr-1 rotate-180" />
+              Back to Sessions
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Session: <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{expandedSession.slice(0, 12)}…</code>
+            </span>
+          </div>
+
+          <div className="space-y-4" data-testid="conversation-thread">
+            {sessionPairs.map((pair, idx) => (
+              <div key={idx} className="space-y-2">
+                {pair.prompt && (
+                  <div className="flex gap-3 items-start" data-testid={`pair-prompt-${idx}`}>
+                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center shrink-0 mt-1">
+                      <User className="h-4 w-4 text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium">{pair.prompt.userName || pair.prompt.userId || "User"}</span>
+                        <Badge className="bg-blue-100 text-blue-800 text-[10px]">Prompt</Badge>
+                        {pair.prompt.appClass && (
+                          <Badge className={`${appClassColor(pair.prompt.appClass)} text-[10px]`}>{appClassLabel(pair.prompt.appClass)}</Badge>
+                        )}
+                        <span className="text-[11px] text-muted-foreground">{formatTime(pair.prompt.createdAt)}</span>
+                      </div>
+                      <Card className="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800">
+                        <CardContent className="p-3 text-sm">
+                          {pair.prompt.bodyContent?.replace(/<[^>]*>/g, "") || "—"}
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </div>
+                )}
+                {pair.response && (
+                  <div className="flex gap-3 items-start" data-testid={`pair-response-${idx}`}>
+                    <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center shrink-0 mt-1">
+                      <Sparkles className="h-4 w-4 text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium">Copilot</span>
+                        <Badge className="bg-green-100 text-green-800 text-[10px]">Response</Badge>
+                        <span className="text-[11px] text-muted-foreground">{formatTime(pair.response.createdAt)}</span>
+                      </div>
+                      <Card className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
+                        <CardContent className="p-3 text-sm">
+                          {pair.response.bodyContent?.replace(/<[^>]*>/g, "") || "—"}
+                        </CardContent>
+                      </Card>
+                      {pair.response.contexts && pair.response.contexts.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {pair.response.contexts.map((ctx: any, ci: number) => (
+                            <Badge key={ci} variant="outline" className="text-[10px]">
+                              {ctx.displayName || ctx.contextReference || "Source"}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {sessionPairs.length === 0 && (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />
+                Loading conversation...
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            {isLoading ? (
+              <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span>Loading interactions...</span>
+              </div>
+            ) : uniqueSessions.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                No interactions match the current filters.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Session</TableHead>
+                    <TableHead>User</TableHead>
+                    <TableHead>App</TableHead>
+                    <TableHead>Turns</TableHead>
+                    <TableHead>Last Activity</TableHead>
+                    <TableHead>Preview</TableHead>
+                    <TableHead className="w-10"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {uniqueSessions.map((session) => {
+                    const firstPrompt = session.interactions.find(i => i.interactionType === "userPrompt");
+                    const user = firstPrompt?.userName || firstPrompt?.userId || session.interactions[0]?.userName || "Unknown";
+                    const app = firstPrompt?.appClass || session.interactions[0]?.appClass;
+                    const turns = Math.ceil(session.interactions.length / 2);
+                    const preview = truncateContent(firstPrompt?.bodyContent || session.interactions[0]?.bodyContent, 80);
+
+                    return (
+                      <TableRow
+                        key={session.sessionId}
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => setExpandedSession(session.sessionId)}
+                        data-testid={`row-session-${session.sessionId}`}
+                      >
+                        <TableCell>
+                          <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{session.sessionId.slice(0, 8)}…</code>
+                        </TableCell>
+                        <TableCell className="text-sm">{user}</TableCell>
+                        <TableCell>
+                          {app && <Badge className={`${appClassColor(app)} text-[10px]`}>{appClassLabel(app)}</Badge>}
+                        </TableCell>
+                        <TableCell className="text-sm">{turns} turn{turns !== 1 ? "s" : ""}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{formatTime(session.latestTime)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">{preview}</TableCell>
+                        <TableCell>
+                          <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 export default function AgentObservability() {
   const queryClient = useQueryClient();
+  const { activeTenantId } = useActiveTenant();
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
@@ -593,6 +981,8 @@ export default function AgentObservability() {
             onClick={() => {
               queryClient.invalidateQueries({ queryKey: ["/api/agent-traces"] });
               queryClient.invalidateQueries({ queryKey: ["/api/agent-health"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/copilot-interactions"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/copilot-interactions/stats"] });
             }}
             data-testid="button-refresh"
           >
@@ -616,6 +1006,23 @@ export default function AgentObservability() {
         </div>
       </div>
 
+      <Tabs defaultValue="traces" className="w-full">
+        <TabsList data-testid="tabs-agent-observability">
+          <TabsTrigger value="traces" data-testid="tab-agent-traces">
+            <Bot className="h-3.5 w-3.5 mr-1.5" />
+            Agent Traces
+          </TabsTrigger>
+          <TabsTrigger value="copilot" data-testid="tab-copilot-interactions">
+            <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
+            Copilot Interactions
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="copilot">
+          <CopilotInteractionsTab tenantId={activeTenantId} />
+        </TabsContent>
+
+        <TabsContent value="traces" className="space-y-6">
       {!hasData && !healthLoading && !tracesLoading && (
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
@@ -870,6 +1277,8 @@ export default function AgentObservability() {
           </div>
         </>
       )}
+        </TabsContent>
+      </Tabs>
     </div>
     </Shell>
   );

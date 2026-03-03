@@ -52,6 +52,7 @@ shared/
 - **adminAuditLog**: Internal Reveille admin actions (tracks all mutating API operations)
 - **agentTraces**: End-to-end agent invocation traces (Copilot, GPT, Agentforce) with status, duration, error summary
 - **agentTraceSpans**: Individual spans within an agent trace (auth, content, mcp, license, api, inference)
+- **copilotInteractions**: Microsoft 365 Copilot interaction history (prompts/responses) collected via Graph API. Unique on interactionId, grouped by requestId (prompt↔response pair) and sessionId (conversation thread).
 
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
@@ -87,7 +88,11 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/test-runs` (all runs for a tenant)
 - `GET /all-tests` (all tests across tenants)
 - `GET /scheduler/status` (in-memory scheduler state for all 4 job types)
-- `POST /scheduler/trigger?jobType=` (trigger any job: syntheticTests, graphReports, serviceHealth, auditLogs, siteStructure)
+- `POST /scheduler/trigger?jobType=` (trigger any job: syntheticTests, graphReports, serviceHealth, auditLogs, siteStructure, copilotInteractions)
+- `GET /tenants/:tenantId/copilot-interactions` (list interactions, query: userId, appClass, sessionId, limit)
+- `GET /tenants/:tenantId/copilot-interactions/stats` (interaction stats: total, users, sessions, app breakdown)
+- `GET /tenants/:tenantId/copilot-interactions/sessions/:sessionId` (full conversation thread)
+- `GET /tenants/:tenantId/copilot-interactions/pairs/:requestId` (prompt↔response pair)
 - `POST /scheduler/reset/:jobType`, `POST /scheduler/reset-all` (reset stuck jobs)
 - `POST /scheduler/cancel/:jobType` (cancel running job)
 - `GET /scheduler/job-runs?jobType=&tenantId=&limit=` (persisted job run history)
@@ -107,6 +112,7 @@ All prefixed with `/api`:
 - `/service-health` - M365 Service Health incidents & advisories (global)
 - `/usage-reports` - SharePoint usage reports per tenant (5 Graph usage types + 5 site structure types with charts/tables)
 - `/audit-log` - SharePoint audit trail + internal admin activity (tabbed)
+- `/agent-observability` - Agent Observability (tabbed: Agent Traces + Copilot Interactions with stats, session drill-down, chat-style pair rendering)
 - `/alerts` - Alerts & incidents list
 - `/reports` - Report generation & scheduling
 - `/onboarding` - New tenant onboarding wizard
@@ -117,12 +123,13 @@ All prefixed with `/api`:
 
 ## Scheduler
 - Adapted from Synozur Orbit multi-tenant scheduler pattern (https://github.com/chris-mcnulty/synozur-orbit)
-- 5 job types with independent intervals:
+- 6 job types with independent intervals:
   - **syntheticTests**: Every 60s sweep, per-test interval checking
   - **serviceHealth**: Every 5 minutes (near-real-time incident detection)
   - **auditLogs**: Every 15 minutes (per consented tenant)
   - **graphReports**: Every 6 hours (daily aggregate reports)
   - **siteStructure**: Every 1 hour (subsites, lists/libraries, drives, groups, users)
+  - **copilotInteractions**: Every 1 hour (Copilot prompt/response history via Graph API)
 - Only runs for tenants with `consentStatus === "Connected"`
 - Staggered execution with jitter between tests/tenants
 - AbortController support for job cancellation
@@ -143,6 +150,7 @@ All prefixed with `/api`:
   3. Graph `/auditLogs/signIns` — SharePoint Online sign-in events with risk/MFA/location data. Requires `AuditLog.Read.All`.
   4. Site fallback — Site analytics, list modifications, drive recent items via `Sites.Read.All`.
 - **Site Structure** (`server/collectors/siteStructure.ts`): Enumerates subsites, lists/libraries, drive structure (files/folders/quota), M365 Groups, and tenant users. Requires `Sites.Read.All`, `Group.Read.All`, `User.Read.All` permissions.
+- **Copilot Interactions** (`server/collectors/copilotInteractions.ts`): Collects Copilot prompt/response history per-user via `/copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions`. Groups by requestId (prompt↔response pairs) and sessionId (conversations). Incremental collection with unique constraint dedup. Requires `AiEnterpriseInteraction.Read.All` permission.
 - All collectors handle 403 permission errors gracefully with warning logs (no crashes).
 
 ## Azure AD Multi-Tenant App Registration

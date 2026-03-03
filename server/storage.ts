@@ -18,6 +18,7 @@ import {
   powerPlatformResources, type PowerPlatformResource, type InsertPowerPlatformResource,
   agentTraces, type AgentTrace, type InsertAgentTrace,
   agentTraceSpans, type AgentTraceSpan, type InsertAgentTraceSpan,
+  copilotInteractions, type CopilotInteraction, type InsertCopilotInteraction,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -105,6 +106,13 @@ export interface IStorage {
   getAgentTraceSpans(traceId: string): Promise<AgentTraceSpan[]>;
   getAgentHealthSummary(tenantId?: string): Promise<{ agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[]>;
   deleteAgentTrace(id: string): Promise<void>;
+
+  createCopilotInteraction(data: InsertCopilotInteraction): Promise<CopilotInteraction>;
+  getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number }): Promise<CopilotInteraction[]>;
+  getCopilotInteractionsByRequestId(tenantId: string, requestId: string): Promise<CopilotInteraction[]>;
+  getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
+  getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number> }>;
+  getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -157,6 +165,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    await db.delete(copilotInteractions).where(eq(copilotInteractions.tenantId, id));
     const traces = await db.select({ id: agentTraces.id }).from(agentTraces).where(eq(agentTraces.tenantId, id));
     for (const t of traces) {
       await db.delete(agentTraceSpans).where(eq(agentTraceSpans.traceId, t.id));
@@ -648,6 +657,70 @@ export class DatabaseStorage implements IStorage {
   async deleteAgentTrace(id: string): Promise<void> {
     await db.delete(agentTraceSpans).where(eq(agentTraceSpans.traceId, id));
     await db.delete(agentTraces).where(eq(agentTraces.id, id));
+  }
+
+  async createCopilotInteraction(data: InsertCopilotInteraction): Promise<CopilotInteraction> {
+    const [created] = await db.insert(copilotInteractions).values(data).returning();
+    return created;
+  }
+
+  async getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number }): Promise<CopilotInteraction[]> {
+    const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
+    if (options?.userId) conditions.push(eq(copilotInteractions.userId, options.userId));
+    if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
+    if (options?.sessionId) conditions.push(eq(copilotInteractions.sessionId, options.sessionId));
+    return db.select().from(copilotInteractions)
+      .where(and(...conditions))
+      .orderBy(desc(copilotInteractions.createdAt))
+      .limit(options?.limit ?? 50);
+  }
+
+  async getCopilotInteractionsByRequestId(tenantId: string, requestId: string): Promise<CopilotInteraction[]> {
+    return db.select().from(copilotInteractions)
+      .where(and(eq(copilotInteractions.tenantId, tenantId), eq(copilotInteractions.requestId, requestId)))
+      .orderBy(copilotInteractions.createdAt);
+  }
+
+  async getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]> {
+    return db.select().from(copilotInteractions)
+      .where(and(eq(copilotInteractions.tenantId, tenantId), eq(copilotInteractions.sessionId, sessionId)))
+      .orderBy(copilotInteractions.createdAt);
+  }
+
+  async getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number> }> {
+    const [counts] = await db.select({
+      totalInteractions: sql<number>`count(*)`,
+      uniqueUsers: sql<number>`count(distinct ${copilotInteractions.userId})`,
+      uniqueSessions: sql<number>`count(distinct ${copilotInteractions.sessionId})`,
+    }).from(copilotInteractions)
+      .where(eq(copilotInteractions.tenantId, tenantId));
+
+    const appRows = await db.select({
+      appClass: copilotInteractions.appClass,
+      count: sql<number>`count(*)`,
+    }).from(copilotInteractions)
+      .where(eq(copilotInteractions.tenantId, tenantId))
+      .groupBy(copilotInteractions.appClass);
+
+    const appBreakdown: Record<string, number> = {};
+    for (const row of appRows) {
+      appBreakdown[row.appClass || "unknown"] = Number(row.count);
+    }
+
+    return {
+      totalInteractions: Number(counts?.totalInteractions || 0),
+      uniqueUsers: Number(counts?.uniqueUsers || 0),
+      uniqueSessions: Number(counts?.uniqueSessions || 0),
+      appBreakdown,
+    };
+  }
+
+  async getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null> {
+    const [result] = await db.select({
+      maxDate: sql<Date | null>`max(${copilotInteractions.createdAt})`,
+    }).from(copilotInteractions)
+      .where(eq(copilotInteractions.tenantId, tenantId));
+    return result?.maxDate || null;
   }
 }
 

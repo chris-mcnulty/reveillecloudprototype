@@ -1,0 +1,261 @@
+Below is a **practical implementation blueprint** (with working code patterns) for calling **`/copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions`**, persisting results, and reconstructing **prompt↔response pairs** using **`requestId`** and sessions using **`sessionId`** — exactly as defined by the `aiInteraction` schema. [\[devjhorst.com\]](https://www.devjhorst.com/2024/09/Three-new-reporting-APIs-for-Copilot-now-available-in-Microsoft-Graph.html), [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+
+I’ll show **Python** and **Node/TypeScript**, plus the **pairing logic**. (If you prefer C#, the structure is the same.)
+
+***
+
+## 0) What you need (from the API docs)
+
+*   The API: `GET https://graph.microsoft.com/v1.0/copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions` (also available under `/beta`). [\[devjhorst.com\]](https://www.devjhorst.com/2024/09/Three-new-reporting-APIs-for-Copilot-now-available-in-Microsoft-Graph.html)
+*   Returns: `200 OK` with a **collection of `aiInteraction` objects**. [\[devjhorst.com\]](https://www.devjhorst.com/2024/09/Three-new-reporting-APIs-for-Copilot-now-available-in-Microsoft-Graph.html), [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+*   Auth: **Application permission `AiEnterpriseInteraction.Read.All`** (the doc lists it as the least-privileged app permission). [\[devjhorst.com\]](https://www.devjhorst.com/2024/09/Three-new-reporting-APIs-for-Copilot-now-available-in-Microsoft-Graph.html)
+*   The `aiInteraction` object includes the fields you’ll parse: `interactionType`, `requestId`, `sessionId`, `createdDateTime`, `appClass`, `body`, `contexts`, `attachments`, `links`, `mentions`, etc. [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/), [\[dellenny.com\]](https://dellenny.com/the-copilot-impact-report-turning-usage-telemetry-into-actionable-governance-insights/), [\[github.com\]](https://github.com/MicrosoftDocs/microsoft-365-docs/blob/public/copilot/microsoft-365-copilot-reports-for-admins.md), [\[blog.ciaops.com\]](https://blog.ciaops.com/2025/01/10/viewing-copilot-prompt-and-responses-across-the-organisation/), [\[m365admin....sontek.net\]](https://m365admin.handsontek.net/microsoft-365-admin-center-admin-audit-logs-purview/)
+
+> **Key mapping for “turns”**:
+>
+> *   `interactionType` is either `userPrompt` or `aiResponse`. [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+> *   `requestId` “groups a user prompt with its Copilot response.” [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+> *   `sessionId` maps to the overall thread/conversation. [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+
+***
+
+## 1) Call the API (Python example)
+
+This uses **client credentials** (app-only). You’ll provide:
+
+*   tenantId
+*   clientId
+*   clientSecret
+*   target user id/UPN
+
+```python
+import requests
+from collections import defaultdict
+
+TENANT_ID = "YOUR_TENANT_ID"
+CLIENT_ID = "YOUR_CLIENT_ID"
+CLIENT_SECRET = "YOUR_CLIENT_SECRET"
+
+def get_token():
+    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "scope": "https://graph.microsoft.com/.default",
+        "grant_type": "client_credentials",
+    }
+    r = requests.post(token_url, data=data, timeout=30)
+    r.raise_for_status()
+    return r.json()["access_token"]
+
+def get_interactions(user_id, top=100):
+    """
+    Calls:
+    GET /copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions
+    Returns a list of aiInteraction objects. 
+    """
+    token = get_token()
+    url = f"https://graph.microsoft.com/v1.0/copilot/users/{user_id}/interactionHistory/getAllEnterpriseInteractions?$top={top}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    items = []
+    while url:
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+        items.extend(payload.get("value", []))
+        url = payload.get("@odata.nextLink")  # if paging is present
+    return items
+```
+
+### Pair prompts + responses (requestId join)
+
+This logic is grounded in the documented semantics: `interactionType` and `requestId`. [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+
+```python
+def pair_by_request_id(interactions):
+    """
+    Returns {requestId: {"prompt": aiInteraction|None, "response": aiInteraction|None, "sessionId": str|None}}
+    """
+    pairs = defaultdict(lambda: {"prompt": None, "response": None, "sessionId": None})
+
+    for x in interactions:
+        rid = x.get("requestId") or "(missing-requestId)"
+        itype = x.get("interactionType")
+        pairs[rid]["sessionId"] = x.get("sessionId") or pairs[rid]["sessionId"]
+
+        if itype == "userPrompt":         # 
+            pairs[rid]["prompt"] = x
+        elif itype == "aiResponse":       # 
+            pairs[rid]["response"] = x
+        else:
+            # unknownFutureValue or other
+            pass
+
+    return pairs
+
+def extract_text(ai_interaction):
+    """
+    body is itemBody (contentType/content); aiInteraction schema references itemBody. 
+    """
+    if not ai_interaction:
+        return None
+    body = ai_interaction.get("body") or {}
+    return body.get("content")
+```
+
+Usage:
+
+```python
+if __name__ == "__main__":
+    user = "user@contoso.com"
+    interactions = get_interactions(user, top=100)
+    pairs = pair_by_request_id(interactions)
+
+    for rid, pr in list(pairs.items())[:10]:
+        prompt_text = extract_text(pr["prompt"])
+        response_text = extract_text(pr["response"])
+        print("requestId:", rid)
+        print("sessionId:", pr["sessionId"])
+        print("PROMPT:", prompt_text)
+        print("RESPONSE:", response_text)
+        print("-" * 50)
+```
+
+***
+
+## 2) Call the API (Node.js / TypeScript example)
+
+```ts
+import fetch from "node-fetch";
+
+const tenantId = process.env.TENANT_ID!;
+const clientId = process.env.CLIENT_ID!;
+const clientSecret = process.env.CLIENT_SECRET!;
+
+async function getToken(): Promise<string> {
+  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: "https://graph.microsoft.com/.default",
+    grant_type: "client_credentials",
+  });
+
+  const r = await fetch(tokenUrl, { method: "POST", body });
+  if (!r.ok) throw new Error(await r.text());
+  const json = await r.json();
+  return json.access_token;
+}
+
+async function getInteractions(userId: string, top = 100): Promise<any[]> {
+  // GET /copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions 
+  const token = await getToken();
+  let url = `https://graph.microsoft.com/v1.0/copilot/users/${encodeURIComponent(userId)}/interactionHistory/getAllEnterpriseInteractions?$top=${top}`;
+  const out: any[] = [];
+
+  while (url) {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) throw new Error(await r.text());
+    const json = await r.json();
+    out.push(...(json.value ?? []));
+    url = json["@odata.nextLink"];
+  }
+
+  return out;
+}
+
+type Pair = { prompt?: any; response?: any; sessionId?: string };
+
+function pairByRequestId(items: any[]): Record<string, Pair> {
+  // interactionType: userPrompt | aiResponse 
+  // requestId groups a user prompt with its Copilot response 
+  const map: Record<string, Pair> = {};
+
+  for (const x of items) {
+    const rid = x.requestId ?? "(missing-requestId)";
+    map[rid] ??= {};
+    map[rid].sessionId = x.sessionId ?? map[rid].sessionId; // sessionId is thread/conversation id 
+
+    if (x.interactionType === "userPrompt") map[rid].prompt = x;
+    else if (x.interactionType === "aiResponse") map[rid].response = x;
+  }
+  return map;
+}
+
+function bodyText(x: any): string | undefined {
+  return x?.body?.content; // aiInteraction.body is itemBody 
+}
+
+(async () => {
+  const userId = "user@contoso.com";
+  const interactions = await getInteractions(userId, 100);
+  const pairs = pairByRequestId(interactions);
+
+  for (const [rid, pr] of Object.entries(pairs).slice(0, 10)) {
+    console.log("requestId:", rid);
+    console.log("sessionId:", pr.sessionId);
+    console.log("PROMPT:", bodyText(pr.prompt));
+    console.log("RESPONSE:", bodyText(pr.response));
+    console.log("-----");
+  }
+})();
+```
+
+***
+
+## 3) Parsing the nested schema correctly (what to persist)
+
+Because the schema includes nested arrays/objects, you typically store:
+
+*   the raw `aiInteraction` JSON (for fidelity)
+*   plus extracted “columns” for analytics
+
+Key nested types (official):
+
+*   `attachments[]` are `aiInteractionAttachment` (attachmentId, content, contentType, contentUrl, name). [\[dellenny.com\]](https://dellenny.com/the-copilot-impact-report-turning-usage-telemetry-into-actionable-governance-insights/)
+*   `contexts[]` are `aiInteractionContext` (contextReference, contextType, displayName). [\[github.com\]](https://github.com/MicrosoftDocs/microsoft-365-docs/blob/public/copilot/microsoft-365-copilot-reports-for-admins.md)
+*   `links[]` are `aiInteractionLink` (displayName, linkType, linkUrl). [\[blog.ciaops.com\]](https://blog.ciaops.com/2025/01/10/viewing-copilot-prompt-and-responses-across-the-organisation/)
+*   `mentions[]` are `aiInteractionMention` with `mentioned` as `aiInteractionMentionedIdentitySet`. [\[m365admin....sontek.net\]](https://m365admin.handsontek.net/microsoft-365-admin-center-admin-audit-logs-purview/)
+
+So a practical “flattened row” for a prompt/response pair often looks like:
+
+*   requestId [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+*   sessionId [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+*   appClass [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+*   createdDateTime for prompt and response [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+*   body.content for prompt and response [\[windowsforum.com\]](https://windowsforum.com/threads/microsoft-365-copilot-dlp-bug-highlights-ai-governance-risks-in-emails.403756/)
+*   contexts\[].contextReference and displayName [\[github.com\]](https://github.com/MicrosoftDocs/microsoft-365-docs/blob/public/copilot/microsoft-365-copilot-reports-for-admins.md)
+*   attachments\[].contentType/contentUrl/name [\[dellenny.com\]](https://dellenny.com/the-copilot-impact-report-turning-usage-telemetry-into-actionable-governance-insights/)
+
+*(That flattening is an implementation choice; the fields themselves are exactly as above.)*
+
+***
+
+## 4) If you want near-real-time ingestion: use change notifications (webhooks)
+
+Microsoft Graph supports subscriptions to this resource, including “resource data” in notifications (so you can avoid calling the API for the payload). [\[community....atform.com\]](https://community.powerplatform.com/forums/thread/details/?threadid=0CAC2C95-CC77-409D-BD91-FF162734436C), [\[learn.microsoft.com\]](https://learn.microsoft.com/en-us/copilot/microsoft-365/copilot-control-system/security-governance)
+
+*   Subscribe to: `/copilot/users/{user-id}/interactionHistory/getAllEnterpriseInteractions` [\[community....atform.com\]](https://community.powerplatform.com/forums/thread/details/?threadid=0CAC2C95-CC77-409D-BD91-FF162734436C), [\[learn.microsoft.com\]](https://learn.microsoft.com/en-us/copilot/microsoft-365/copilot-control-system/security-governance)
+*   Notifications can trigger when new interactions are created/updated/deleted. [\[community....atform.com\]](https://community.powerplatform.com/forums/thread/details/?threadid=0CAC2C95-CC77-409D-BD91-FF162734436C)
+
+This is the standard way to implement “streaming” ingestion without polling.
+
+***
+
+## 5) One important design note (grounded in the docs)
+
+The API returns **AI interactions recorded by Microsoft 365 AI experiences that write to the interaction history service**, and it **doesn’t retrieve interactions in agents created by Copilot Studio**.   
+So your implementation should assume coverage varies by: [\[devjhorst.com\]](https://www.devjhorst.com/2024/09/Three-new-reporting-APIs-for-Copilot-now-available-in-Microsoft-Graph.html)
+
+*   which Copilot experiences are enabled
+*   which experiences write to this store [\[devjhorst.com\]](https://www.devjhorst.com/2024/09/Three-new-reporting-APIs-for-Copilot-now-available-in-Microsoft-Graph.html), [\[blog.atwork.at\]](https://blog.atwork.at/post/2025/track-copilot-usage-with-security-audit-logs/)
+
+***
+
+### Quick follow-up (1 question, so I can tailor code snippets precisely)
+
+Are you implementing this as:
+
+1.  a **scheduled exporter** (poll + store), or
+2.  a **near-real-time pipeline** (Graph change notifications + store)? [\[community....atform.com\]](https://community.powerplatform.com/forums/thread/details/?threadid=0CAC2C95-CC77-409D-BD91-FF162734436C), [\[learn.microsoft.com\]](https://learn.microsoft.com/en-us/copilot/microsoft-365/copilot-control-system/security-governance)

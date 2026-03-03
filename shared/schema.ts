@@ -285,3 +285,28 @@ export const agentTraceSpans = pgTable("agent_trace_spans", {
 export const insertAgentTraceSpanSchema = createInsertSchema(agentTraceSpans).omit({ id: true });
 export type InsertAgentTraceSpan = z.infer<typeof insertAgentTraceSpanSchema>;
 export type AgentTraceSpan = typeof agentTraceSpans.$inferSelect;
+
+export const copilotInteractions = pgTable("copilot_interactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  interactionId: text("interaction_id").notNull().unique(),
+  requestId: text("request_id"),
+  sessionId: text("session_id"),
+  interactionType: text("interaction_type").notNull(),
+  appClass: text("app_class"),
+  userId: text("user_id"),
+  userName: text("user_name"),
+  bodyContent: text("body_content"),
+  bodyContentType: text("body_content_type"),
+  contexts: jsonb("contexts").$type<any[]>(),
+  attachments: jsonb("attachments").$type<any[]>(),
+  links: jsonb("links").$type<any[]>(),
+  mentions: jsonb("mentions").$type<any[]>(),
+  rawData: jsonb("raw_data").$type<Record<string, any>>(),
+  createdAt: timestamp("created_at").notNull(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertCopilotInteractionSchema = createInsertSchema(copilotInteractions).omit({ id: true, collectedAt: true });
+export type InsertCopilotInteraction = z.infer<typeof insertCopilotInteractionSchema>;
+export type CopilotInteraction = typeof copilotInteractions.$inferSelect;

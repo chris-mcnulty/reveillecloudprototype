@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
 
 async function logAdminAction(
@@ -297,6 +297,9 @@ export async function registerRoutes(
         break;
       case "powerPlatform":
         await triggerPowerPlatformNow();
+        break;
+      case "copilotInteractions":
+        await triggerCopilotInteractionsNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -806,6 +809,33 @@ export async function registerRoutes(
     const tenantId = req.query.tenantId as string | undefined;
     const summary = await storage.getAgentHealthSummary(tenantId);
     res.json(summary);
+  });
+
+  app.get("/api/tenants/:tenantId/copilot-interactions", async (req, res) => {
+    const { tenantId } = req.params;
+    const { userId, appClass, sessionId, limit } = req.query;
+    const interactions = await storage.getCopilotInteractions(tenantId, {
+      userId: userId as string | undefined,
+      appClass: appClass as string | undefined,
+      sessionId: sessionId as string | undefined,
+      limit: limit ? parseInt(limit as string, 10) : 50,
+    });
+    res.json(interactions);
+  });
+
+  app.get("/api/tenants/:tenantId/copilot-interactions/stats", async (req, res) => {
+    const stats = await storage.getCopilotInteractionStats(req.params.tenantId);
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/copilot-interactions/sessions/:sessionId", async (req, res) => {
+    const interactions = await storage.getCopilotSessionInteractions(req.params.tenantId, req.params.sessionId);
+    res.json(interactions);
+  });
+
+  app.get("/api/tenants/:tenantId/copilot-interactions/pairs/:requestId", async (req, res) => {
+    const interactions = await storage.getCopilotInteractionsByRequestId(req.params.tenantId, req.params.requestId);
+    res.json(interactions);
   });
 
   return httpServer;
