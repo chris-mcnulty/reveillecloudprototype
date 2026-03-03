@@ -626,8 +626,11 @@ interface SessionSummary {
 
 function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   const [appFilter, setAppFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [userSearch, setUserSearch] = useState("");
   const [debouncedUserSearch, setDebouncedUserSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const pageSize = 25;
@@ -639,7 +642,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
 
   useEffect(() => {
     setPage(0);
-  }, [appFilter, debouncedUserSearch]);
+  }, [appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo]);
 
   const { data: stats } = useQuery<CopilotStats>({
     queryKey: ["/api/copilot-interactions/stats", tenantId],
@@ -655,12 +658,15 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
 
   const sessionParams = new URLSearchParams();
   if (appFilter !== "all") sessionParams.set("appClass", appFilter);
+  if (statusFilter !== "all") sessionParams.set("status", statusFilter);
   if (debouncedUserSearch) sessionParams.set("userId", debouncedUserSearch);
+  if (dateFrom) sessionParams.set("dateFrom", dateFrom);
+  if (dateTo) sessionParams.set("dateTo", dateTo);
   sessionParams.set("offset", String(page * pageSize));
   sessionParams.set("limit", String(pageSize));
 
   const { data: sessionData, isLoading } = useQuery<{ sessions: SessionSummary[]; total: number }>({
-    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, debouncedUserSearch, page],
+    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo, page],
     queryFn: async () => {
       if (!tenantId) return { sessions: [], total: 0 };
       const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions/session-list?${sessionParams.toString()}`);
@@ -794,7 +800,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
         </Card>
       </div>
 
-      <div className="flex gap-3 flex-wrap">
+      <div className="flex gap-3 flex-wrap items-end">
         <Select value={appFilter} onValueChange={setAppFilter}>
           <SelectTrigger className="w-40" data-testid="filter-copilot-app">
             <SelectValue placeholder="App" />
@@ -810,13 +816,61 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
               ))}
           </SelectContent>
         </Select>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-36" data-testid="filter-copilot-status">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="success">
+              <span className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-green-600" /> Success</span>
+            </SelectItem>
+            <SelectItem value="partial">
+              <span className="flex items-center gap-1"><AlertTriangle className="h-3 w-3 text-amber-600" /> Partial</span>
+            </SelectItem>
+            <SelectItem value="failed">
+              <span className="flex items-center gap-1"><XCircle className="h-3 w-3 text-red-600" /> Failed</span>
+            </SelectItem>
+          </SelectContent>
+        </Select>
         <Input
           placeholder="Search by user..."
           value={userSearch}
           onChange={(e) => setUserSearch(e.target.value)}
-          className="w-56"
+          className="w-48"
           data-testid="input-copilot-user-search"
         />
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">From</label>
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="w-36"
+            data-testid="input-copilot-date-from"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">To</label>
+          <Input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="w-36"
+            data-testid="input-copilot-date-to"
+          />
+        </div>
+        {(appFilter !== "all" || statusFilter !== "all" || userSearch || dateFrom || dateTo) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={() => { setAppFilter("all"); setStatusFilter("all"); setUserSearch(""); setDateFrom(""); setDateTo(""); }}
+            data-testid="button-copilot-clear-filters"
+          >
+            Clear filters
+          </Button>
+        )}
       </div>
 
       {expandedSession ? (

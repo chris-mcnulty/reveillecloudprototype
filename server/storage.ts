@@ -113,7 +113,7 @@ export interface IStorage {
   getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
-  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
+  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -736,16 +736,32 @@ export class DatabaseStorage implements IStorage {
     return result?.maxDate || null;
   }
 
-  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null }[]; total: number }> {
+  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }> {
     const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
     if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
-    if (options?.userId) conditions.push(sql`${copilotInteractions.userId} ILIKE ${'%' + options.userId + '%'}`);
+    if (options?.userId) conditions.push(sql`(${copilotInteractions.userId} ILIKE ${'%' + options.userId + '%'} OR ${copilotInteractions.userName} ILIKE ${'%' + options.userId + '%'})`);
+    if (options?.dateFrom) conditions.push(sql`${copilotInteractions.createdAt} >= ${options.dateFrom}::timestamp`);
+    if (options?.dateTo) conditions.push(sql`${copilotInteractions.createdAt} < (${options.dateTo}::date + interval '1 day')`);
 
-    const countResult = await db.select({
-      total: sql<number>`count(distinct ${copilotInteractions.sessionId})`,
-    }).from(copilotInteractions)
-      .where(and(...conditions));
-    const total = Number(countResult[0]?.total || 0);
+    const statusFilter = options?.status;
+    const havingClause = statusFilter === "success"
+      ? sql`HAVING count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end) <= count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end)`
+      : statusFilter === "partial"
+      ? sql`HAVING count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end) > count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end) AND count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end) > 0`
+      : statusFilter === "failed"
+      ? sql`HAVING count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end) = 0`
+      : sql``;
+
+    const countRows = await db.execute(sql`
+      SELECT count(*) as "total" FROM (
+        SELECT ${copilotInteractions.sessionId}
+        FROM ${copilotInteractions}
+        WHERE ${and(...conditions)}
+        GROUP BY ${copilotInteractions.sessionId}
+        ${havingClause}
+      ) sub
+    `);
+    const total = Number((countRows.rows[0] as any)?.total || 0);
 
     const rows = await db.execute(sql`
       SELECT
@@ -761,6 +777,7 @@ export class DatabaseStorage implements IStorage {
       FROM ${copilotInteractions}
       WHERE ${and(...conditions)}
       GROUP BY ${copilotInteractions.sessionId}
+      ${havingClause}
       ORDER BY max(${copilotInteractions.createdAt}) DESC
       LIMIT ${options?.limit ?? 25}
       OFFSET ${options?.offset ?? 0}
