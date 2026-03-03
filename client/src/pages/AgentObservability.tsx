@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -610,10 +610,32 @@ function extractLinks(interaction: CopilotInteraction): { url: string; name: str
   }));
 }
 
+interface SessionSummary {
+  sessionId: string;
+  userId: string;
+  userName: string | null;
+  appClass: string | null;
+  turns: number;
+  latestTime: string;
+  firstPrompt: string | null;
+}
+
 function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   const [appFilter, setAppFilter] = useState<string>("all");
   const [userSearch, setUserSearch] = useState("");
+  const [debouncedUserSearch, setDebouncedUserSearch] = useState("");
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const pageSize = 25;
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedUserSearch(userSearch), 400);
+    return () => clearTimeout(timer);
+  }, [userSearch]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [appFilter, debouncedUserSearch]);
 
   const { data: stats } = useQuery<CopilotStats>({
     queryKey: ["/api/copilot-interactions/stats", tenantId],
@@ -627,22 +649,27 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
     refetchInterval: 30000,
   });
 
-  const params = new URLSearchParams();
-  if (appFilter !== "all") params.set("appClass", appFilter);
-  if (userSearch) params.set("userId", userSearch);
-  params.set("limit", "100");
+  const sessionParams = new URLSearchParams();
+  if (appFilter !== "all") sessionParams.set("appClass", appFilter);
+  if (debouncedUserSearch) sessionParams.set("userId", debouncedUserSearch);
+  sessionParams.set("offset", String(page * pageSize));
+  sessionParams.set("limit", String(pageSize));
 
-  const { data: interactions = [], isLoading } = useQuery<CopilotInteraction[]>({
-    queryKey: ["/api/copilot-interactions", tenantId, appFilter, userSearch],
+  const { data: sessionData, isLoading } = useQuery<{ sessions: SessionSummary[]; total: number }>({
+    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, debouncedUserSearch, page],
     queryFn: async () => {
-      if (!tenantId) return [];
-      const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions?${params.toString()}`);
+      if (!tenantId) return { sessions: [], total: 0 };
+      const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions/session-list?${sessionParams.toString()}`);
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
     enabled: !!tenantId,
     refetchInterval: 30000,
   });
+
+  const sessions = sessionData?.sessions || [];
+  const totalSessions = sessionData?.total || 0;
+  const totalPages = Math.ceil(totalSessions / pageSize);
 
   const { data: sessionInteractions = [] } = useQuery<CopilotInteraction[]>({
     queryKey: ["/api/copilot-interactions/session", tenantId, expandedSession],
@@ -683,20 +710,6 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
     });
   }, [sessionInteractions]);
 
-  const uniqueSessions = useMemo(() => {
-    const sessions = new Map<string, { sessionId: string; interactions: CopilotInteraction[]; latestTime: string }>();
-    for (const i of interactions) {
-      const sid = i.sessionId || i.id;
-      if (!sessions.has(sid)) {
-        sessions.set(sid, { sessionId: sid, interactions: [], latestTime: i.createdAt });
-      }
-      const s = sessions.get(sid)!;
-      s.interactions.push(i);
-      if (i.createdAt > s.latestTime) s.latestTime = i.createdAt;
-    }
-    return Array.from(sessions.values()).sort((a, b) => b.latestTime.localeCompare(a.latestTime));
-  }, [interactions]);
-
   const topApp = stats?.appBreakdown
     ? Object.entries(stats.appBreakdown).sort((a, b) => b[1] - a[1])[0]?.[0] || "—"
     : "—";
@@ -713,7 +726,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
     );
   }
 
-  if (!isLoading && interactions.length === 0 && (!stats || stats.totalInteractions === 0)) {
+  if (!isLoading && sessions.length === 0 && (!stats || stats.totalInteractions === 0)) {
     return (
       <Card className="border-dashed">
         <CardContent className="flex flex-col items-center justify-center py-12 text-center">
@@ -921,42 +934,33 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
           </div>
         </div>
       ) : (
-        <Card>
-          <CardContent className="p-0">
-            {isLoading ? (
-              <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                <span>Loading interactions...</span>
-              </div>
-            ) : uniqueSessions.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">
-                No interactions match the current filters.
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Session</TableHead>
-                    <TableHead>User</TableHead>
-                    <TableHead>App</TableHead>
-                    <TableHead>Turns</TableHead>
-                    <TableHead>Last Activity</TableHead>
-                    <TableHead>Preview</TableHead>
-                    <TableHead className="w-10"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {uniqueSessions.map((session) => {
-                    const prompts = session.interactions.filter(i => i.interactionType === "userPrompt");
-                    const firstPrompt = prompts[0];
-                    const firstUserInteraction = session.interactions.find(i => i.interactionType === "userPrompt");
-                    const user = firstUserInteraction?.userName || firstUserInteraction?.userId || session.interactions[0]?.userId || "Unknown";
-                    const app = firstPrompt?.appClass || session.interactions[0]?.appClass;
-                    const turns = prompts.length || Math.ceil(session.interactions.length / 2);
-                    const previewText = firstPrompt?.bodyContent?.replace(/<[^>]*>/g, "").trim() || "";
-                    const preview = previewText ? truncateContent(previewText, 80) : "—";
-
-                    return (
+        <div className="space-y-3">
+          <Card>
+            <CardContent className="p-0">
+              {isLoading ? (
+                <div className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span>Loading sessions...</span>
+                </div>
+              ) : sessions.length === 0 ? (
+                <div className="py-8 text-center text-sm text-muted-foreground">
+                  No sessions match the current filters.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Session</TableHead>
+                      <TableHead>User</TableHead>
+                      <TableHead>App</TableHead>
+                      <TableHead>Turns</TableHead>
+                      <TableHead>Last Activity</TableHead>
+                      <TableHead>Preview</TableHead>
+                      <TableHead className="w-10"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sessions.map((session) => (
                       <TableRow
                         key={session.sessionId}
                         className="cursor-pointer hover:bg-muted/50"
@@ -966,24 +970,53 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                         <TableCell>
                           <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{session.sessionId.slice(0, 8)}…</code>
                         </TableCell>
-                        <TableCell className="text-sm">{user}</TableCell>
+                        <TableCell className="text-sm">{session.userName || session.userId}</TableCell>
                         <TableCell>
-                          {app && <Badge className={`${appClassColor(app)} text-[10px]`}>{appClassLabel(app)}</Badge>}
+                          {session.appClass && <Badge className={`${appClassColor(session.appClass)} text-[10px]`}>{appClassLabel(session.appClass)}</Badge>}
                         </TableCell>
-                        <TableCell className="text-sm">{turns} turn{turns !== 1 ? "s" : ""}</TableCell>
+                        <TableCell className="text-sm">{session.turns} turn{session.turns !== 1 ? "s" : ""}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{formatTime(session.latestTime)}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">{preview}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
+                          {truncateContent(session.firstPrompt, 80)}
+                        </TableCell>
                         <TableCell>
                           <ArrowRight className="h-4 w-4 text-muted-foreground" />
                         </TableCell>
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, totalSessions)} of {totalSessions} sessions
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  data-testid="button-copilot-prev"
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  data-testid="button-copilot-next"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1344,9 +1377,8 @@ export default function AgentObservability() {
                     </TableHeader>
                     <TableBody>
                       {filteredTraces.map((trace) => (
-                        <>
+                        <Fragment key={trace.id}>
                           <TableRow
-                            key={trace.id}
                             className="cursor-pointer hover:bg-muted/50"
                             onClick={() => setExpandedTraceId(expandedTraceId === trace.id ? null : trace.id)}
                             data-testid={`row-trace-${trace.id}`}
@@ -1371,7 +1403,7 @@ export default function AgentObservability() {
                               </TableCell>
                             </TableRow>
                           )}
-                        </>
+                        </Fragment>
                       ))}
                     </TableBody>
                   </Table>

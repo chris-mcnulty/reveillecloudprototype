@@ -113,6 +113,7 @@ export interface IStorage {
   getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number> }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
+  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null }[]; total: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -721,6 +722,47 @@ export class DatabaseStorage implements IStorage {
     }).from(copilotInteractions)
       .where(eq(copilotInteractions.tenantId, tenantId));
     return result?.maxDate || null;
+  }
+
+  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null }[]; total: number }> {
+    const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
+    if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
+    if (options?.userId) conditions.push(sql`${copilotInteractions.userId} ILIKE ${'%' + options.userId + '%'}`);
+
+    const countResult = await db.select({
+      total: sql<number>`count(distinct ${copilotInteractions.sessionId})`,
+    }).from(copilotInteractions)
+      .where(and(...conditions));
+    const total = Number(countResult[0]?.total || 0);
+
+    const rows = await db.execute(sql`
+      SELECT
+        ${copilotInteractions.sessionId} as "sessionId",
+        max(case when ${copilotInteractions.interactionType} = 'userPrompt' then ${copilotInteractions.userId} else null end) as "userId",
+        max(case when ${copilotInteractions.interactionType} = 'userPrompt' then ${copilotInteractions.userName} else null end) as "userName",
+        max(${copilotInteractions.appClass}) as "appClass",
+        count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end)::int as "turns",
+        max(${copilotInteractions.createdAt})::text as "latestTime",
+        (array_agg(${copilotInteractions.bodyContent} order by ${copilotInteractions.createdAt}) filter (where ${copilotInteractions.interactionType} = 'userPrompt'))[1] as "firstPrompt"
+      FROM ${copilotInteractions}
+      WHERE ${and(...conditions)}
+      GROUP BY ${copilotInteractions.sessionId}
+      ORDER BY max(${copilotInteractions.createdAt}) DESC
+      LIMIT ${options?.limit ?? 25}
+      OFFSET ${options?.offset ?? 0}
+    `);
+
+    const sessions = (rows.rows as any[]).map(r => ({
+      sessionId: r.sessionId || "",
+      userId: r.userId || "Unknown",
+      userName: r.userName || null,
+      appClass: r.appClass || null,
+      turns: Number(r.turns) || 0,
+      latestTime: r.latestTime || "",
+      firstPrompt: r.firstPrompt || null,
+    }));
+
+    return { sessions, total };
   }
 }
 

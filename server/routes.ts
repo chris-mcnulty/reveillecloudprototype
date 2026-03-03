@@ -828,6 +828,18 @@ export async function registerRoutes(
     res.json(stats);
   });
 
+  app.get("/api/tenants/:tenantId/copilot-interactions/session-list", async (req, res) => {
+    const { tenantId } = req.params;
+    const { appClass, userId, offset, limit } = req.query;
+    const result = await storage.getCopilotSessions(tenantId, {
+      appClass: appClass as string | undefined,
+      userId: userId as string | undefined,
+      offset: offset ? parseInt(offset as string, 10) : 0,
+      limit: limit ? parseInt(limit as string, 10) : 25,
+    });
+    res.json(result);
+  });
+
   app.get("/api/tenants/:tenantId/copilot-interactions/sessions/:sessionId", async (req, res) => {
     const interactions = await storage.getCopilotSessionInteractions(req.params.tenantId, req.params.sessionId);
     res.json(interactions);
