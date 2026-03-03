@@ -86,7 +86,7 @@ export async function collectCopilotInteractions(tenantId: string): Promise<Coll
 
   for (const user of users) {
     try {
-      let url: string | null = `https://graph.microsoft.com/v1.0/copilot/users/${user.id}/interactionHistory/getAllEnterpriseInteractions?$top=100${filterParam}`;
+      let url: string | null = `https://graph.microsoft.com/beta/copilot/users/${user.id}/interactionHistory/getAllEnterpriseInteractions?$top=100${filterParam}`;
 
       while (url) {
         const resp: Response = await fetch(url, {
