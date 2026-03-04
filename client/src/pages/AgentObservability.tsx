@@ -656,10 +656,11 @@ function cleanPromptPreview(text: string | null): string | null {
 function extractLinks(interaction: CopilotInteraction): { url: string; name: string }[] {
   const links = interaction.links as any[] | null;
   if (!links || links.length === 0) return [];
-  return links.filter(l => l.linkUrl).map(l => ({
-    url: l.linkUrl,
-    name: l.displayName || new URL(l.linkUrl).hostname,
-  }));
+  return links.filter(l => l.linkUrl).map(l => {
+    let hostname = l.linkUrl;
+    try { hostname = new URL(l.linkUrl).hostname; } catch {}
+    return { url: l.linkUrl, name: l.displayName || hostname };
+  });
 }
 
 interface SessionSummary {
