@@ -80,8 +80,11 @@ async function runPageLoadTest(test: SyntheticTest): Promise<TestResult> {
 
 async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
   const start = Date.now();
+  const phases: Record<string, number> = {};
+  let failedPhase = "";
   try {
     const { client, authMethod } = await getGraphClientForTest(test);
+    phases.authMethod = 0;
 
     const testContent = `Reveille Cloud synthetic test - ${new Date().toISOString()}`;
     const fileName = `reveille-test-${Date.now()}.txt`;
@@ -103,6 +106,7 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
     const siteName = siteIndex >= 0 && decodedParts[siteIndex + 1] ? decodedParts[siteIndex + 1] : null;
     const folderPath = siteIndex >= 0 ? decodedParts.slice(siteIndex + 2).join("/") || "General" : decodedParts.join("/") || "General";
 
+    failedPhase = "driveResolve";
     let driveId: string;
     try {
       let site: any;
@@ -125,24 +129,27 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
       if (!drives.value?.length) throw new Error("No document libraries found on root site");
       driveId = drives.value[0].id;
     }
-    const driveResolveMs = Date.now() - driveStart;
+    phases.driveResolveMs = Date.now() - driveStart;
+    failedPhase = "upload";
 
     const uploadStart = Date.now();
     await client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}:/content`)
       .put(testContent);
-    const uploadMs = Date.now() - uploadStart;
+    phases.uploadMs = Date.now() - uploadStart;
+    failedPhase = "download";
 
     const downloadStart = Date.now();
     const downloadedContent = await client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}:/content`)
       .get();
-    const downloadMs = Date.now() - downloadStart;
+    phases.downloadMs = Date.now() - downloadStart;
+    failedPhase = "cleanup";
 
     const deleteStart = Date.now();
     try {
       await client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}`)
         .delete();
     } catch {}
-    const deleteMs = Date.now() - deleteStart;
+    phases.cleanupMs = Date.now() - deleteStart;
 
     const totalDuration = Date.now() - start;
 
@@ -150,20 +157,22 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
       status: totalDuration > (test.timeout || 30) * 1000 ? "failed" : "success",
       durationMs: totalDuration,
       metrics: {
-        driveResolveMs,
-        uploadMs,
-        downloadMs,
-        cleanupMs: deleteMs,
+        ...phases,
         totalMs: totalDuration,
         fileSize: testContent.length,
         authMethod,
       },
     };
   } catch (err: any) {
+    const totalDuration = Date.now() - start;
     return {
       status: "error",
-      durationMs: Date.now() - start,
-      metrics: {},
+      durationMs: totalDuration,
+      metrics: {
+        ...phases,
+        totalMs: totalDuration,
+        failedPhase,
+      },
       error: err.message || String(err),
     };
   }
@@ -356,12 +365,24 @@ export async function runTestAndRecord(testId: string): Promise<any> {
 
     return completedRun;
   } catch (err: any) {
+    const duration = Date.now() - run.startedAt.getTime();
     const failedRun = await storage.updateTestRun(run.id, {
       status: "error",
       completedAt: new Date(),
-      durationMs: Date.now() - run.startedAt.getTime(),
+      durationMs: duration,
       error: err.message || String(err),
     });
+    try {
+      await storage.createMetric({
+        tenantId: test.tenantId,
+        testId: test.id,
+        metricName: test.type.toLowerCase().replace(/\s/g, "_"),
+        value: duration,
+        unit: "ms",
+        site: test.target,
+        status: "Failed",
+      });
+    } catch {}
     return failedRun;
   }
 }

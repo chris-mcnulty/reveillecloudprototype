@@ -124,6 +124,12 @@ export default function Performance() {
           <TabsTrigger value="synthetic" data-testid="tab-synthetic">Synthetic Latency</TabsTrigger>
           <TabsTrigger value="phases" data-testid="tab-phases">API Phase Breakdown</TabsTrigger>
           <TabsTrigger value="distribution" data-testid="tab-distribution">By Site</TabsTrigger>
+          <TabsTrigger value="errors" data-testid="tab-errors">
+            Test Errors
+            {phaseData.errors.length > 0 && (
+              <Badge variant="destructive" className="ml-1.5 h-5 px-1.5 text-[10px]">{phaseData.errors.length}</Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="insights" data-testid="tab-insights">Usage Insights</TabsTrigger>
         </TabsList>
 
@@ -265,6 +271,89 @@ export default function Performance() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="errors" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Test Errors</CardTitle>
+              <CardDescription>
+                Tests that failed with errors — showing what phase failed and why
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {phaseData.errors.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
+                  <p className="text-sm text-muted-foreground">No test errors recorded recently.</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Duration</TableHead>
+                      <TableHead>Failed Phase</TableHead>
+                      <TableHead>Error</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {phaseData.errors.map((e: any, i: number) => (
+                      <TableRow key={i} data-testid={`row-error-${i}`}>
+                        <TableCell className="text-sm whitespace-nowrap">{e.fullTime}</TableCell>
+                        <TableCell className="text-sm font-mono">
+                          <span className={e.durationMs > 10000 ? "text-destructive font-semibold" : ""}>
+                            {(e.durationMs / 1000).toFixed(1)}s
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {e.failedPhase ? (
+                            <Badge variant="outline" className="text-amber-700 border-amber-300 bg-amber-50 dark:bg-amber-950/30">
+                              {e.failedPhase}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm text-destructive max-w-[400px] truncate">{e.error}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          {phaseData.fileTransfer.some((r: any) => r.status === "error") && (
+            <Card>
+              <CardHeader>
+                <CardTitle>File Transfer Phase Waterfall (Including Errors)</CardTitle>
+                <CardDescription>
+                  Shows how far each test got before failing — bars show completed phases, missing bars indicate where it errored
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={phaseData.fileTransfer} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                      <XAxis dataKey="time" stroke="#888888" fontSize={11} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#888888" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${(v/1000).toFixed(1)}s`} />
+                      <Tooltip
+                        contentStyle={tooltipStyle}
+                        formatter={(value: any, name: string) => [`${value}ms`, name]}
+                      />
+                      <Legend />
+                      <Bar dataKey="driveResolve" name="Drive Resolve" stackId="a" fill={CHART_COLORS.cyan} />
+                      <Bar dataKey="upload" name="Upload" stackId="a" fill={CHART_COLORS.purple} />
+                      <Bar dataKey="download" name="Download" stackId="a" fill={CHART_COLORS.green} />
+                      <Bar dataKey="cleanup" name="Cleanup" stackId="a" fill={CHART_COLORS.amber} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="insights" className="space-y-4">
@@ -416,9 +505,9 @@ function buildSyntheticTimeSeries(metrics: any[]) {
 function buildPhaseBreakdowns(runs: any[]) {
   const fmt = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
-  const successRuns = runs.filter(r => r.status === "success" && r.results);
+  const completedRuns = runs.filter(r => r.results && (r.status === "success" || r.status === "failed" || r.status === "error"));
 
-  const pageLoadRuns = successRuns
+  const pageLoadRuns = completedRuns
     .filter(r => r.results?.siteResolutionMs !== undefined)
     .slice(-12)
     .map(r => ({
@@ -427,8 +516,8 @@ function buildPhaseBreakdowns(runs: any[]) {
       listEnum: r.results.listsEnumerationMs || 0,
     }));
 
-  const fileTransferRuns = successRuns
-    .filter(r => r.results?.driveResolveMs !== undefined)
+  const fileTransferRuns = completedRuns
+    .filter(r => r.results?.driveResolveMs !== undefined || r.results?.failedPhase)
     .slice(-12)
     .map(r => ({
       time: fmt(new Date(r.startedAt)),
@@ -436,9 +525,13 @@ function buildPhaseBreakdowns(runs: any[]) {
       upload: r.results.uploadMs || 0,
       download: r.results.downloadMs || 0,
       cleanup: r.results.cleanupMs || 0,
+      status: r.status,
+      error: r.error || null,
+      failedPhase: r.results.failedPhase || null,
+      totalMs: r.durationMs || r.results.totalMs || 0,
     }));
 
-  const searchRuns = successRuns
+  const searchRuns = completedRuns
     .filter(r => r.results?.searchLatencyMs !== undefined)
     .slice(-12)
     .map(r => ({
@@ -447,7 +540,7 @@ function buildPhaseBreakdowns(runs: any[]) {
       results: r.results.totalResults || 0,
     }));
 
-  const authRuns = successRuns
+  const authRuns = completedRuns
     .filter(r => r.results?.tokenAcquisitionMs !== undefined)
     .slice(-12)
     .map(r => ({
@@ -456,7 +549,19 @@ function buildPhaseBreakdowns(runs: any[]) {
       profileFetch: r.results.profileFetchMs || 0,
     }));
 
-  return { pageLoad: pageLoadRuns, fileTransfer: fileTransferRuns, search: searchRuns, auth: authRuns };
+  const recentErrors = runs
+    .filter(r => r.status === "error" && r.error)
+    .slice(-10)
+    .map(r => ({
+      time: fmt(new Date(r.startedAt)),
+      fullTime: new Date(r.startedAt).toLocaleString(),
+      testId: r.testId,
+      durationMs: r.durationMs || 0,
+      error: r.error,
+      failedPhase: r.results?.failedPhase || null,
+    }));
+
+  return { pageLoad: pageLoadRuns, fileTransfer: fileTransferRuns, search: searchRuns, auth: authRuns, errors: recentErrors };
 }
 
 function buildSiteLatency(metrics: any[]) {
