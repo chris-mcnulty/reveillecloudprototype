@@ -116,7 +116,7 @@ export function Header() {
           </Select>
         )}
 
-        {isMsp ? (
+        {isMsp || orgTenants.length > 1 ? (
           <Select value={activeTenantId || ""} onValueChange={(v) => setActiveTenantId(v)}>
             <SelectTrigger className="w-[140px] sm:w-[200px] h-9 bg-background border-dashed shrink-0" data-testid="select-header-tenant">
               <div className="flex items-center gap-2 text-sm truncate">

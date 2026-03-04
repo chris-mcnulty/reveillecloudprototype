@@ -46,7 +46,6 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   }, [orgTenants, activeTenantId]);
 
   const handleSetTenant = (id: string | null) => {
-    if (!isMsp && orgTenants.length <= 1) return;
     setActiveTenantId(id);
   };
 
