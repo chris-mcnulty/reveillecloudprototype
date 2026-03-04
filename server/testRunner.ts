@@ -12,6 +12,60 @@ export interface TestResult {
 
 type AuthMethod = "app" | "delegated";
 
+const regionCache = new Map<string, string>();
+
+async function detectTenantRegion(azureTenantId: string): Promise<string> {
+  if (regionCache.has(azureTenantId)) return regionCache.get(azureTenantId)!;
+
+  try {
+    const client = await getAzureGraphClient(azureTenantId);
+    const org = await client.api("/organization").select("id,countryLetterCode").get();
+    const country = org.value?.[0]?.countryLetterCode || "";
+
+    let region = "US";
+    const eurCountries = ["DE", "FR", "IT", "ES", "NL", "BE", "AT", "CH", "SE", "NO", "DK", "FI", "PL", "PT", "IE", "CZ", "RO", "HU", "BG", "HR", "SK", "SI", "LT", "LV", "EE"];
+    const apcCountries = ["SG", "HK", "TW", "KR", "TH", "MY", "PH", "ID", "VN"];
+    if (country === "GB" || country === "UK") region = "GBR";
+    else if (country === "AU" || country === "NZ") region = "AUS";
+    else if (country === "JP") region = "JPN";
+    else if (country === "IN") region = "IND";
+    else if (country === "CA") region = "CAN";
+    else if (eurCountries.includes(country)) region = "EUR";
+    else if (apcCountries.includes(country)) region = "APC";
+    else if (country === "US") region = "US";
+
+    regionCache.set(azureTenantId, region);
+    return region;
+  } catch (err) {
+    console.warn(`[TestRunner] Could not detect region for tenant ${azureTenantId}, defaulting to US`);
+    regionCache.set(azureTenantId, "US");
+    return "US";
+  }
+}
+
+async function retryOnTransient<T>(fn: () => Promise<T>, retries = 1, delayMs = 2000): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const status = err.statusCode || err.code || 0;
+      const msg = (err.message || "").toLowerCase();
+      const isTransient = status === 503 || status === 504 || status === 429
+        || msg.includes("service unavailable") || msg.includes("gateway timeout")
+        || msg.includes("too many requests");
+
+      if (isTransient && attempt < retries) {
+        const wait = delayMs * Math.pow(2, attempt) + Math.random() * 1000;
+        console.log(`[TestRunner] Transient error (attempt ${attempt + 1}/${retries + 1}): ${err.message}. Retrying in ${Math.round(wait)}ms...`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Retry exhausted");
+}
+
 async function getGraphClientForTest(test: SyntheticTest): Promise<{ client: any; authMethod: AuthMethod }> {
   const tenant = await storage.getTenant(test.tenantId);
 
@@ -111,21 +165,21 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
     try {
       let site: any;
       if (hostname && siteName) {
-        site = await client.api(`/sites/${hostname}:/sites/${siteName}`).get();
+        site = await retryOnTransient(() => client.api(`/sites/${hostname}:/sites/${siteName}`).get());
       } else if (siteName) {
-        site = await client.api(`/sites/root:/sites/${siteName}`).get();
+        site = await retryOnTransient(() => client.api(`/sites/root:/sites/${siteName}`).get());
       } else if (hostname) {
-        site = await client.api(`/sites/${hostname}`).get();
+        site = await retryOnTransient(() => client.api(`/sites/${hostname}`).get());
       } else {
-        site = await client.api('/sites/root').get();
+        site = await retryOnTransient(() => client.api('/sites/root').get());
       }
-      const drives = await client.api(`/sites/${site.id}/drives`).get();
+      const drives = await retryOnTransient(() => client.api(`/sites/${site.id}/drives`).get());
       if (!drives.value?.length) throw new Error(`No document libraries found on site "${siteName || "root"}"`);
       driveId = drives.value[0].id;
     } catch (siteErr: any) {
       if (siteErr.message?.includes("No document libraries")) throw siteErr;
-      const rootSite = await client.api('/sites/root').get();
-      const drives = await client.api(`/sites/${rootSite.id}/drives`).get();
+      const rootSite = await retryOnTransient(() => client.api('/sites/root').get());
+      const drives = await retryOnTransient(() => client.api(`/sites/${rootSite.id}/drives`).get());
       if (!drives.value?.length) throw new Error("No document libraries found on root site");
       driveId = drives.value[0].id;
     }
@@ -133,14 +187,16 @@ async function runFileTransferTest(test: SyntheticTest): Promise<TestResult> {
     failedPhase = "upload";
 
     const uploadStart = Date.now();
-    await client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}:/content`)
-      .put(testContent);
+    await retryOnTransient(() => client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}:/content`)
+      .put(testContent));
     phases.uploadMs = Date.now() - uploadStart;
     failedPhase = "download";
 
+    await new Promise(r => setTimeout(r, 500));
+
     const downloadStart = Date.now();
-    const downloadedContent = await client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}:/content`)
-      .get();
+    const downloadedContent = await retryOnTransient(() => client.api(`/drives/${driveId}/root:/${folderPath}/${fileName}:/content`)
+      .get());
     phases.downloadMs = Date.now() - downloadStart;
     failedPhase = "cleanup";
 
@@ -188,17 +244,42 @@ async function runSearchTest(test: SyntheticTest): Promise<TestResult> {
       query = query.replace(/^query=['"]?/, "").replace(/['"]$/, "");
     }
 
-    const searchStart = Date.now();
-    const searchResult = await client.api("/search/query").post({
+    const tenant = await storage.getTenant(test.tenantId);
+    let region = tenant?.azureTenantId ? await detectTenantRegion(tenant.azureTenantId) : "NAM";
+
+    const buildSearchBody = (r: string) => ({
       requests: [
         {
           entityTypes: ["site", "driveItem", "listItem"],
           query: { queryString: query },
           from: 0,
           size: 10,
+          region: r,
         },
       ],
     });
+
+    const searchStart = Date.now();
+    let searchResult: any;
+    try {
+      searchResult = await client.api("/search/query").post(buildSearchBody(region));
+    } catch (regionErr: any) {
+      const errMsg = regionErr.message || "";
+      const validMatch = errMsg.match(/Only valid regions? (?:are|is) (.+?)\.?$/i);
+      if (validMatch) {
+        const validRegion = validMatch[1].trim().split(/[,\s]+/)[0];
+        if (validRegion && validRegion !== region) {
+          console.log(`[TestRunner] Region "${region}" invalid, retrying with "${validRegion}"`);
+          if (tenant?.azureTenantId) regionCache.set(tenant.azureTenantId, validRegion);
+          region = validRegion;
+          searchResult = await client.api("/search/query").post(buildSearchBody(region));
+        } else {
+          throw regionErr;
+        }
+      } else {
+        throw regionErr;
+      }
+    }
     const searchMs = Date.now() - searchStart;
     const totalDuration = Date.now() - start;
 
