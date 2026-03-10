@@ -50,3 +50,7 @@ outputType = "webview"
 stack = "MOCKUP_JS"
 mockupState = "FULLSTACK"
 integrations = ["sharepoint:1.0.0"]
+
+[userenv]
+
+[userenv.shared]

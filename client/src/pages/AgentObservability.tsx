@@ -5,7 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table,
@@ -51,6 +54,11 @@ import {
   Hash,
   ArrowRight,
   User,
+  Plus,
+  Pencil,
+  Search,
+  Link,
+  Settings,
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import {
@@ -1223,6 +1231,42 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
   const queryClient = useQueryClient();
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [toolCallFilter, setToolCallFilter] = useState<string>("all");
+  const [showRegisterDialog, setShowRegisterDialog] = useState(false);
+  const [editingServer, setEditingServer] = useState<McpServerData | null>(null);
+  const [probingServerId, setProbingServerId] = useState<string | null>(null);
+
+  const [formName, setFormName] = useState("");
+  const [formDescription, setFormDescription] = useState("");
+  const [formTransport, setFormTransport] = useState("streamable-http");
+  const [formUrl, setFormUrl] = useState("");
+  const [formAuthType, setFormAuthType] = useState("none");
+  const [formApiKey, setFormApiKey] = useState("");
+  const [formCommand, setFormCommand] = useState("");
+  const [formArgs, setFormArgs] = useState("");
+
+  const [testResult, setTestResult] = useState<{ success: boolean; tools: any[]; error?: string; latencyMs: number } | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+
+  const resetForm = () => {
+    setFormName(""); setFormDescription(""); setFormTransport("streamable-http");
+    setFormUrl(""); setFormAuthType("none"); setFormApiKey("");
+    setFormCommand(""); setFormArgs(""); setTestResult(null);
+    setEditingServer(null);
+  };
+
+  const openEditDialog = (server: McpServerData) => {
+    setEditingServer(server);
+    setFormName(server.name);
+    setFormDescription(server.description || "");
+    setFormTransport(server.transportType);
+    setFormUrl(server.url || "");
+    setFormAuthType((server as any).authType || "none");
+    setFormApiKey("");
+    setFormCommand(server.command || "");
+    setFormArgs(server.args ? server.args.join(" ") : "");
+    setTestResult(null);
+    setShowRegisterDialog(true);
+  };
 
   const { data: stats } = useQuery<McpStats>({
     queryKey: ["/api/mcp-servers/stats", tenantId],
@@ -1263,6 +1307,12 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
     refetchInterval: 15000,
   });
 
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers/stats"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers/tool-calls"] });
+  };
+
   const seedMcpMutation = useMutation({
     mutationFn: async () => {
       if (!tenantId) return;
@@ -1270,11 +1320,125 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
+    onSuccess: invalidateAll,
+  });
+
+  const registerMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenantId) return;
+      const body: any = {
+        name: formName,
+        description: formDescription || null,
+        transportType: formTransport,
+        url: formTransport !== "stdio" ? formUrl : null,
+        command: formTransport === "stdio" ? formCommand : null,
+        args: formTransport === "stdio" && formArgs ? formArgs.split(/\s+/) : null,
+        authType: formAuthType,
+        apiKey: formAuthType === "api-key" ? formApiKey : null,
+        status: "unknown",
+      };
+      if (testResult?.success) {
+        body.status = "running";
+        body.lastHeartbeat = new Date().toISOString();
+        body.capabilities = {
+          tools: testResult.tools.map((t: any) => t.name),
+          resources: [],
+          prompts: [],
+        };
+      }
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers/stats"] });
+      invalidateAll();
+      setShowRegisterDialog(false);
+      resetForm();
     },
   });
+
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenantId || !editingServer) return;
+      const body: any = {
+        name: formName,
+        description: formDescription || null,
+        transportType: formTransport,
+        url: formTransport !== "stdio" ? formUrl : null,
+        command: formTransport === "stdio" ? formCommand : null,
+        args: formTransport === "stdio" && formArgs ? formArgs.split(/\s+/) : null,
+        authType: formAuthType,
+      };
+      if (formApiKey) body.apiKey = formApiKey;
+      if (testResult?.success) {
+        body.status = "running";
+        body.lastHeartbeat = new Date().toISOString();
+        body.capabilities = {
+          tools: testResult.tools.map((t: any) => t.name),
+          resources: [],
+          prompts: [],
+        };
+      }
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers/${editingServer.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      invalidateAll();
+      setShowRegisterDialog(false);
+      resetForm();
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (serverId: string) => {
+      if (!tenantId) return;
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers/${serverId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+    },
+    onSuccess: () => {
+      invalidateAll();
+      setExpandedServer(null);
+    },
+  });
+
+  const handleTestConnection = async () => {
+    const url = formTransport !== "stdio" ? formUrl : null;
+    if (!url) return;
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers/test-connection`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, apiKey: formAuthType === "api-key" ? formApiKey : null }),
+      });
+      const data = await res.json();
+      setTestResult(data);
+    } catch (err: any) {
+      setTestResult({ success: false, tools: [], error: err.message, latencyMs: 0 });
+    }
+    setTestingConnection(false);
+  };
+
+  const handleProbe = async (serverId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setProbingServerId(serverId);
+    try {
+      await fetch(`/api/tenants/${tenantId}/mcp-servers/${serverId}/probe`, { method: "POST" });
+      invalidateAll();
+    } finally {
+      setProbingServerId(null);
+    }
+  };
 
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
@@ -1285,28 +1449,6 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
           <Cpu className="h-12 w-12 text-muted-foreground mb-4" />
           <h3 className="text-lg font-semibold mb-2">Select a Tenant</h3>
           <p className="text-sm text-muted-foreground">Choose a tenant to view MCP server observability.</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (servers.length === 0 && !stats?.totalServers) {
-    return (
-      <Card className="border-dashed">
-        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-          <Cpu className="h-12 w-12 text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2" data-testid="text-mcp-empty">No MCP Servers Registered</h3>
-          <p className="text-sm text-muted-foreground mb-4 max-w-md">
-            Register MCP servers via the API to start monitoring, or seed demo data to preview the experience.
-          </p>
-          <Button
-            onClick={() => seedMcpMutation.mutate()}
-            disabled={seedMcpMutation.isPending}
-            data-testid="button-seed-mcp-empty"
-          >
-            {seedMcpMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
-            Seed Demo Data
-          </Button>
         </CardContent>
       </Card>
     );
@@ -1328,256 +1470,461 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
     return <span className="flex h-2.5 w-2.5 rounded-full bg-yellow-400" data-testid="status-unknown" />;
   };
 
+  const registerDialog = (
+    <Dialog open={showRegisterDialog} onOpenChange={(open) => { if (!open) { setShowRegisterDialog(false); resetForm(); } else setShowRegisterDialog(true); }}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{editingServer ? "Edit MCP Server" : "Register MCP Server"}</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="mcp-name">Server Name</Label>
+            <Input id="mcp-name" placeholder="e.g. Vega Strategic Planning" value={formName} onChange={e => setFormName(e.target.value)} data-testid="input-mcp-name" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="mcp-desc">Description</Label>
+            <Textarea id="mcp-desc" placeholder="What does this server do?" value={formDescription} onChange={e => setFormDescription(e.target.value)} rows={2} data-testid="input-mcp-description" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Transport Type</Label>
+            <Select value={formTransport} onValueChange={setFormTransport}>
+              <SelectTrigger data-testid="select-mcp-transport">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="streamable-http">Streamable HTTP</SelectItem>
+                <SelectItem value="sse">SSE (Server-Sent Events)</SelectItem>
+                <SelectItem value="stdio">Standard I/O</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {formTransport !== "stdio" ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-url">Server URL</Label>
+              <Input id="mcp-url" placeholder="https://example.com/mcp" value={formUrl} onChange={e => setFormUrl(e.target.value)} data-testid="input-mcp-url" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="mcp-command">Command</Label>
+                <Input id="mcp-command" placeholder="node" value={formCommand} onChange={e => setFormCommand(e.target.value)} data-testid="input-mcp-command" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="mcp-args">Arguments</Label>
+                <Input id="mcp-args" placeholder="dist/server.js --port 3000" value={formArgs} onChange={e => setFormArgs(e.target.value)} data-testid="input-mcp-args" />
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label>Authentication</Label>
+            <Select value={formAuthType} onValueChange={setFormAuthType}>
+              <SelectTrigger data-testid="select-mcp-auth">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No Authentication</SelectItem>
+                <SelectItem value="api-key">API Key (Bearer Token)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {formAuthType === "api-key" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-apikey">API Key</Label>
+              <Input id="mcp-apikey" type="password" placeholder={editingServer ? "Leave empty to keep existing" : "Enter API key"} value={formApiKey} onChange={e => setFormApiKey(e.target.value)} data-testid="input-mcp-apikey" />
+            </div>
+          )}
+
+          {formTransport !== "stdio" && formUrl && (
+            <div className="pt-2 border-t">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestConnection}
+                disabled={testingConnection}
+                data-testid="button-test-connection"
+              >
+                {testingConnection ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Search className="h-3.5 w-3.5 mr-1.5" />}
+                Test Connection & Discover Tools
+              </Button>
+
+              {testResult && (
+                <div className={`mt-3 rounded-md p-3 text-xs ${testResult.success ? "bg-green-50 dark:bg-green-950 border border-green-200" : "bg-red-50 dark:bg-red-950 border border-red-200"}`}>
+                  {testResult.success ? (
+                    <>
+                      <div className="flex items-center gap-1.5 font-semibold text-green-800 dark:text-green-200 mb-2">
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Connection Successful ({testResult.latencyMs}ms)
+                      </div>
+                      <div className="text-green-700 dark:text-green-300">
+                        Discovered {testResult.tools.length} tools:
+                      </div>
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {testResult.tools.map((t: any) => (
+                          <Badge key={t.name} variant="secondary" className="text-[10px]">
+                            <Zap className="h-2.5 w-2.5 mr-0.5" />{t.name}
+                          </Badge>
+                        ))}
+                      </div>
+                      {testResult.tools.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {testResult.tools.map((t: any) => (
+                            <div key={t.name} className="text-[10px] text-muted-foreground">
+                              <span className="font-mono font-medium">{t.name}</span>
+                              {t.description && <span> — {t.description}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-1.5 font-semibold text-red-800 dark:text-red-200">
+                      <XCircle className="h-3.5 w-3.5" /> Connection Failed: {testResult.error}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={() => { setShowRegisterDialog(false); resetForm(); }} data-testid="button-cancel-mcp">
+            Cancel
+          </Button>
+          <Button
+            onClick={() => editingServer ? updateMutation.mutate() : registerMutation.mutate()}
+            disabled={!formName || (formTransport !== "stdio" && !formUrl) || registerMutation.isPending || updateMutation.isPending}
+            data-testid="button-save-mcp"
+          >
+            {(registerMutation.isPending || updateMutation.isPending) && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+            {editingServer ? "Save Changes" : "Register Server"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
   return (
     <div className="space-y-6 mt-4">
+      {registerDialog}
+
       <div className="flex items-center justify-between">
         <div />
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => seedMcpMutation.mutate()}
-          disabled={seedMcpMutation.isPending}
-          data-testid="button-seed-mcp"
-        >
-          {seedMcpMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
-          Seed Demo Data
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => seedMcpMutation.mutate()}
+            disabled={seedMcpMutation.isPending}
+            data-testid="button-seed-mcp"
+          >
+            {seedMcpMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
+            Seed Demo
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => { resetForm(); setShowRegisterDialog(true); }}
+            data-testid="button-register-mcp"
+          >
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            Register Server
+          </Button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Card data-testid="card-mcp-total-servers">
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">Total Servers</div>
-            <div className="text-2xl font-bold" data-testid="text-mcp-total-servers">{stats?.totalServers || 0}</div>
+      {servers.length === 0 && !stats?.totalServers ? (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <Cpu className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-2" data-testid="text-mcp-empty">No MCP Servers Registered</h3>
+            <p className="text-sm text-muted-foreground mb-4 max-w-md">
+              Register an MCP server to start monitoring its tools, health, and performance.
+            </p>
+            <Button onClick={() => { resetForm(); setShowRegisterDialog(true); }} data-testid="button-register-mcp-empty">
+              <Plus className="h-3.5 w-3.5 mr-1.5" /> Register Your First Server
+            </Button>
           </CardContent>
         </Card>
-        <Card data-testid="card-mcp-running">
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">Running</div>
-            <div className="text-2xl font-bold text-green-600" data-testid="text-mcp-running">{stats?.runningCount || 0}</div>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-mcp-tool-calls">
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">Total Tool Calls</div>
-            <div className="text-2xl font-bold" data-testid="text-mcp-tool-calls">{stats?.totalToolCalls || 0}</div>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-mcp-error-rate">
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">Error Rate</div>
-            <div className="text-2xl font-bold" data-testid="text-mcp-error-rate">
-              {stats?.errorRate !== undefined ? `${stats.errorRate.toFixed(1)}%` : "0%"}
-            </div>
-          </CardContent>
-        </Card>
-        <Card data-testid="card-mcp-avg-latency">
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">Avg Latency</div>
-            <div className="text-2xl font-bold" data-testid="text-mcp-avg-latency">
-              {stats?.avgLatency ? `${Math.round(stats.avgLatency)}ms` : "—"}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {servers.map((server) => {
-          const isExpanded = expandedServer === server.id;
-          const tools = server.capabilities?.tools || [];
-          const resources = server.capabilities?.resources || [];
-          const prompts = server.capabilities?.prompts || [];
-
-          return (
-            <Card
-              key={server.id}
-              className={`cursor-pointer transition-all ${isExpanded ? "ring-2 ring-primary col-span-1 md:col-span-2" : "hover:shadow-md"}`}
-              onClick={() => {
-                setExpandedServer(isExpanded ? null : server.id);
-                setExpandedCallId(null);
-                setToolCallFilter("all");
-              }}
-              data-testid={`card-mcp-server-${server.id}`}
-            >
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <Card data-testid="card-mcp-total-servers">
               <CardContent className="p-4">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    {statusIndicator(server.status)}
-                    <h4 className="font-semibold text-sm" data-testid={`text-mcp-name-${server.id}`}>{server.name}</h4>
-                    {transportBadge(server.transportType)}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {server.version && <Badge variant="outline" className="text-xs">v{server.version}</Badge>}
-                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  </div>
-                </div>
-
-                {server.description && (
-                  <p className="text-xs text-muted-foreground mb-3">{server.description}</p>
-                )}
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                  <div>
-                    <span className="text-muted-foreground">Status</span>
-                    <div className="font-medium capitalize">{server.status}</div>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Last Heartbeat</span>
-                    <div className="font-medium">{formatRelativeTime(server.lastHeartbeat)}</div>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Uptime</span>
-                    <div className="font-medium">{server.uptime ? formatUptime(server.uptime) : "—"}</div>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Restarts</span>
-                    <div className="font-medium">{server.restartCount || 0}</div>
-                  </div>
-                </div>
-
-                {(tools.length > 0 || resources.length > 0 || prompts.length > 0) && (
-                  <div className="mt-3 pt-3 border-t">
-                    <div className="text-xs text-muted-foreground mb-1.5">Capabilities</div>
-                    <div className="flex flex-wrap gap-1">
-                      {tools.map((t: string) => (
-                        <Badge key={t} variant="secondary" className="text-[10px] px-1.5 py-0">
-                          <Zap className="h-2.5 w-2.5 mr-0.5" />{t}
-                        </Badge>
-                      ))}
-                      {resources.map((r: string) => (
-                        <Badge key={r} variant="outline" className="text-[10px] px-1.5 py-0">
-                          <Globe className="h-2.5 w-2.5 mr-0.5" />{r}
-                        </Badge>
-                      ))}
-                      {prompts.map((p: string) => (
-                        <Badge key={p} variant="outline" className="text-[10px] px-1.5 py-0 border-amber-300">
-                          <MessageSquare className="h-2.5 w-2.5 mr-0.5" />{p}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {isExpanded && (
-                  <div className="mt-4 pt-4 border-t" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between mb-3">
-                      <h5 className="text-sm font-semibold">Recent Tool Calls</h5>
-                      <Select value={toolCallFilter} onValueChange={setToolCallFilter}>
-                        <SelectTrigger className="w-28 h-7 text-xs" data-testid="filter-mcp-tool-status">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All</SelectItem>
-                          <SelectItem value="success">Success</SelectItem>
-                          <SelectItem value="error">Error</SelectItem>
-                          <SelectItem value="timeout">Timeout</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {toolCalls.length === 0 ? (
-                      <p className="text-xs text-muted-foreground text-center py-4">No tool calls recorded yet.</p>
-                    ) : (
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="text-xs">Time</TableHead>
-                            <TableHead className="text-xs">Method</TableHead>
-                            <TableHead className="text-xs">Tool</TableHead>
-                            <TableHead className="text-xs">Session</TableHead>
-                            <TableHead className="text-xs">Duration</TableHead>
-                            <TableHead className="text-xs">Status</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {toolCalls.map((call) => (
-                            <Fragment key={call.id}>
-                              <TableRow
-                                className="cursor-pointer hover:bg-muted/50"
-                                onClick={() => setExpandedCallId(expandedCallId === call.id ? null : call.id)}
-                                data-testid={`row-tool-call-${call.id}`}
-                              >
-                                <TableCell className="text-xs">
-                                  {new Date(call.calledAt).toLocaleTimeString()}
-                                </TableCell>
-                                <TableCell className="text-xs font-mono">{call.method}</TableCell>
-                                <TableCell className="text-xs font-medium">{call.toolName || "—"}</TableCell>
-                                <TableCell className="text-xs font-mono text-muted-foreground">
-                                  {call.sessionId ? call.sessionId.substring(0, 12) : "—"}
-                                </TableCell>
-                                <TableCell className="text-xs">
-                                  {call.durationMs ? `${Math.round(call.durationMs)}ms` : "—"}
-                                </TableCell>
-                                <TableCell>
-                                  {call.status === "success" ? (
-                                    <Badge className="text-[10px] bg-green-100 text-green-800">Success</Badge>
-                                  ) : call.status === "error" ? (
-                                    <Badge className="text-[10px] bg-red-100 text-red-800">Error</Badge>
-                                  ) : (
-                                    <Badge className="text-[10px] bg-yellow-100 text-yellow-800">Timeout</Badge>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                              {expandedCallId === call.id && (
-                                <TableRow>
-                                  <TableCell colSpan={6} className="bg-muted/20 p-3">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                      <div>
-                                        <div className="text-xs font-semibold mb-1">Request Params</div>
-                                        <pre className="text-[10px] bg-background rounded p-2 overflow-auto max-h-40 border">
-                                          {JSON.stringify(call.params, null, 2) || "null"}
-                                        </pre>
-                                      </div>
-                                      <div>
-                                        <div className="text-xs font-semibold mb-1">
-                                          {call.status === "error" ? "Error" : "Response"}
-                                        </div>
-                                        {call.status === "error" ? (
-                                          <div className="text-[10px] bg-red-50 dark:bg-red-950 rounded p-2 border border-red-200">
-                                            <div className="font-mono">Code: {call.errorCode}</div>
-                                            <div>{call.errorMessage}</div>
-                                          </div>
-                                        ) : (
-                                          <pre className="text-[10px] bg-background rounded p-2 overflow-auto max-h-40 border">
-                                            {JSON.stringify(call.result, null, 2) || "null"}
-                                          </pre>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </TableCell>
-                                </TableRow>
-                              )}
-                            </Fragment>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    )}
-                  </div>
-                )}
+                <div className="text-xs text-muted-foreground">Total Servers</div>
+                <div className="text-2xl font-bold" data-testid="text-mcp-total-servers">{stats?.totalServers || 0}</div>
               </CardContent>
             </Card>
-          );
-        })}
-      </div>
+            <Card data-testid="card-mcp-running">
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Running</div>
+                <div className="text-2xl font-bold text-green-600" data-testid="text-mcp-running">{stats?.runningCount || 0}</div>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-mcp-tool-calls">
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Total Tool Calls</div>
+                <div className="text-2xl font-bold" data-testid="text-mcp-tool-calls">{stats?.totalToolCalls || 0}</div>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-mcp-error-rate">
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Error Rate</div>
+                <div className="text-2xl font-bold" data-testid="text-mcp-error-rate">
+                  {stats?.errorRate !== undefined ? `${stats.errorRate.toFixed(1)}%` : "0%"}
+                </div>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-mcp-avg-latency">
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Avg Latency</div>
+                <div className="text-2xl font-bold" data-testid="text-mcp-avg-latency">
+                  {stats?.avgLatency ? `${Math.round(stats.avgLatency)}ms` : "—"}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
 
-      {stats && Object.keys(stats.toolBreakdown).length > 0 && (
-        <Card data-testid="card-mcp-tool-breakdown">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Tool Usage Breakdown</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-              {Object.entries(stats.toolBreakdown)
-                .sort(([, a], [, b]) => b - a)
-                .map(([tool, count]) => (
-                  <div key={tool} className="flex items-center justify-between bg-muted/50 rounded px-2.5 py-1.5">
-                    <span className="text-xs font-medium truncate">{tool}</span>
-                    <Badge variant="secondary" className="text-[10px] ml-1.5">{count}</Badge>
-                  </div>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {servers.map((server) => {
+              const isExpanded = expandedServer === server.id;
+              const tools = server.capabilities?.tools || [];
+              const resources = server.capabilities?.resources || [];
+              const prompts = server.capabilities?.prompts || [];
+
+              return (
+                <Card
+                  key={server.id}
+                  className={`cursor-pointer transition-all ${isExpanded ? "ring-2 ring-primary col-span-1 md:col-span-2" : "hover:shadow-md"}`}
+                  onClick={() => {
+                    setExpandedServer(isExpanded ? null : server.id);
+                    setExpandedCallId(null);
+                    setToolCallFilter("all");
+                  }}
+                  data-testid={`card-mcp-server-${server.id}`}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        {statusIndicator(server.status)}
+                        <h4 className="font-semibold text-sm" data-testid={`text-mcp-name-${server.id}`}>{server.name}</h4>
+                        {transportBadge(server.transportType)}
+                      </div>
+                      <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                        {server.version && <Badge variant="outline" className="text-xs mr-1">v{server.version}</Badge>}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0"
+                          onClick={(e) => handleProbe(server.id, e)}
+                          disabled={probingServerId === server.id}
+                          data-testid={`button-probe-${server.id}`}
+                          title="Probe server"
+                        >
+                          {probingServerId === server.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0"
+                          onClick={(e) => { e.stopPropagation(); openEditDialog(server); }}
+                          data-testid={`button-edit-${server.id}`}
+                          title="Edit server"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                          onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${server.name}"?`)) deleteMutation.mutate(server.id); }}
+                          data-testid={`button-delete-${server.id}`}
+                          title="Delete server"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                        {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground ml-1" /> : <ChevronRight className="h-4 w-4 text-muted-foreground ml-1" />}
+                      </div>
+                    </div>
+
+                    {server.description && (
+                      <p className="text-xs text-muted-foreground mb-3">{server.description}</p>
+                    )}
+
+                    {server.url && (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-3 font-mono">
+                        <Link className="h-3 w-3" />{server.url}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">Status</span>
+                        <div className="font-medium capitalize">{server.status}</div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Last Heartbeat</span>
+                        <div className="font-medium">{formatRelativeTime(server.lastHeartbeat)}</div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Uptime</span>
+                        <div className="font-medium">{server.uptime ? formatUptime(server.uptime) : "—"}</div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Restarts</span>
+                        <div className="font-medium">{server.restartCount || 0}</div>
+                      </div>
+                    </div>
+
+                    {(tools.length > 0 || resources.length > 0 || prompts.length > 0) && (
+                      <div className="mt-3 pt-3 border-t">
+                        <div className="text-xs text-muted-foreground mb-1.5">Capabilities ({tools.length} tools)</div>
+                        <div className="flex flex-wrap gap-1">
+                          {tools.map((t: string) => (
+                            <Badge key={t} variant="secondary" className="text-[10px] px-1.5 py-0">
+                              <Zap className="h-2.5 w-2.5 mr-0.5" />{t}
+                            </Badge>
+                          ))}
+                          {resources.map((r: string) => (
+                            <Badge key={r} variant="outline" className="text-[10px] px-1.5 py-0">
+                              <Globe className="h-2.5 w-2.5 mr-0.5" />{r}
+                            </Badge>
+                          ))}
+                          {prompts.map((p: string) => (
+                            <Badge key={p} variant="outline" className="text-[10px] px-1.5 py-0 border-amber-300">
+                              <MessageSquare className="h-2.5 w-2.5 mr-0.5" />{p}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {isExpanded && (
+                      <div className="mt-4 pt-4 border-t" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-between mb-3">
+                          <h5 className="text-sm font-semibold">Recent Tool Calls</h5>
+                          <Select value={toolCallFilter} onValueChange={setToolCallFilter}>
+                            <SelectTrigger className="w-28 h-7 text-xs" data-testid="filter-mcp-tool-status">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">All</SelectItem>
+                              <SelectItem value="success">Success</SelectItem>
+                              <SelectItem value="error">Error</SelectItem>
+                              <SelectItem value="timeout">Timeout</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {toolCalls.length === 0 ? (
+                          <p className="text-xs text-muted-foreground text-center py-4">No tool calls recorded yet.</p>
+                        ) : (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="text-xs">Time</TableHead>
+                                <TableHead className="text-xs">Method</TableHead>
+                                <TableHead className="text-xs">Tool</TableHead>
+                                <TableHead className="text-xs">Session</TableHead>
+                                <TableHead className="text-xs">Duration</TableHead>
+                                <TableHead className="text-xs">Status</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {toolCalls.map((call) => (
+                                <Fragment key={call.id}>
+                                  <TableRow
+                                    className="cursor-pointer hover:bg-muted/50"
+                                    onClick={() => setExpandedCallId(expandedCallId === call.id ? null : call.id)}
+                                    data-testid={`row-tool-call-${call.id}`}
+                                  >
+                                    <TableCell className="text-xs">
+                                      {new Date(call.calledAt).toLocaleTimeString()}
+                                    </TableCell>
+                                    <TableCell className="text-xs font-mono">{call.method}</TableCell>
+                                    <TableCell className="text-xs font-medium">{call.toolName || "—"}</TableCell>
+                                    <TableCell className="text-xs font-mono text-muted-foreground">
+                                      {call.sessionId ? call.sessionId.substring(0, 12) : "—"}
+                                    </TableCell>
+                                    <TableCell className="text-xs">
+                                      {call.durationMs ? `${Math.round(call.durationMs)}ms` : "—"}
+                                    </TableCell>
+                                    <TableCell>
+                                      {call.status === "success" ? (
+                                        <Badge className="text-[10px] bg-green-100 text-green-800">Success</Badge>
+                                      ) : call.status === "error" ? (
+                                        <Badge className="text-[10px] bg-red-100 text-red-800">Error</Badge>
+                                      ) : (
+                                        <Badge className="text-[10px] bg-yellow-100 text-yellow-800">Timeout</Badge>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                  {expandedCallId === call.id && (
+                                    <TableRow>
+                                      <TableCell colSpan={6} className="bg-muted/20 p-3">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                          <div>
+                                            <div className="text-xs font-semibold mb-1">Request Params</div>
+                                            <pre className="text-[10px] bg-background rounded p-2 overflow-auto max-h-40 border">
+                                              {JSON.stringify(call.params, null, 2) || "null"}
+                                            </pre>
+                                          </div>
+                                          <div>
+                                            <div className="text-xs font-semibold mb-1">
+                                              {call.status === "error" ? "Error" : "Response"}
+                                            </div>
+                                            {call.status === "error" ? (
+                                              <div className="text-[10px] bg-red-50 dark:bg-red-950 rounded p-2 border border-red-200">
+                                                <div className="font-mono">Code: {call.errorCode}</div>
+                                                <div>{call.errorMessage}</div>
+                                              </div>
+                                            ) : (
+                                              <pre className="text-[10px] bg-background rounded p-2 overflow-auto max-h-40 border">
+                                                {JSON.stringify(call.result, null, 2) || "null"}
+                                              </pre>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </TableCell>
+                                    </TableRow>
+                                  )}
+                                </Fragment>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+
+          {stats && Object.keys(stats.toolBreakdown).length > 0 && (
+            <Card data-testid="card-mcp-tool-breakdown">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Tool Usage Breakdown</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                  {Object.entries(stats.toolBreakdown)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([tool, count]) => (
+                      <div key={tool} className="flex items-center justify-between bg-muted/50 rounded px-2.5 py-1.5">
+                        <span className="text-xs font-medium truncate">{tool}</span>
+                        <Badge variant="secondary" className="text-[10px] ml-1.5">{count}</Badge>
+                      </div>
+                    ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
     </div>
   );

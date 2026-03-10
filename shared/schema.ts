@@ -321,6 +321,8 @@ export const mcpServers = pgTable("mcp_servers", {
   args: jsonb("args").$type<string[]>(),
   env: jsonb("env").$type<Record<string, string>>(),
   url: text("url"),
+  apiKey: text("api_key"),
+  authType: text("auth_type").default("none"),
   status: text("status").notNull().default("unknown"),
   lastHeartbeat: timestamp("last_heartbeat"),
   uptime: integer("uptime").default(0),

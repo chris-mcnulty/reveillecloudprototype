@@ -855,8 +855,18 @@ export async function registerRoutes(
 
   app.get("/api/tenants/:tenantId/mcp-servers", async (req, res) => {
     const servers = await storage.getMcpServers(req.params.tenantId);
-    res.json(servers);
+    res.json(servers.map(s => ({ ...s, apiKey: s.apiKey ? "••••••••" : null })));
   });
+
+  function maskMcpServer(s: any) {
+    return { ...s, apiKey: s.apiKey ? "••••••••" : null };
+  }
+
+  async function getMcpServerForTenant(serverId: string, tenantId: string) {
+    const server = await storage.getMcpServer(serverId);
+    if (!server || server.tenantId !== tenantId) return null;
+    return server;
+  }
 
   app.get("/api/tenants/:tenantId/mcp-servers/stats", async (req, res) => {
     const stats = await storage.getMcpServerStats(req.params.tenantId);
@@ -868,23 +878,27 @@ export async function registerRoutes(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     const server = await storage.createMcpServer(parsed.data);
     await logAdminAction(req.params.tenantId, "create", "mcpServer", server.id, { name: server.name });
-    res.status(201).json(server);
+    res.status(201).json(maskMcpServer(server));
   });
 
   app.get("/api/tenants/:tenantId/mcp-servers/:serverId", async (req, res) => {
-    const server = await storage.getMcpServer(req.params.serverId);
+    const server = await getMcpServerForTenant(req.params.serverId, req.params.tenantId);
     if (!server) return res.status(404).json({ error: "Server not found" });
     const health = await storage.getMcpServerHealth(req.params.serverId);
-    res.json({ ...server, health });
+    res.json({ ...maskMcpServer(server), health });
   });
 
   app.patch("/api/tenants/:tenantId/mcp-servers/:serverId", async (req, res) => {
+    const existing = await getMcpServerForTenant(req.params.serverId, req.params.tenantId);
+    if (!existing) return res.status(404).json({ error: "Server not found" });
     const server = await storage.updateMcpServer(req.params.serverId, req.body);
     if (!server) return res.status(404).json({ error: "Server not found" });
-    res.json(server);
+    res.json(maskMcpServer(server));
   });
 
   app.delete("/api/tenants/:tenantId/mcp-servers/:serverId", async (req, res) => {
+    const existing = await getMcpServerForTenant(req.params.serverId, req.params.tenantId);
+    if (!existing) return res.status(404).json({ error: "Server not found" });
     await storage.deleteMcpServer(req.params.serverId);
     await logAdminAction(req.params.tenantId, "delete", "mcpServer", req.params.serverId);
     res.json({ success: true });
@@ -907,6 +921,8 @@ export async function registerRoutes(
   });
 
   app.post("/api/tenants/:tenantId/mcp-servers/:serverId/heartbeat", async (req, res) => {
+    const existing = await getMcpServerForTenant(req.params.serverId, req.params.tenantId);
+    if (!existing) return res.status(404).json({ error: "Server not found" });
     const server = await storage.updateMcpServer(req.params.serverId, {
       status: "running",
       lastHeartbeat: new Date(),
@@ -915,6 +931,169 @@ export async function registerRoutes(
     } as any);
     if (!server) return res.status(404).json({ error: "Server not found" });
     res.json({ ok: true });
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers/:serverId/probe", async (req, res) => {
+    const server = await getMcpServerForTenant(req.params.serverId, req.params.tenantId);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server.url) return res.status(400).json({ error: "Server has no URL configured" });
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (server.apiKey) {
+      headers["Authorization"] = `Bearer ${server.apiKey}`;
+    }
+
+    const results: { tools: any[]; serverInfo: any; error?: string; latencyMs: number } = {
+      tools: [], serverInfo: null, latencyMs: 0,
+    };
+
+    try {
+      const start = Date.now();
+
+      const initResp = await fetch(server.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "initialize",
+          params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "reveille-cloud", version: "1.0.0" } },
+        }),
+      });
+      const initData = await initResp.json() as any;
+      if (initData.result) {
+        results.serverInfo = initData.result;
+      }
+
+      const toolsResp = await fetch(server.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+      });
+      const toolsData = await toolsResp.json() as any;
+      if (toolsData.result?.tools) {
+        results.tools = toolsData.result.tools;
+      }
+      results.latencyMs = Date.now() - start;
+
+      const toolNames = results.tools.map((t: any) => t.name);
+      const capabilities: Record<string, any> = {
+        tools: toolNames,
+        resources: [],
+        prompts: [],
+      };
+      if (results.serverInfo?.capabilities) {
+        if (results.serverInfo.capabilities.resources) capabilities.resources = results.serverInfo.capabilities.resources;
+        if (results.serverInfo.capabilities.prompts) capabilities.prompts = results.serverInfo.capabilities.prompts;
+      }
+
+      await storage.updateMcpServer(server.id, {
+        status: "running",
+        lastHeartbeat: new Date(),
+        capabilities,
+        version: results.serverInfo?.serverInfo?.version || server.version,
+      } as any);
+
+      res.json({ success: true, ...results });
+    } catch (err: any) {
+      await storage.updateMcpServer(server.id, { status: "error" } as any);
+      results.error = err.message;
+      res.json({ success: false, ...results });
+    }
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers/test-connection", async (req, res) => {
+    const { url, apiKey } = req.body;
+    if (!url) return res.status(400).json({ error: "URL is required" });
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    try {
+      const start = Date.now();
+
+      const initResp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "initialize",
+          params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "reveille-cloud", version: "1.0.0" } },
+        }),
+      });
+      const initData = await initResp.json() as any;
+
+      const toolsResp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+      });
+      const toolsData = await toolsResp.json() as any;
+      const tools = toolsData.result?.tools || [];
+      const latencyMs = Date.now() - start;
+
+      res.json({
+        success: true,
+        tools,
+        serverInfo: initData.result || null,
+        latencyMs,
+      });
+    } catch (err: any) {
+      res.json({ success: false, error: err.message, tools: [], serverInfo: null, latencyMs: 0 });
+    }
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers/:serverId/call-tool", async (req, res) => {
+    const server = await getMcpServerForTenant(req.params.serverId, req.params.tenantId);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server.url) return res.status(400).json({ error: "Server has no URL configured" });
+
+    const { toolName, arguments: toolArgs } = req.body;
+    if (!toolName) return res.status(400).json({ error: "toolName is required" });
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (server.apiKey) headers["Authorization"] = `Bearer ${server.apiKey}`;
+
+    const start = Date.now();
+    try {
+      const resp = await fetch(server.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "tools/call",
+          params: { name: toolName, arguments: toolArgs || {} },
+        }),
+      });
+      const data = await resp.json() as any;
+      const durationMs = Date.now() - start;
+
+      await storage.createMcpToolCall({
+        serverId: server.id,
+        tenantId: server.tenantId,
+        method: "tools/call",
+        toolName,
+        params: { name: toolName, arguments: toolArgs || {} },
+        result: data.result || null,
+        errorCode: data.error?.code || null,
+        errorMessage: data.error?.message || null,
+        durationMs,
+        status: data.error ? "error" : "success",
+        calledAt: new Date(),
+      });
+
+      res.json({ success: !data.error, result: data.result, error: data.error, durationMs });
+    } catch (err: any) {
+      const durationMs = Date.now() - start;
+      await storage.createMcpToolCall({
+        serverId: server.id,
+        tenantId: server.tenantId,
+        method: "tools/call",
+        toolName,
+        params: { name: toolName, arguments: toolArgs || {} },
+        errorMessage: err.message,
+        durationMs,
+        status: "error",
+        calledAt: new Date(),
+      });
+      res.json({ success: false, error: { message: err.message }, durationMs });
+    }
   });
 
   app.post("/api/tenants/:tenantId/mcp-servers/seed-demo", async (req, res) => {

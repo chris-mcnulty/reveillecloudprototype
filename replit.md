@@ -53,6 +53,8 @@ shared/
 - **agentTraces**: End-to-end agent invocation traces (Copilot, GPT, Agentforce) with status, duration, error summary
 - **agentTraceSpans**: Individual spans within an agent trace (auth, content, mcp, license, api, inference)
 - **copilotInteractions**: Microsoft 365 Copilot interaction history (prompts/responses) collected via Graph API. Unique on interactionId, grouped by requestId (prompt↔response pair) and sessionId (conversation thread).
+- **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
+- **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
 
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
@@ -93,6 +95,19 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/copilot-interactions/stats` (interaction stats: total, users, sessions, app breakdown)
 - `GET /tenants/:tenantId/copilot-interactions/sessions/:sessionId` (full conversation thread)
 - `GET /tenants/:tenantId/copilot-interactions/pairs/:requestId` (prompt↔response pair)
+- `GET /tenants/:tenantId/mcp-servers` (list registered MCP servers)
+- `POST /tenants/:tenantId/mcp-servers` (register new MCP server)
+- `GET /tenants/:tenantId/mcp-servers/stats` (aggregate MCP stats)
+- `GET /tenants/:tenantId/mcp-servers/:serverId` (server details + health)
+- `PATCH /tenants/:tenantId/mcp-servers/:serverId` (update server config)
+- `DELETE /tenants/:tenantId/mcp-servers/:serverId` (remove server)
+- `POST /tenants/:tenantId/mcp-servers/:serverId/probe` (discover tools from live server)
+- `POST /tenants/:tenantId/mcp-servers/:serverId/call-tool` (execute a tool and log result)
+- `POST /tenants/:tenantId/mcp-servers/:serverId/heartbeat` (update heartbeat/status)
+- `POST /tenants/:tenantId/mcp-servers/:serverId/tool-calls` (log a tool call)
+- `GET /tenants/:tenantId/mcp-servers/:serverId/tool-calls` (list tool calls with filters)
+- `POST /tenants/:tenantId/mcp-servers/test-connection` (test URL + auth before registering)
+- `POST /tenants/:tenantId/mcp-servers/seed-demo` (seed demo MCP servers + tool calls)
 - `POST /scheduler/reset/:jobType`, `POST /scheduler/reset-all` (reset stuck jobs)
 - `POST /scheduler/cancel/:jobType` (cancel running job)
 - `GET /scheduler/job-runs?jobType=&tenantId=&limit=` (persisted job run history)
