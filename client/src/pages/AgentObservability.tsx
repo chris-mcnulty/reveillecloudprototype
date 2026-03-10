@@ -1161,6 +1161,428 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   );
 }
 
+interface McpServerData {
+  id: string;
+  name: string;
+  description: string | null;
+  transportType: string;
+  command: string | null;
+  args: string[] | null;
+  url: string | null;
+  status: string;
+  lastHeartbeat: string | null;
+  uptime: number | null;
+  restartCount: number | null;
+  version: string | null;
+  capabilities: { tools?: string[]; resources?: string[]; prompts?: string[] } | null;
+  metadata: Record<string, any> | null;
+  registeredAt: string;
+}
+
+interface McpToolCallData {
+  id: string;
+  serverId: string;
+  sessionId: string | null;
+  method: string;
+  toolName: string | null;
+  params: Record<string, any> | null;
+  result: Record<string, any> | null;
+  errorCode: number | null;
+  errorMessage: string | null;
+  durationMs: number | null;
+  status: string;
+  calledAt: string;
+}
+
+interface McpStats {
+  totalServers: number;
+  runningCount: number;
+  totalToolCalls: number;
+  errorRate: number;
+  avgLatency: number;
+  toolBreakdown: Record<string, number>;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+}
+
+function formatRelativeTime(dateStr: string | null): string {
+  if (!dateStr) return "Never";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  if (diff < 60000) return "Just now";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+function McpServersTab({ tenantId }: { tenantId: string | null }) {
+  const queryClient = useQueryClient();
+  const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [toolCallFilter, setToolCallFilter] = useState<string>("all");
+
+  const { data: stats } = useQuery<McpStats>({
+    queryKey: ["/api/mcp-servers/stats", tenantId],
+    queryFn: async () => {
+      if (!tenantId) return { totalServers: 0, runningCount: 0, totalToolCalls: 0, errorRate: 0, avgLatency: 0, toolBreakdown: {} };
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers/stats`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: !!tenantId,
+    refetchInterval: 30000,
+  });
+
+  const { data: servers = [] } = useQuery<McpServerData[]>({
+    queryKey: ["/api/mcp-servers", tenantId],
+    queryFn: async () => {
+      if (!tenantId) return [];
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: !!tenantId,
+    refetchInterval: 15000,
+  });
+
+  const { data: toolCalls = [] } = useQuery<McpToolCallData[]>({
+    queryKey: ["/api/mcp-servers/tool-calls", tenantId, expandedServer, toolCallFilter],
+    queryFn: async () => {
+      if (!tenantId || !expandedServer) return [];
+      const params = new URLSearchParams();
+      if (toolCallFilter !== "all") params.set("status", toolCallFilter);
+      params.set("limit", "30");
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers/${expandedServer}/tool-calls?${params}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: !!tenantId && !!expandedServer,
+    refetchInterval: 15000,
+  });
+
+  const seedMcpMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenantId) return;
+      const res = await fetch(`/api/tenants/${tenantId}/mcp-servers/seed-demo`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers/stats"] });
+    },
+  });
+
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+
+  if (!tenantId) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+          <Cpu className="h-12 w-12 text-muted-foreground mb-4" />
+          <h3 className="text-lg font-semibold mb-2">Select a Tenant</h3>
+          <p className="text-sm text-muted-foreground">Choose a tenant to view MCP server observability.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (servers.length === 0 && !stats?.totalServers) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+          <Cpu className="h-12 w-12 text-muted-foreground mb-4" />
+          <h3 className="text-lg font-semibold mb-2" data-testid="text-mcp-empty">No MCP Servers Registered</h3>
+          <p className="text-sm text-muted-foreground mb-4 max-w-md">
+            Register MCP servers via the API to start monitoring, or seed demo data to preview the experience.
+          </p>
+          <Button
+            onClick={() => seedMcpMutation.mutate()}
+            disabled={seedMcpMutation.isPending}
+            data-testid="button-seed-mcp-empty"
+          >
+            {seedMcpMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
+            Seed Demo Data
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const transportBadge = (type: string) => {
+    const colors: Record<string, string> = {
+      stdio: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+      sse: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
+      "streamable-http": "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
+    };
+    return <Badge className={`text-xs ${colors[type] || ""}`} data-testid={`badge-transport-${type}`}>{type}</Badge>;
+  };
+
+  const statusIndicator = (status: string) => {
+    if (status === "running") return <span className="flex h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" data-testid="status-running" />;
+    if (status === "error") return <span className="flex h-2.5 w-2.5 rounded-full bg-red-500" data-testid="status-error" />;
+    if (status === "stopped") return <span className="flex h-2.5 w-2.5 rounded-full bg-gray-400" data-testid="status-stopped" />;
+    return <span className="flex h-2.5 w-2.5 rounded-full bg-yellow-400" data-testid="status-unknown" />;
+  };
+
+  return (
+    <div className="space-y-6 mt-4">
+      <div className="flex items-center justify-between">
+        <div />
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => seedMcpMutation.mutate()}
+          disabled={seedMcpMutation.isPending}
+          data-testid="button-seed-mcp"
+        >
+          {seedMcpMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
+          Seed Demo Data
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <Card data-testid="card-mcp-total-servers">
+          <CardContent className="p-4">
+            <div className="text-xs text-muted-foreground">Total Servers</div>
+            <div className="text-2xl font-bold" data-testid="text-mcp-total-servers">{stats?.totalServers || 0}</div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-mcp-running">
+          <CardContent className="p-4">
+            <div className="text-xs text-muted-foreground">Running</div>
+            <div className="text-2xl font-bold text-green-600" data-testid="text-mcp-running">{stats?.runningCount || 0}</div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-mcp-tool-calls">
+          <CardContent className="p-4">
+            <div className="text-xs text-muted-foreground">Total Tool Calls</div>
+            <div className="text-2xl font-bold" data-testid="text-mcp-tool-calls">{stats?.totalToolCalls || 0}</div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-mcp-error-rate">
+          <CardContent className="p-4">
+            <div className="text-xs text-muted-foreground">Error Rate</div>
+            <div className="text-2xl font-bold" data-testid="text-mcp-error-rate">
+              {stats?.errorRate !== undefined ? `${stats.errorRate.toFixed(1)}%` : "0%"}
+            </div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-mcp-avg-latency">
+          <CardContent className="p-4">
+            <div className="text-xs text-muted-foreground">Avg Latency</div>
+            <div className="text-2xl font-bold" data-testid="text-mcp-avg-latency">
+              {stats?.avgLatency ? `${Math.round(stats.avgLatency)}ms` : "—"}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {servers.map((server) => {
+          const isExpanded = expandedServer === server.id;
+          const tools = server.capabilities?.tools || [];
+          const resources = server.capabilities?.resources || [];
+          const prompts = server.capabilities?.prompts || [];
+
+          return (
+            <Card
+              key={server.id}
+              className={`cursor-pointer transition-all ${isExpanded ? "ring-2 ring-primary col-span-1 md:col-span-2" : "hover:shadow-md"}`}
+              onClick={() => {
+                setExpandedServer(isExpanded ? null : server.id);
+                setExpandedCallId(null);
+                setToolCallFilter("all");
+              }}
+              data-testid={`card-mcp-server-${server.id}`}
+            >
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    {statusIndicator(server.status)}
+                    <h4 className="font-semibold text-sm" data-testid={`text-mcp-name-${server.id}`}>{server.name}</h4>
+                    {transportBadge(server.transportType)}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {server.version && <Badge variant="outline" className="text-xs">v{server.version}</Badge>}
+                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  </div>
+                </div>
+
+                {server.description && (
+                  <p className="text-xs text-muted-foreground mb-3">{server.description}</p>
+                )}
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div>
+                    <span className="text-muted-foreground">Status</span>
+                    <div className="font-medium capitalize">{server.status}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Last Heartbeat</span>
+                    <div className="font-medium">{formatRelativeTime(server.lastHeartbeat)}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Uptime</span>
+                    <div className="font-medium">{server.uptime ? formatUptime(server.uptime) : "—"}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Restarts</span>
+                    <div className="font-medium">{server.restartCount || 0}</div>
+                  </div>
+                </div>
+
+                {(tools.length > 0 || resources.length > 0 || prompts.length > 0) && (
+                  <div className="mt-3 pt-3 border-t">
+                    <div className="text-xs text-muted-foreground mb-1.5">Capabilities</div>
+                    <div className="flex flex-wrap gap-1">
+                      {tools.map((t: string) => (
+                        <Badge key={t} variant="secondary" className="text-[10px] px-1.5 py-0">
+                          <Zap className="h-2.5 w-2.5 mr-0.5" />{t}
+                        </Badge>
+                      ))}
+                      {resources.map((r: string) => (
+                        <Badge key={r} variant="outline" className="text-[10px] px-1.5 py-0">
+                          <Globe className="h-2.5 w-2.5 mr-0.5" />{r}
+                        </Badge>
+                      ))}
+                      {prompts.map((p: string) => (
+                        <Badge key={p} variant="outline" className="text-[10px] px-1.5 py-0 border-amber-300">
+                          <MessageSquare className="h-2.5 w-2.5 mr-0.5" />{p}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {isExpanded && (
+                  <div className="mt-4 pt-4 border-t" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between mb-3">
+                      <h5 className="text-sm font-semibold">Recent Tool Calls</h5>
+                      <Select value={toolCallFilter} onValueChange={setToolCallFilter}>
+                        <SelectTrigger className="w-28 h-7 text-xs" data-testid="filter-mcp-tool-status">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All</SelectItem>
+                          <SelectItem value="success">Success</SelectItem>
+                          <SelectItem value="error">Error</SelectItem>
+                          <SelectItem value="timeout">Timeout</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {toolCalls.length === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">No tool calls recorded yet.</p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-xs">Time</TableHead>
+                            <TableHead className="text-xs">Method</TableHead>
+                            <TableHead className="text-xs">Tool</TableHead>
+                            <TableHead className="text-xs">Session</TableHead>
+                            <TableHead className="text-xs">Duration</TableHead>
+                            <TableHead className="text-xs">Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {toolCalls.map((call) => (
+                            <Fragment key={call.id}>
+                              <TableRow
+                                className="cursor-pointer hover:bg-muted/50"
+                                onClick={() => setExpandedCallId(expandedCallId === call.id ? null : call.id)}
+                                data-testid={`row-tool-call-${call.id}`}
+                              >
+                                <TableCell className="text-xs">
+                                  {new Date(call.calledAt).toLocaleTimeString()}
+                                </TableCell>
+                                <TableCell className="text-xs font-mono">{call.method}</TableCell>
+                                <TableCell className="text-xs font-medium">{call.toolName || "—"}</TableCell>
+                                <TableCell className="text-xs font-mono text-muted-foreground">
+                                  {call.sessionId ? call.sessionId.substring(0, 12) : "—"}
+                                </TableCell>
+                                <TableCell className="text-xs">
+                                  {call.durationMs ? `${Math.round(call.durationMs)}ms` : "—"}
+                                </TableCell>
+                                <TableCell>
+                                  {call.status === "success" ? (
+                                    <Badge className="text-[10px] bg-green-100 text-green-800">Success</Badge>
+                                  ) : call.status === "error" ? (
+                                    <Badge className="text-[10px] bg-red-100 text-red-800">Error</Badge>
+                                  ) : (
+                                    <Badge className="text-[10px] bg-yellow-100 text-yellow-800">Timeout</Badge>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                              {expandedCallId === call.id && (
+                                <TableRow>
+                                  <TableCell colSpan={6} className="bg-muted/20 p-3">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                      <div>
+                                        <div className="text-xs font-semibold mb-1">Request Params</div>
+                                        <pre className="text-[10px] bg-background rounded p-2 overflow-auto max-h-40 border">
+                                          {JSON.stringify(call.params, null, 2) || "null"}
+                                        </pre>
+                                      </div>
+                                      <div>
+                                        <div className="text-xs font-semibold mb-1">
+                                          {call.status === "error" ? "Error" : "Response"}
+                                        </div>
+                                        {call.status === "error" ? (
+                                          <div className="text-[10px] bg-red-50 dark:bg-red-950 rounded p-2 border border-red-200">
+                                            <div className="font-mono">Code: {call.errorCode}</div>
+                                            <div>{call.errorMessage}</div>
+                                          </div>
+                                        ) : (
+                                          <pre className="text-[10px] bg-background rounded p-2 overflow-auto max-h-40 border">
+                                            {JSON.stringify(call.result, null, 2) || "null"}
+                                          </pre>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </Fragment>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {stats && Object.keys(stats.toolBreakdown).length > 0 && (
+        <Card data-testid="card-mcp-tool-breakdown">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Tool Usage Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+              {Object.entries(stats.toolBreakdown)
+                .sort(([, a], [, b]) => b - a)
+                .map(([tool, count]) => (
+                  <div key={tool} className="flex items-center justify-between bg-muted/50 rounded px-2.5 py-1.5">
+                    <span className="text-xs font-medium truncate">{tool}</span>
+                    <Badge variant="secondary" className="text-[10px] ml-1.5">{count}</Badge>
+                  </div>
+                ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 export default function AgentObservability() {
   const queryClient = useQueryClient();
   const { activeTenantId } = useActiveTenant();
@@ -1292,10 +1714,18 @@ export default function AgentObservability() {
             <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
             Copilot Interactions
           </TabsTrigger>
+          <TabsTrigger value="mcp" data-testid="tab-mcp-servers">
+            <Cpu className="h-3.5 w-3.5 mr-1.5" />
+            MCP Servers
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="copilot">
           <CopilotInteractionsTab tenantId={activeTenantId} />
+        </TabsContent>
+
+        <TabsContent value="mcp">
+          <McpServersTab tenantId={activeTenantId} />
         </TabsContent>
 
         <TabsContent value="traces" className="space-y-6">

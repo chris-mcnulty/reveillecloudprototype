@@ -19,6 +19,8 @@ import {
   agentTraces, type AgentTrace, type InsertAgentTrace,
   agentTraceSpans, type AgentTraceSpan, type InsertAgentTraceSpan,
   copilotInteractions, type CopilotInteraction, type InsertCopilotInteraction,
+  mcpServers, type McpServer, type InsertMcpServer,
+  mcpToolCalls, type McpToolCall, type InsertMcpToolCall,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -114,6 +116,16 @@ export interface IStorage {
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
   getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
+
+  createMcpServer(data: InsertMcpServer): Promise<McpServer>;
+  updateMcpServer(id: string, data: Partial<InsertMcpServer>): Promise<McpServer | undefined>;
+  getMcpServers(tenantId: string): Promise<McpServer[]>;
+  getMcpServer(id: string): Promise<McpServer | undefined>;
+  deleteMcpServer(id: string): Promise<void>;
+  createMcpToolCall(data: InsertMcpToolCall): Promise<McpToolCall>;
+  getMcpToolCalls(serverId: string, options?: { limit?: number; method?: string; status?: string; sessionId?: string }): Promise<McpToolCall[]>;
+  getMcpServerStats(tenantId: string): Promise<{ totalServers: number; runningCount: number; totalToolCalls: number; errorRate: number; avgLatency: number; toolBreakdown: Record<string, number> }>;
+  getMcpServerHealth(serverId: string): Promise<{ recentCalls: McpToolCall[]; errorRate: number; avgLatency: number; totalCalls: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -166,6 +178,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    const servers = await db.select({ id: mcpServers.id }).from(mcpServers).where(eq(mcpServers.tenantId, id));
+    for (const s of servers) {
+      await db.delete(mcpToolCalls).where(eq(mcpToolCalls.serverId, s.id));
+    }
+    await db.delete(mcpServers).where(eq(mcpServers.tenantId, id));
+    await db.delete(mcpToolCalls).where(eq(mcpToolCalls.tenantId, id));
     await db.delete(copilotInteractions).where(eq(copilotInteractions.tenantId, id));
     const traces = await db.select({ id: agentTraces.id }).from(agentTraces).where(eq(agentTraces.tenantId, id));
     for (const t of traces) {
@@ -804,6 +822,106 @@ export class DatabaseStorage implements IStorage {
     });
 
     return { sessions, total };
+  }
+
+  async createMcpServer(data: InsertMcpServer): Promise<McpServer> {
+    const [server] = await db.insert(mcpServers).values(data).returning();
+    return server;
+  }
+
+  async updateMcpServer(id: string, data: Partial<InsertMcpServer>): Promise<McpServer | undefined> {
+    const [updated] = await db.update(mcpServers).set({ ...data, updatedAt: new Date() }).where(eq(mcpServers.id, id)).returning();
+    return updated;
+  }
+
+  async getMcpServers(tenantId: string): Promise<McpServer[]> {
+    return db.select().from(mcpServers).where(eq(mcpServers.tenantId, tenantId)).orderBy(desc(mcpServers.registeredAt));
+  }
+
+  async getMcpServer(id: string): Promise<McpServer | undefined> {
+    const [server] = await db.select().from(mcpServers).where(eq(mcpServers.id, id));
+    return server;
+  }
+
+  async deleteMcpServer(id: string): Promise<void> {
+    await db.delete(mcpToolCalls).where(eq(mcpToolCalls.serverId, id));
+    await db.delete(mcpServers).where(eq(mcpServers.id, id));
+  }
+
+  async createMcpToolCall(data: InsertMcpToolCall): Promise<McpToolCall> {
+    const [call] = await db.insert(mcpToolCalls).values(data).returning();
+    return call;
+  }
+
+  async getMcpToolCalls(serverId: string, options?: { limit?: number; method?: string; status?: string; sessionId?: string }): Promise<McpToolCall[]> {
+    const conditions = [eq(mcpToolCalls.serverId, serverId)];
+    if (options?.method) conditions.push(eq(mcpToolCalls.method, options.method));
+    if (options?.status) conditions.push(eq(mcpToolCalls.status, options.status));
+    if (options?.sessionId) conditions.push(eq(mcpToolCalls.sessionId, options.sessionId));
+    return db.select().from(mcpToolCalls).where(and(...conditions)).orderBy(desc(mcpToolCalls.calledAt)).limit(options?.limit ?? 50);
+  }
+
+  async getMcpServerStats(tenantId: string): Promise<{ totalServers: number; runningCount: number; totalToolCalls: number; errorRate: number; avgLatency: number; toolBreakdown: Record<string, number> }> {
+    const servers = await this.getMcpServers(tenantId);
+    const totalServers = servers.length;
+    const runningCount = servers.filter(s => s.status === "running").length;
+
+    const serverIds = servers.map(s => s.id);
+    if (serverIds.length === 0) {
+      return { totalServers: 0, runningCount: 0, totalToolCalls: 0, errorRate: 0, avgLatency: 0, toolBreakdown: {} };
+    }
+
+    const statsRows = await db.execute(sql`
+      SELECT
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE status = 'error')::int as errors,
+        COALESCE(AVG(duration_ms), 0)::real as avg_latency
+      FROM mcp_tool_calls
+      WHERE tenant_id = ${tenantId}
+    `);
+    const stats = (statsRows.rows as any[])[0] || { total: 0, errors: 0, avg_latency: 0 };
+
+    const toolRows = await db.execute(sql`
+      SELECT tool_name, COUNT(*)::int as count
+      FROM mcp_tool_calls
+      WHERE tenant_id = ${tenantId} AND tool_name IS NOT NULL
+      GROUP BY tool_name
+      ORDER BY count DESC
+    `);
+    const toolBreakdown: Record<string, number> = {};
+    for (const row of toolRows.rows as any[]) {
+      toolBreakdown[row.tool_name] = row.count;
+    }
+
+    return {
+      totalServers,
+      runningCount,
+      totalToolCalls: Number(stats.total) || 0,
+      errorRate: stats.total > 0 ? (Number(stats.errors) / Number(stats.total)) * 100 : 0,
+      avgLatency: Number(stats.avg_latency) || 0,
+      toolBreakdown,
+    };
+  }
+
+  async getMcpServerHealth(serverId: string): Promise<{ recentCalls: McpToolCall[]; errorRate: number; avgLatency: number; totalCalls: number }> {
+    const recentCalls = await this.getMcpToolCalls(serverId, { limit: 20 });
+
+    const statsRows = await db.execute(sql`
+      SELECT
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE status = 'error')::int as errors,
+        COALESCE(AVG(duration_ms), 0)::real as avg_latency
+      FROM mcp_tool_calls
+      WHERE server_id = ${serverId}
+    `);
+    const stats = (statsRows.rows as any[])[0] || { total: 0, errors: 0, avg_latency: 0 };
+
+    return {
+      recentCalls,
+      errorRate: stats.total > 0 ? (Number(stats.errors) / Number(stats.total)) * 100 : 0,
+      avgLatency: Number(stats.avg_latency) || 0,
+      totalCalls: Number(stats.total) || 0,
+    };
   }
 }
 

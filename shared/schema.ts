@@ -310,3 +310,49 @@ export const copilotInteractions = pgTable("copilot_interactions", {
 export const insertCopilotInteractionSchema = createInsertSchema(copilotInteractions).omit({ id: true, collectedAt: true });
 export type InsertCopilotInteraction = z.infer<typeof insertCopilotInteractionSchema>;
 export type CopilotInteraction = typeof copilotInteractions.$inferSelect;
+
+export const mcpServers = pgTable("mcp_servers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  transportType: text("transport_type").notNull(),
+  command: text("command"),
+  args: jsonb("args").$type<string[]>(),
+  env: jsonb("env").$type<Record<string, string>>(),
+  url: text("url"),
+  status: text("status").notNull().default("unknown"),
+  lastHeartbeat: timestamp("last_heartbeat"),
+  uptime: integer("uptime").default(0),
+  restartCount: integer("restart_count").default(0),
+  version: text("version"),
+  capabilities: jsonb("capabilities").$type<Record<string, any>>(),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+  registeredAt: timestamp("registered_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertMcpServerSchema = createInsertSchema(mcpServers).omit({ id: true, registeredAt: true, updatedAt: true });
+export type InsertMcpServer = z.infer<typeof insertMcpServerSchema>;
+export type McpServer = typeof mcpServers.$inferSelect;
+
+export const mcpToolCalls = pgTable("mcp_tool_calls", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  serverId: varchar("server_id").notNull().references(() => mcpServers.id),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  traceId: varchar("trace_id").references(() => agentTraces.id),
+  sessionId: text("session_id"),
+  method: text("method").notNull(),
+  toolName: text("tool_name"),
+  params: jsonb("params").$type<Record<string, any>>(),
+  result: jsonb("result").$type<Record<string, any>>(),
+  errorCode: integer("error_code"),
+  errorMessage: text("error_message"),
+  durationMs: real("duration_ms"),
+  status: text("status").notNull().default("success"),
+  calledAt: timestamp("called_at").notNull().defaultNow(),
+});
+
+export const insertMcpToolCallSchema = createInsertSchema(mcpToolCalls).omit({ id: true });
+export type InsertMcpToolCall = z.infer<typeof insertMcpToolCallSchema>;
+export type McpToolCall = typeof mcpToolCalls.$inferSelect;

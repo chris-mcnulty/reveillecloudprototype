@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
@@ -851,6 +851,177 @@ export async function registerRoutes(
   app.get("/api/tenants/:tenantId/copilot-interactions/pairs/:requestId", async (req, res) => {
     const interactions = await storage.getCopilotInteractionsByRequestId(req.params.tenantId, req.params.requestId);
     res.json(interactions);
+  });
+
+  app.get("/api/tenants/:tenantId/mcp-servers", async (req, res) => {
+    const servers = await storage.getMcpServers(req.params.tenantId);
+    res.json(servers);
+  });
+
+  app.get("/api/tenants/:tenantId/mcp-servers/stats", async (req, res) => {
+    const stats = await storage.getMcpServerStats(req.params.tenantId);
+    res.json(stats);
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers", async (req, res) => {
+    const parsed = insertMcpServerSchema.safeParse({ ...req.body, tenantId: req.params.tenantId });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const server = await storage.createMcpServer(parsed.data);
+    await logAdminAction(req.params.tenantId, "create", "mcpServer", server.id, { name: server.name });
+    res.status(201).json(server);
+  });
+
+  app.get("/api/tenants/:tenantId/mcp-servers/:serverId", async (req, res) => {
+    const server = await storage.getMcpServer(req.params.serverId);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    const health = await storage.getMcpServerHealth(req.params.serverId);
+    res.json({ ...server, health });
+  });
+
+  app.patch("/api/tenants/:tenantId/mcp-servers/:serverId", async (req, res) => {
+    const server = await storage.updateMcpServer(req.params.serverId, req.body);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    res.json(server);
+  });
+
+  app.delete("/api/tenants/:tenantId/mcp-servers/:serverId", async (req, res) => {
+    await storage.deleteMcpServer(req.params.serverId);
+    await logAdminAction(req.params.tenantId, "delete", "mcpServer", req.params.serverId);
+    res.json({ success: true });
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers/:serverId/tool-calls", async (req, res) => {
+    const parsed = insertMcpToolCallSchema.safeParse({ ...req.body, serverId: req.params.serverId, tenantId: req.params.tenantId });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const call = await storage.createMcpToolCall(parsed.data);
+    res.status(201).json(call);
+  });
+
+  app.get("/api/tenants/:tenantId/mcp-servers/:serverId/tool-calls", async (req, res) => {
+    const { limit, method, status, sessionId } = req.query as any;
+    const calls = await storage.getMcpToolCalls(req.params.serverId, {
+      limit: limit ? parseInt(limit) : undefined,
+      method, status, sessionId,
+    });
+    res.json(calls);
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers/:serverId/heartbeat", async (req, res) => {
+    const server = await storage.updateMcpServer(req.params.serverId, {
+      status: "running",
+      lastHeartbeat: new Date(),
+      ...(req.body.uptime !== undefined ? { uptime: req.body.uptime } : {}),
+      ...(req.body.version ? { version: req.body.version } : {}),
+    } as any);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/tenants/:tenantId/mcp-servers/seed-demo", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const now = new Date();
+
+    const demoServers = [
+      {
+        tenantId,
+        name: "SharePoint Document Search",
+        description: "MCP server providing document search and retrieval tools across SharePoint libraries",
+        transportType: "stdio",
+        command: "node",
+        args: ["dist/mcp-sharepoint.js"],
+        status: "running",
+        lastHeartbeat: new Date(now.getTime() - 30000),
+        uptime: 86400,
+        restartCount: 2,
+        version: "1.4.2",
+        capabilities: { tools: ["search_documents", "get_document", "list_libraries", "get_permissions"], resources: ["sharepoint://sites"], prompts: ["summarize_document"] },
+      },
+      {
+        tenantId,
+        name: "Microsoft Graph API Bridge",
+        description: "Exposes Microsoft Graph API operations as MCP tools for agent consumption",
+        transportType: "sse",
+        url: "http://localhost:3100/sse",
+        status: "running",
+        lastHeartbeat: new Date(now.getTime() - 15000),
+        uptime: 172800,
+        restartCount: 0,
+        version: "2.1.0",
+        capabilities: { tools: ["get_user", "list_users", "send_email", "create_event", "get_teams_channels"], resources: ["graph://users", "graph://groups"], prompts: [] },
+      },
+      {
+        tenantId,
+        name: "Compliance & Audit Logger",
+        description: "MCP server for compliance checking and audit log analysis",
+        transportType: "streamable-http",
+        url: "http://localhost:3200/mcp",
+        status: "error",
+        lastHeartbeat: new Date(now.getTime() - 300000),
+        uptime: 0,
+        restartCount: 5,
+        version: "0.9.1",
+        capabilities: { tools: ["check_compliance", "search_audit_logs", "get_dlp_policies"], resources: [], prompts: ["compliance_report"] },
+      },
+      {
+        tenantId,
+        name: "Teams Notification Hub",
+        description: "Sends notifications and adaptive cards to Microsoft Teams channels",
+        transportType: "stdio",
+        command: "python",
+        args: ["-m", "mcp_teams_notifier"],
+        status: "stopped",
+        lastHeartbeat: new Date(now.getTime() - 7200000),
+        uptime: 0,
+        restartCount: 1,
+        version: "1.0.0",
+        capabilities: { tools: ["send_notification", "send_adaptive_card", "create_channel"], resources: ["teams://channels"], prompts: [] },
+      },
+    ];
+
+    const createdServers: any[] = [];
+    for (const s of demoServers) {
+      const server = await storage.createMcpServer(s as any);
+      createdServers.push(server);
+    }
+
+    const toolNames: Record<string, string[]> = {
+      "SharePoint Document Search": ["search_documents", "get_document", "list_libraries", "get_permissions"],
+      "Microsoft Graph API Bridge": ["get_user", "list_users", "send_email", "create_event", "get_teams_channels"],
+      "Compliance & Audit Logger": ["check_compliance", "search_audit_logs", "get_dlp_policies"],
+      "Teams Notification Hub": ["send_notification", "send_adaptive_card", "create_channel"],
+    };
+
+    const sessions = ["sess-a1b2c3", "sess-d4e5f6", "sess-g7h8i9"];
+
+    for (const server of createdServers) {
+      const tools = toolNames[server.name] || [];
+      const callCount = server.status === "running" ? 25 : server.status === "error" ? 8 : 3;
+      for (let i = 0; i < callCount; i++) {
+        const tool = tools[Math.floor(Math.random() * tools.length)];
+        const isError = server.status === "error" ? Math.random() < 0.4 : Math.random() < 0.05;
+        const duration = isError ? 5000 + Math.random() * 25000 : 50 + Math.random() * 2000;
+        const session = sessions[Math.floor(Math.random() * sessions.length)];
+        const callTime = new Date(now.getTime() - Math.random() * 86400000);
+
+        await storage.createMcpToolCall({
+          serverId: server.id,
+          tenantId,
+          sessionId: session,
+          method: "tools/call",
+          toolName: tool,
+          params: { name: tool, arguments: { query: "demo" } },
+          result: isError ? null : { content: [{ type: "text", text: `Result from ${tool}` }] },
+          errorCode: isError ? (Math.random() < 0.5 ? -32603 : -32000) : null,
+          errorMessage: isError ? (Math.random() < 0.5 ? "Internal server error" : "Connection timeout to upstream service") : null,
+          durationMs: Math.round(duration),
+          status: isError ? "error" : "success",
+          calledAt: callTime,
+        });
+      }
+    }
+
+    await logAdminAction(tenantId, "seed_demo", "mcpServers", null, { serverCount: createdServers.length });
+    res.json({ servers: createdServers.length, message: "Demo MCP servers and tool calls seeded" });
   });
 
   return httpServer;
