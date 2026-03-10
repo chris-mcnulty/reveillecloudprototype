@@ -53,6 +53,7 @@ shared/
 - **agentTraces**: End-to-end agent invocation traces (Copilot, GPT, Agentforce) with status, duration, error summary
 - **agentTraceSpans**: Individual spans within an agent trace (auth, content, mcp, license, api, inference)
 - **copilotInteractions**: Microsoft 365 Copilot interaction history (prompts/responses) collected via Graph API. Unique on interactionId, grouped by requestId (prompt↔response pair) and sessionId (conversation thread).
+- **entraSignIns**: Microsoft Entra ID sign-in records (per-tenant). Structured columns for user, app, location (geo), status, risk level, conditional access, MFA, device info. Collected from Graph API `/auditLogs/signIns`.
 - **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
 - **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
 
@@ -95,6 +96,11 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/copilot-interactions/stats` (interaction stats: total, users, sessions, app breakdown)
 - `GET /tenants/:tenantId/copilot-interactions/sessions/:sessionId` (full conversation thread)
 - `GET /tenants/:tenantId/copilot-interactions/pairs/:requestId` (prompt↔response pair)
+- `GET /tenants/:tenantId/entra-signins` (list sign-in records with filters: userId, appName, status, riskLevel, since, limit)
+- `GET /tenants/:tenantId/entra-signins/stats` (aggregate stats: totals, MFA rate, risk, top apps, top locations, hourly trend)
+- `GET /tenants/:tenantId/entra-signins/users` (per-user breakdown: login count, failures, risk events)
+- `POST /tenants/:tenantId/entra-signins/collect` (trigger Graph API collection)
+- `POST /tenants/:tenantId/entra-signins/seed-demo` (seed 150 demo sign-in records)
 - `GET /tenants/:tenantId/mcp-servers` (list registered MCP servers)
 - `POST /tenants/:tenantId/mcp-servers` (register new MCP server)
 - `GET /tenants/:tenantId/mcp-servers/stats` (aggregate MCP stats)

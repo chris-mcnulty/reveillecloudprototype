@@ -12,6 +12,7 @@ import {
   ScrollText,
   Layers,
   ScanSearch,
+  Fingerprint,
 } from "lucide-react";
 import {
   Tooltip,
@@ -40,6 +41,7 @@ export function Sidebar() {
     { href: "/audit-log", icon: ScrollText, label: "Audit & Compliance" },
     { href: "/power-platform", icon: Layers, label: "Power Platform" },
     { href: "/agent-observability", icon: ScanSearch, label: "Agent Observability" },
+    { href: "/entra-signins", icon: Fingerprint, label: "Entra Sign-Ins" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
     ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },

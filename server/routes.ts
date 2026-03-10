@@ -1,9 +1,10 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerEntraSignInsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
 
 async function logAdminAction(
@@ -300,6 +301,9 @@ export async function registerRoutes(
         break;
       case "copilotInteractions":
         await triggerCopilotInteractionsNow();
+        break;
+      case "entraSignIns":
+        await triggerEntraSignInsNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -1201,6 +1205,138 @@ export async function registerRoutes(
 
     await logAdminAction(tenantId, "seed_demo", "mcpServers", null, { serverCount: createdServers.length });
     res.json({ servers: createdServers.length, message: "Demo MCP servers and tool calls seeded" });
+  });
+
+  app.get("/api/tenants/:tenantId/entra-signins", async (req, res) => {
+    const { limit, userId, appName, status, riskLevel, since } = req.query as any;
+    const signIns = await storage.getEntraSignIns(req.params.tenantId, {
+      limit: limit ? parseInt(limit) : undefined,
+      userId, appName, status, riskLevel, since,
+    });
+    res.json(signIns);
+  });
+
+  app.get("/api/tenants/:tenantId/entra-signins/stats", async (req, res) => {
+    const stats = await storage.getEntraSignInStats(req.params.tenantId);
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/entra-signins/users", async (req, res) => {
+    const users = await storage.getEntraSignInUserBreakdown(req.params.tenantId);
+    res.json(users);
+  });
+
+  app.post("/api/tenants/:tenantId/entra-signins/collect", async (req, res) => {
+    try {
+      const result = await collectEntraSignIns(req.params.tenantId);
+      await logAdminAction(req.params.tenantId, "collect", "entraSignIns", null, { signInsCollected: result.signInsCollected });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/tenants/:tenantId/entra-signins/seed-demo", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const now = new Date();
+
+    const users = [
+      { id: "u1-alex", upn: "alex.johnson@contoso.com", name: "Alex Johnson" },
+      { id: "u2-sarah", upn: "sarah.chen@contoso.com", name: "Sarah Chen" },
+      { id: "u3-mike", upn: "mike.wilson@contoso.com", name: "Mike Wilson" },
+      { id: "u4-emma", upn: "emma.davis@contoso.com", name: "Emma Davis" },
+      { id: "u5-carlos", upn: "carlos.garcia@contoso.com", name: "Carlos Garcia" },
+      { id: "u6-priya", upn: "priya.patel@contoso.com", name: "Priya Patel" },
+      { id: "u7-external", upn: "vendor@external.com", name: "External Vendor" },
+    ];
+
+    const apps = [
+      "Microsoft Teams", "SharePoint Online", "Outlook", "Microsoft 365 Portal",
+      "Azure Portal", "Power BI", "OneDrive", "Microsoft Copilot",
+    ];
+
+    const locations = [
+      { city: "Seattle", state: "WA", country: "US", lat: 47.6062, lng: -122.3321 },
+      { city: "New York", state: "NY", country: "US", lat: 40.7128, lng: -74.0060 },
+      { city: "London", state: "England", country: "GB", lat: 51.5074, lng: -0.1278 },
+      { city: "Tokyo", state: "Tokyo", country: "JP", lat: 35.6762, lng: 139.6503 },
+      { city: "Sydney", state: "NSW", country: "AU", lat: -33.8688, lng: 151.2093 },
+      { city: null, state: null, country: null, lat: null, lng: null },
+    ];
+
+    const browsers = ["Chrome 120", "Edge 119", "Safari 17", "Firefox 121", "Mobile Safari", "Chrome Mobile"];
+    const oses = ["Windows 11", "macOS 14", "iOS 17", "Android 14", "Windows 10", "Linux"];
+    const clientApps = ["Browser", "Mobile Apps and Desktop clients", "Exchange ActiveSync", "Other clients"];
+
+    let count = 0;
+    for (let i = 0; i < 150; i++) {
+      const user = users[Math.floor(Math.random() * users.length)];
+      const app = apps[Math.floor(Math.random() * apps.length)];
+      const loc = locations[Math.floor(Math.random() * locations.length)];
+      const minutesAgo = Math.floor(Math.random() * 1440);
+      const signInTime = new Date(now.getTime() - minutesAgo * 60 * 1000);
+
+      const isExternalUser = user.id === "u7-external";
+      const failChance = isExternalUser ? 0.4 : 0.08;
+      const isFailed = Math.random() < failChance;
+      const isRisky = isExternalUser ? Math.random() < 0.3 : Math.random() < 0.05;
+
+      let riskLvl = "none";
+      if (isRisky) {
+        const r = Math.random();
+        riskLvl = r < 0.5 ? "low" : r < 0.8 ? "medium" : "high";
+      }
+
+      const errorCodes = [0, 50126, 50074, 53003, 50076, 500121];
+      const errorCode = isFailed ? errorCodes[Math.floor(Math.random() * (errorCodes.length - 1)) + 1] : 0;
+      const failureReasons: Record<number, string> = {
+        50126: "Invalid username or password",
+        50074: "MFA required but not completed",
+        53003: "Blocked by Conditional Access",
+        50076: "MFA challenge required",
+        500121: "Authentication failed during MFA",
+      };
+
+      const mfaRequired = Math.random() < 0.6;
+      const caStatus = isFailed && errorCode === 53003 ? "failure" : (Math.random() < 0.8 ? "success" : "notApplied");
+
+      await storage.upsertEntraSignIn({
+        tenantId,
+        signInId: `demo-signin-${i}-${Date.now()}`,
+        userId: user.id,
+        userPrincipalName: user.upn,
+        userDisplayName: user.name,
+        appDisplayName: app,
+        appId: `app-${app.toLowerCase().replace(/\s+/g, "-")}`,
+        clientAppUsed: clientApps[Math.floor(Math.random() * clientApps.length)],
+        ipAddress: `${10 + Math.floor(Math.random() * 240)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`,
+        city: loc.city,
+        state: loc.state,
+        countryOrRegion: loc.country,
+        latitude: loc.lat,
+        longitude: loc.lng,
+        status: isFailed ? "failure" : "success",
+        errorCode,
+        failureReason: isFailed ? (failureReasons[errorCode] || "Unknown error") : null,
+        riskLevel: riskLvl,
+        riskState: isRisky ? "atRisk" : "none",
+        riskDetail: isRisky ? "Sign-in from unfamiliar location" : null,
+        conditionalAccessStatus: caStatus,
+        mfaRequired,
+        mfaResult: mfaRequired ? (isFailed && errorCode === 50074 ? "denied" : "succeeded") : null,
+        deviceName: Math.random() < 0.5 ? `${user.name.split(" ")[0]}-PC` : null,
+        deviceOS: oses[Math.floor(Math.random() * oses.length)],
+        deviceBrowser: browsers[Math.floor(Math.random() * browsers.length)],
+        isCompliant: Math.random() < 0.7,
+        isManagedDevice: Math.random() < 0.6,
+        isInteractive: Math.random() < 0.85,
+        signInAt: signInTime,
+      });
+      count++;
+    }
+
+    await logAdminAction(tenantId, "seed_demo", "entraSignIns", null, { count });
+    res.json({ count, message: "Demo Entra sign-in data seeded" });
   });
 
   return httpServer;

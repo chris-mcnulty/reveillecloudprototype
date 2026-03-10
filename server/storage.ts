@@ -21,6 +21,7 @@ import {
   copilotInteractions, type CopilotInteraction, type InsertCopilotInteraction,
   mcpServers, type McpServer, type InsertMcpServer,
   mcpToolCalls, type McpToolCall, type InsertMcpToolCall,
+  entraSignIns, type EntraSignIn, type InsertEntraSignIn,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -126,6 +127,19 @@ export interface IStorage {
   getMcpToolCalls(serverId: string, options?: { limit?: number; method?: string; status?: string; sessionId?: string }): Promise<McpToolCall[]>;
   getMcpServerStats(tenantId: string): Promise<{ totalServers: number; runningCount: number; totalToolCalls: number; errorRate: number; avgLatency: number; toolBreakdown: Record<string, number> }>;
   getMcpServerHealth(serverId: string): Promise<{ recentCalls: McpToolCall[]; errorRate: number; avgLatency: number; totalCalls: number }>;
+
+  upsertEntraSignIn(data: InsertEntraSignIn): Promise<EntraSignIn>;
+  getEntraSignIns(tenantId: string, options?: { limit?: number; userId?: string; appName?: string; status?: string; riskLevel?: string; since?: string }): Promise<EntraSignIn[]>;
+  getEntraSignInStats(tenantId: string): Promise<{
+    totalSignIns: number; uniqueUsers: number; failureCount: number; mfaRate: number; riskySignIns: number;
+    topApps: { app: string; count: number }[];
+    topLocations: { location: string; count: number }[];
+    trend: { hour: string; success: number; failure: number }[];
+  }>;
+  getEntraSignInUserBreakdown(tenantId: string): Promise<{
+    userId: string; userPrincipalName: string; userDisplayName: string | null;
+    loginCount: number; lastLogin: Date | null; failureCount: number; riskEvents: number;
+  }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -184,6 +198,7 @@ export class DatabaseStorage implements IStorage {
     }
     await db.delete(mcpServers).where(eq(mcpServers.tenantId, id));
     await db.delete(mcpToolCalls).where(eq(mcpToolCalls.tenantId, id));
+    await db.delete(entraSignIns).where(eq(entraSignIns.tenantId, id));
     await db.delete(copilotInteractions).where(eq(copilotInteractions.tenantId, id));
     const traces = await db.select({ id: agentTraces.id }).from(agentTraces).where(eq(agentTraces.tenantId, id));
     for (const t of traces) {
@@ -922,6 +937,119 @@ export class DatabaseStorage implements IStorage {
       avgLatency: Number(stats.avg_latency) || 0,
       totalCalls: Number(stats.total) || 0,
     };
+  }
+
+  async upsertEntraSignIn(data: InsertEntraSignIn): Promise<EntraSignIn> {
+    const [result] = await db.insert(entraSignIns).values(data)
+      .onConflictDoUpdate({
+        target: [entraSignIns.tenantId, entraSignIns.signInId],
+        set: {
+          status: data.status,
+          errorCode: data.errorCode,
+          failureReason: data.failureReason,
+          riskLevel: data.riskLevel,
+          riskState: data.riskState,
+          riskDetail: data.riskDetail,
+          conditionalAccessStatus: data.conditionalAccessStatus,
+          mfaRequired: data.mfaRequired,
+          mfaResult: data.mfaResult,
+          collectedAt: new Date(),
+        },
+      })
+      .returning();
+    return result;
+  }
+
+  async getEntraSignIns(tenantId: string, options?: { limit?: number; userId?: string; appName?: string; status?: string; riskLevel?: string; since?: string }): Promise<EntraSignIn[]> {
+    const conditions = [eq(entraSignIns.tenantId, tenantId)];
+    if (options?.userId) conditions.push(eq(entraSignIns.userId, options.userId));
+    if (options?.appName) conditions.push(eq(entraSignIns.appDisplayName, options.appName));
+    if (options?.status) conditions.push(eq(entraSignIns.status, options.status));
+    if (options?.riskLevel) conditions.push(eq(entraSignIns.riskLevel, options.riskLevel));
+    if (options?.since) conditions.push(gte(entraSignIns.signInAt, new Date(options.since)));
+    return db.select().from(entraSignIns)
+      .where(and(...conditions))
+      .orderBy(desc(entraSignIns.signInAt))
+      .limit(options?.limit || 200);
+  }
+
+  async getEntraSignInStats(tenantId: string): Promise<{
+    totalSignIns: number; uniqueUsers: number; failureCount: number; mfaRate: number; riskySignIns: number;
+    topApps: { app: string; count: number }[];
+    topLocations: { location: string; count: number }[];
+    trend: { hour: string; success: number; failure: number }[];
+  }> {
+    const summaryRows = await db.execute(sql`
+      SELECT
+        COUNT(*)::int as total,
+        COUNT(DISTINCT user_id) as unique_users,
+        COUNT(*) FILTER (WHERE status = 'failure')::int as failures,
+        COUNT(*) FILTER (WHERE mfa_required = true)::int as mfa_count,
+        COUNT(*) FILTER (WHERE risk_level IN ('low','medium','high'))::int as risky
+      FROM entra_sign_ins WHERE tenant_id = ${tenantId}
+    `);
+    const s = (summaryRows.rows as any[])[0] || { total: 0, unique_users: 0, failures: 0, mfa_count: 0, risky: 0 };
+
+    const appRows = await db.execute(sql`
+      SELECT app_display_name as app, COUNT(*)::int as count
+      FROM entra_sign_ins WHERE tenant_id = ${tenantId} AND app_display_name IS NOT NULL
+      GROUP BY app_display_name ORDER BY count DESC LIMIT 10
+    `);
+
+    const locRows = await db.execute(sql`
+      SELECT COALESCE(city, 'Unknown') || ', ' || COALESCE(country_or_region, 'Unknown') as location, COUNT(*)::int as count
+      FROM entra_sign_ins WHERE tenant_id = ${tenantId}
+      GROUP BY city, country_or_region ORDER BY count DESC LIMIT 10
+    `);
+
+    const trendRows = await db.execute(sql`
+      SELECT
+        date_trunc('hour', sign_in_at) as hour,
+        COUNT(*) FILTER (WHERE status = 'success')::int as success,
+        COUNT(*) FILTER (WHERE status = 'failure')::int as failure
+      FROM entra_sign_ins
+      WHERE tenant_id = ${tenantId} AND sign_in_at >= NOW() - INTERVAL '24 hours'
+      GROUP BY hour ORDER BY hour
+    `);
+
+    return {
+      totalSignIns: Number(s.total) || 0,
+      uniqueUsers: Number(s.unique_users) || 0,
+      failureCount: Number(s.failures) || 0,
+      mfaRate: s.total > 0 ? (Number(s.mfa_count) / Number(s.total)) * 100 : 0,
+      riskySignIns: Number(s.risky) || 0,
+      topApps: (appRows.rows as any[]).map(r => ({ app: r.app, count: Number(r.count) })),
+      topLocations: (locRows.rows as any[]).map(r => ({ location: r.location, count: Number(r.count) })),
+      trend: (trendRows.rows as any[]).map(r => ({ hour: r.hour, success: Number(r.success), failure: Number(r.failure) })),
+    };
+  }
+
+  async getEntraSignInUserBreakdown(tenantId: string): Promise<{
+    userId: string; userPrincipalName: string; userDisplayName: string | null;
+    loginCount: number; lastLogin: Date | null; failureCount: number; riskEvents: number;
+  }[]> {
+    const rows = await db.execute(sql`
+      SELECT
+        user_id,
+        MAX(user_principal_name) as user_principal_name,
+        MAX(user_display_name) as user_display_name,
+        COUNT(*)::int as login_count,
+        MAX(sign_in_at) as last_login,
+        COUNT(*) FILTER (WHERE status = 'failure')::int as failure_count,
+        COUNT(*) FILTER (WHERE risk_level IN ('low','medium','high'))::int as risk_events
+      FROM entra_sign_ins
+      WHERE tenant_id = ${tenantId} AND user_id IS NOT NULL
+      GROUP BY user_id ORDER BY login_count DESC LIMIT 50
+    `);
+    return (rows.rows as any[]).map(r => ({
+      userId: r.user_id,
+      userPrincipalName: r.user_principal_name || '',
+      userDisplayName: r.user_display_name,
+      loginCount: Number(r.login_count),
+      lastLogin: r.last_login ? new Date(r.last_login) : null,
+      failureCount: Number(r.failure_count),
+      riskEvents: Number(r.risk_events),
+    }));
   }
 }
 

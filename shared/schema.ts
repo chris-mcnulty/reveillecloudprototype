@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, real, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, real, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -358,3 +358,44 @@ export const mcpToolCalls = pgTable("mcp_tool_calls", {
 export const insertMcpToolCallSchema = createInsertSchema(mcpToolCalls).omit({ id: true });
 export type InsertMcpToolCall = z.infer<typeof insertMcpToolCallSchema>;
 export type McpToolCall = typeof mcpToolCalls.$inferSelect;
+
+export const entraSignIns = pgTable("entra_sign_ins", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  signInId: text("sign_in_id").notNull(),
+  userId: text("user_id"),
+  userPrincipalName: text("user_principal_name"),
+  userDisplayName: text("user_display_name"),
+  appDisplayName: text("app_display_name"),
+  appId: text("app_id"),
+  clientAppUsed: text("client_app_used"),
+  ipAddress: text("ip_address"),
+  city: text("city"),
+  state: text("state"),
+  countryOrRegion: text("country_or_region"),
+  latitude: real("latitude"),
+  longitude: real("longitude"),
+  status: text("status").notNull().default("success"),
+  errorCode: integer("error_code"),
+  failureReason: text("failure_reason"),
+  riskLevel: text("risk_level").default("none"),
+  riskState: text("risk_state"),
+  riskDetail: text("risk_detail"),
+  conditionalAccessStatus: text("conditional_access_status"),
+  mfaRequired: boolean("mfa_required").default(false),
+  mfaResult: text("mfa_result"),
+  deviceName: text("device_name"),
+  deviceOS: text("device_os"),
+  deviceBrowser: text("device_browser"),
+  isCompliant: boolean("is_compliant"),
+  isManagedDevice: boolean("is_managed_device"),
+  isInteractive: boolean("is_interactive").default(true),
+  signInAt: timestamp("sign_in_at").notNull(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("entra_sign_ins_tenant_signin_idx").on(table.tenantId, table.signInId),
+]);
+
+export const insertEntraSignInSchema = createInsertSchema(entraSignIns).omit({ id: true, collectedAt: true });
+export type InsertEntraSignIn = z.infer<typeof insertEntraSignInSchema>;
+export type EntraSignIn = typeof entraSignIns.$inferSelect;
