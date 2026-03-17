@@ -7,6 +7,7 @@ import { collectSiteStructure } from "./collectors/siteStructure";
 import { collectPowerPlatformTelemetry } from "./collectors/powerPlatform";
 import { collectCopilotInteractions } from "./collectors/copilotInteractions";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
+import { collectSpeData } from "./collectors/spEmbedded";
 import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -27,6 +28,7 @@ const jobStatus: Record<string, JobStatus> = {
   powerPlatform: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   copilotInteractions: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   entraSignIns: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  speData: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -597,6 +599,57 @@ async function runEntraSignInsJob(): Promise<void> {
   }
 }
 
+async function runSpeDataJob(): Promise<void> {
+  if (jobStatus.speData.isRunning) {
+    console.log("[Scheduler] SPE data already running, skipping...");
+    return;
+  }
+
+  if (!isAzureAppConfigured()) {
+    console.log("[Scheduler] Azure app not configured, skipping SPE data");
+    return;
+  }
+
+  jobStatus.speData.isRunning = true;
+  console.log("[Scheduler] Starting SPE data collection...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+
+    for (const tenant of consentedTenants) {
+      if (!tenant.azureTenantId) continue;
+
+      const jobRunId = await trackJobStart("speData", tenant.id, undefined, `SPE data for ${tenant.name}`);
+      jobStatus.speData.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectSpeData(tenant.id);
+        const hasErrors = result.errors.length > 0;
+        await trackJobComplete(jobRunId, "completed", {
+          containersCollected: result.containersCollected,
+          accessEventsCollected: result.accessEventsCollected,
+          securityEventsCollected: result.securityEventsCollected,
+          contentTypeStatsCollected: result.contentTypeStatsCollected,
+          errors: result.errors,
+        }, hasErrors ? result.errors.join("; ") : undefined);
+        console.log(`[Scheduler] SPE data for ${tenant.name}: ${result.containersCollected} containers`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] SPE data failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] SPE data job failed:", error);
+  } finally {
+    jobStatus.speData.isRunning = false;
+    jobStatus.speData.activeJobRunId = null;
+    jobStatus.speData.lastRun = new Date();
+  }
+}
+
 let syntheticTestInterval: NodeJS.Timeout | null = null;
 let graphReportsInterval: NodeJS.Timeout | null = null;
 let serviceHealthInterval: NodeJS.Timeout | null = null;
@@ -605,6 +658,7 @@ let siteStructureInterval: NodeJS.Timeout | null = null;
 let powerPlatformInterval: NodeJS.Timeout | null = null;
 let copilotInteractionsInterval: NodeJS.Timeout | null = null;
 let entraSignInsInterval: NodeJS.Timeout | null = null;
+let speDataInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 export function startScheduler(): void {
@@ -618,6 +672,7 @@ export function startScheduler(): void {
   if (powerPlatformInterval) clearInterval(powerPlatformInterval);
   if (copilotInteractionsInterval) clearInterval(copilotInteractionsInterval);
   if (entraSignInsInterval) clearInterval(entraSignInsInterval);
+  if (speDataInterval) clearInterval(speDataInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -650,6 +705,10 @@ export function startScheduler(): void {
 
   entraSignInsInterval = setInterval(() => {
     runEntraSignInsJob();
+  }, 30 * 60 * 1000);
+
+  speDataInterval = setInterval(() => {
+    runSpeDataJob();
   }, 30 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
@@ -702,6 +761,11 @@ export function startScheduler(): void {
     runEntraSignInsJob();
   }, 75 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial SPE data collection...");
+    runSpeDataJob();
+  }, 85 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -711,6 +775,7 @@ export function startScheduler(): void {
   console.log("  - Power Platform: every 30m (initial in 55s)");
   console.log("  - Copilot interactions: every 1h (initial in 65s)");
   console.log("  - Entra sign-ins: every 30m (initial in 75s)");
+  console.log("  - SPE data: every 30m (initial in 85s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -723,6 +788,7 @@ export function stopScheduler(): void {
   if (powerPlatformInterval) { clearInterval(powerPlatformInterval); powerPlatformInterval = null; }
   if (copilotInteractionsInterval) { clearInterval(copilotInteractionsInterval); copilotInteractionsInterval = null; }
   if (entraSignInsInterval) { clearInterval(entraSignInsInterval); entraSignInsInterval = null; }
+  if (speDataInterval) { clearInterval(speDataInterval); speDataInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -770,6 +836,10 @@ export async function triggerCopilotInteractionsNow(): Promise<void> {
 
 export async function triggerEntraSignInsNow(): Promise<void> {
   runEntraSignInsJob();
+}
+
+export async function triggerSpeDataNow(): Promise<void> {
+  runSpeDataJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

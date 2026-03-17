@@ -1,15 +1,16 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
   HardDrive, Box, Shield, FileText, Activity,
-  AlertTriangle, CheckCircle2, XCircle, Database,
+  AlertTriangle, CheckCircle2, XCircle, Database, RefreshCw,
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import {
@@ -41,6 +42,14 @@ function formatTimeAgo(date: string | Date | null): string {
 export default function SpEmbedded() {
   const { activeTenantId } = useActiveTenant();
   const [activeTab, setActiveTab] = useState("overview");
+  const queryClient = useQueryClient();
+
+  const collectMutation = useMutation({
+    mutationFn: () => fetch(`/api/tenants/${activeTenantId}/spe/collect`, { method: "POST" }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tenants", activeTenantId, "spe"] });
+    },
+  });
 
   const { data: stats } = useQuery({
     queryKey: ["/api/tenants", activeTenantId, "spe", "stats"],
@@ -82,6 +91,18 @@ export default function SpEmbedded() {
   return (
     <Shell title="SharePoint Embedded">
       <div className="space-y-6">
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => collectMutation.mutate()}
+            disabled={collectMutation.isPending}
+            data-testid="button-collect-spe"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${collectMutation.isPending ? "animate-spin" : ""}`} />
+            {collectMutation.isPending ? "Collecting..." : "Collect Now"}
+          </Button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">

@@ -3,8 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerEntraSignInsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerEntraSignInsNow, triggerSpeDataNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
+import { collectSpeData } from "./collectors/spEmbedded";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
 
 async function logAdminAction(
@@ -304,6 +305,9 @@ export async function registerRoutes(
         break;
       case "entraSignIns":
         await triggerEntraSignInsNow();
+        break;
+      case "speData":
+        await triggerSpeDataNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -1337,6 +1341,20 @@ export async function registerRoutes(
 
     await logAdminAction(tenantId, "seed_demo", "entraSignIns", null, { count });
     res.json({ count, message: "Demo Entra sign-in data seeded" });
+  });
+
+  app.post("/api/tenants/:tenantId/spe/collect", async (req, res) => {
+    try {
+      const result = await collectSpeData(req.params.tenantId);
+      await logAdminAction(req.params.tenantId, "collect", "speData", null, {
+        containersCollected: result.containersCollected,
+        accessEventsCollected: result.accessEventsCollected,
+        securityEventsCollected: result.securityEventsCollected,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.get("/api/tenants/:tenantId/spe/containers", async (req, res) => {
