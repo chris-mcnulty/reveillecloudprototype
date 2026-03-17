@@ -1,4 +1,4 @@
-import { getAzureGraphClient, isAzureAppConfigured, getManagementApiToken } from "../azureAuth";
+import { getAzureGraphClient, isAzureAppConfigured, getManagementApiToken, getClientCredentialsToken } from "../azureAuth";
 import { storage } from "../storage";
 
 interface SpeCollectionResult {
@@ -54,8 +54,9 @@ export async function collectSpeData(tenantId: string): Promise<SpeCollectionRes
     return result;
   }
 
-  let graphClient: any;
+  const tenantName = tenant.name || tenantId;
 
+  let graphClient: any;
   try {
     graphClient = await getAzureGraphClient(tenant.azureTenantId);
   } catch (err: any) {
@@ -63,147 +64,80 @@ export async function collectSpeData(tenantId: string): Promise<SpeCollectionRes
     return result;
   }
 
-  await collectContainersViaGraph(graphClient, tenantId, tenant.name || tenantId, result);
+  await collectContainersViaGraphApi(graphClient, tenantId, tenantName, result);
 
-  await discoverContainersViaSites(graphClient, tenantId, tenant.name || tenantId, result);
+  await collectSpeAuditEvents(tenant.azureTenantId, tenantId, tenantName, result);
 
-  await collectSpeAuditEvents(tenant.azureTenantId, tenantId, tenant.name || tenantId, result);
-
-  await discoverContainersFromAccessEvents(tenantId, tenant.name || tenantId, result);
+  await discoverContainersFromAccessEvents(tenantId, tenantName, result);
 
   return result;
 }
 
-async function collectContainersViaGraph(
-  graphClient: any,
-  tenantId: string,
-  tenantName: string,
-  result: SpeCollectionResult
-): Promise<void> {
-  const approaches = [
-    {
-      name: "beta /storage/fileStorage/containers",
-      fn: () => graphClient.api("/storage/fileStorage/containers")
-        .version("beta")
-        .get(),
-    },
-    {
-      name: "v1.0 /storage/fileStorage/containers",
-      fn: () => graphClient.api("/storage/fileStorage/containers")
-        .version("v1.0")
-        .get(),
-    },
-  ];
-
-  for (const approach of approaches) {
-    try {
-      console.log(`[SPE] Trying ${approach.name} for ${tenantName}...`);
-      let resp = await approach.fn();
-      let allContainers: any[] = resp?.value || [];
-
-      while (resp["@odata.nextLink"]) {
-        resp = await graphClient.api(resp["@odata.nextLink"]).get();
-        allContainers = allContainers.concat(resp?.value || []);
-      }
-
-      console.log(`[SPE] ${approach.name}: found ${allContainers.length} containers for ${tenantName}`);
-
-      for (const c of allContainers) {
-        try {
-          await storage.upsertSpeContainer({
-            tenantId,
-            containerId: c.id,
-            containerType: c.containerTypeId?.toString() || c.containerTypeName || "unknown",
-            displayName: c.displayName || "Unnamed",
-            description: c.description || null,
-            ownerAppId: c.createdBy?.application?.id || c.ownershipType || null,
-            ownerId: c.createdBy?.user?.id || null,
-            ownerEmail: c.createdBy?.user?.userPrincipalName || c.createdBy?.user?.email || null,
-            siteUrl: c.webUrl || null,
-            storageBytes: c.storageUsedInBytes ?? c.storage?.usedInBytes ?? null,
-            itemCount: c.itemCount ?? null,
-            sensitivityLabel: c.sensitivityLabel?.labelId || null,
-            status: c.status || "active",
-            createdAt: c.createdDateTime ? new Date(c.createdDateTime) : null,
-            collectedAt: new Date(),
-          });
-          result.containersCollected++;
-        } catch (err: any) {
-          result.errors.push(`Container ${c.id}: ${err.message}`);
-        }
-      }
-
-      return;
-    } catch (err: any) {
-      const code = err.code || err.statusCode || "unknown";
-      const msg = err.message || "";
-      console.warn(`[SPE] ${approach.name} failed for ${tenantName}: ${code} - ${msg}`);
-
-      if (approach === approaches[approaches.length - 1]) {
-        console.log(`[SPE] Graph container listing unavailable for ${tenantName} — will discover containers from audit events`);
-      }
-    }
-  }
-}
-
-async function discoverContainersViaSites(
+async function collectContainersViaGraphApi(
   graphClient: any,
   tenantId: string,
   tenantName: string,
   result: SpeCollectionResult
 ): Promise<void> {
   try {
-    console.log(`[SPE] Searching for contentstorage sites for ${tenantName}...`);
+    console.log(`[SPE] Trying Graph containerTypes for ${tenantName}...`);
+    const typeResp = await graphClient.api("/storage/fileStorage/containerTypes").version("beta").get();
+    const types = typeResp?.value || [];
+    console.log(`[SPE] Graph: ${types.length} container types for ${tenantName}`);
 
-    let resp = await graphClient.api("/sites/getAllSites")
-      .version("beta")
-      .select("id,webUrl,displayName,createdDateTime,lastModifiedDateTime")
-      .filter("webUrl ne null")
-      .top(999)
-      .get();
-
-    let allSites: any[] = resp?.value || [];
-
-    while (resp["@odata.nextLink"] && allSites.length < 5000) {
-      resp = await graphClient.api(resp["@odata.nextLink"]).get();
-      allSites = allSites.concat(resp?.value || []);
-    }
-
-    const cspSites = allSites.filter((s: any) =>
-      s.webUrl && (s.webUrl.includes("/contentstorage/") || s.webUrl.includes("CSP_"))
-    );
-
-    console.log(`[SPE] Found ${cspSites.length} contentstorage sites out of ${allSites.length} total for ${tenantName}`);
-
-    for (const site of cspSites) {
-      const containerId = extractContainerId(site.webUrl);
-      if (!containerId) continue;
-
+    for (const t of types) {
+      if (!t.containerTypeId) continue;
       try {
-        await storage.upsertSpeContainer({
-          tenantId,
-          containerId,
-          containerType: "site-discovery",
-          displayName: site.displayName || containerId,
-          description: site.description || `Discovered via sites enumeration`,
-          ownerAppId: null,
-          ownerId: null,
-          ownerEmail: null,
-          siteUrl: site.webUrl,
-          storageBytes: null,
-          itemCount: null,
-          sensitivityLabel: null,
-          status: "active",
-          createdAt: site.createdDateTime ? new Date(site.createdDateTime) : null,
-          collectedAt: new Date(),
-        });
-        result.containersCollected++;
+        let resp = await graphClient.api("/storage/fileStorage/containers")
+          .version("beta")
+          .filter(`containerTypeId eq ${t.containerTypeId}`)
+          .get();
+        let all: any[] = resp?.value || [];
+        while (resp["@odata.nextLink"]) {
+          resp = await graphClient.api(resp["@odata.nextLink"]).get();
+          all = all.concat(resp?.value || []);
+        }
+        console.log(`[SPE] Graph type ${t.displayName || t.containerTypeId}: ${all.length} containers`);
+
+        for (const c of all) {
+          try {
+            const containerId = c.id || c.containerId;
+            if (!containerId) continue;
+            await storage.upsertSpeContainer({
+              tenantId,
+              containerId,
+              containerType: t.displayName || t.containerTypeId || "graph-api",
+              displayName: c.displayName || "Unnamed",
+              description: c.description || null,
+              ownerAppId: c.createdBy?.application?.id || null,
+              ownerId: c.createdBy?.user?.id || null,
+              ownerEmail: c.createdBy?.user?.userPrincipalName || null,
+              siteUrl: c.webUrl || null,
+              storageBytes: c.storageUsedInBytes ?? c.storage?.usedInBytes ?? null,
+              itemCount: c.itemCount ?? null,
+              sensitivityLabel: c.sensitivityLabel?.labelId || null,
+              status: c.status || "active",
+              createdAt: c.createdDateTime ? new Date(c.createdDateTime) : null,
+              collectedAt: new Date(),
+            });
+            result.containersCollected++;
+          } catch (err: any) {
+            result.errors.push(`Graph container ${c.id}: ${err.message}`);
+          }
+        }
       } catch (err: any) {
-        result.errors.push(`Site container ${containerId}: ${err.message}`);
+        console.warn(`[SPE] Graph container listing for type ${t.containerTypeId}: ${err.message}`);
       }
     }
   } catch (err: any) {
-    console.warn(`[SPE] Sites discovery failed for ${tenantName}: ${err.message}`);
+    const code = err.code || err.statusCode || "?";
+    const msg = err.message || "";
+    if (code === "accessDenied") {
+      console.log(`[SPE] Graph container APIs require FileStorageContainer.Selected permission (not consented for ${tenantName})`);
+      console.log(`[SPE] Will discover containers from 7-day audit log history instead`);
+    } else {
+      console.warn(`[SPE] Graph containerTypes failed for ${tenantName}: ${code} - ${msg}`);
+    }
   }
 }
 
@@ -222,36 +156,56 @@ async function collectSpeAuditEvents(
   }
 
   const baseUrl = `https://manage.office.com/api/v1.0/${azureTenantId}/activity/feed`;
-  const endTime = new Date();
-  const startTime = new Date(endTime.getTime() - 24 * 60 * 60 * 1000);
-  const startStr = startTime.toISOString().replace(/\.\d+Z$/, "");
-  const endStr = endTime.toISOString().replace(/\.\d+Z$/, "");
+  const now = new Date();
+  const DAYS_BACK = 7;
+
+  const discoveredContainers = new Map<string, { url: string; operations: Set<string>; users: Set<string>; firstSeen: Date; lastSeen: Date; totalEvents: number }>();
+
+  let allBlobs: any[] = [];
+  for (let day = 0; day < DAYS_BACK; day++) {
+    const dayEnd = new Date(now.getTime() - day * 24 * 60 * 60 * 1000);
+    const dayStart = new Date(now.getTime() - (day + 1) * 24 * 60 * 60 * 1000);
+    const startStr = dayStart.toISOString().replace(/\.\d+Z$/, "");
+    const endStr = dayEnd.toISOString().replace(/\.\d+Z$/, "");
+
+    try {
+      const contentUrl = `${baseUrl}/subscriptions/content?contentType=Audit.SharePoint&startTime=${startStr}&endTime=${endStr}`;
+      const contentResponse = await fetch(contentUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!contentResponse.ok) {
+        if (contentResponse.status === 400) {
+          console.log(`[SPE] Day ${day + 1}/${DAYS_BACK}: no content available for ${tenantName}`);
+          continue;
+        }
+        console.warn(`[SPE] Day ${day + 1}/${DAYS_BACK}: content listing ${contentResponse.status} for ${tenantName}`);
+        continue;
+      }
+
+      const blobs = await contentResponse.json();
+      if (Array.isArray(blobs)) {
+        allBlobs = allBlobs.concat(blobs);
+      }
+    } catch (err: any) {
+      console.warn(`[SPE] Day ${day + 1}/${DAYS_BACK}: ${err.message}`);
+    }
+  }
+
+  if (allBlobs.length === 0) {
+    console.log(`[SPE] No SharePoint audit blobs in ${DAYS_BACK}-day window for ${tenantName}`);
+    return;
+  }
+
+  console.log(`[SPE] Processing ${allBlobs.length} audit blobs (${DAYS_BACK}-day window) for SPE events in ${tenantName}...`);
 
   try {
-    const contentUrl = `${baseUrl}/subscriptions/content?contentType=Audit.SharePoint&startTime=${startStr}&endTime=${endStr}`;
-    const contentResponse = await fetch(contentUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
 
-    if (!contentResponse.ok) {
-      console.warn(`[SPE] Audit.SharePoint content listing failed for ${tenantName}: ${contentResponse.status}`);
-      return;
-    }
-
-    const contentBlobs = await contentResponse.json();
-    if (!Array.isArray(contentBlobs) || contentBlobs.length === 0) {
-      console.log(`[SPE] No SharePoint audit blobs for ${tenantName}`);
-      return;
-    }
-
-    console.log(`[SPE] Processing ${contentBlobs.length} audit blobs for SPE events in ${tenantName}...`);
-
-    for (const blob of contentBlobs.slice(0, 20)) {
+    for (const blob of allBlobs) {
       try {
         const blobResponse = await fetch(blob.contentUri, {
           headers: { Authorization: `Bearer ${token}` },
         });
-
         if (!blobResponse.ok) continue;
 
         const events = await blobResponse.json();
@@ -266,6 +220,26 @@ async function collectSpeAuditEvents(
           if (!containerId) continue;
 
           const containerUrl = siteUrl.split("/contentstorage/")[0] + "/contentstorage/" + containerId + "/";
+          const userId = event.UserId || event.userId || "";
+          const eventTime = event.CreationTime ? new Date(event.CreationTime) : new Date();
+
+          const existing = discoveredContainers.get(containerId);
+          if (!existing) {
+            discoveredContainers.set(containerId, {
+              url: containerUrl,
+              operations: new Set([operation]),
+              users: new Set(userId ? [userId] : []),
+              firstSeen: eventTime,
+              lastSeen: eventTime,
+              totalEvents: 1,
+            });
+          } else {
+            existing.operations.add(operation);
+            if (userId) existing.users.add(userId);
+            if (eventTime < existing.firstSeen) existing.firstSeen = eventTime;
+            if (eventTime > existing.lastSeen) existing.lastSeen = eventTime;
+            existing.totalEvents++;
+          }
 
           if (SPE_FILE_OPERATIONS.includes(operation)) {
             try {
@@ -273,8 +247,8 @@ async function collectSpeAuditEvents(
                 tenantId,
                 containerId,
                 containerName: containerUrl,
-                userId: event.UserId || event.userId || null,
-                userEmail: event.UserId || event.userId || null,
+                userId: userId || null,
+                userEmail: userId || null,
                 appId: event.AppId || null,
                 operation,
                 resourceType: event.ItemType || null,
@@ -289,7 +263,7 @@ async function collectSpeAuditEvents(
                 durationMs: null,
                 statusCode: null,
                 success: true,
-                timestamp: event.CreationTime ? new Date(event.CreationTime) : new Date(),
+                timestamp: eventTime,
                 details: {
                   eventSource: event.EventSource || null,
                   correlationId: event.CorrelationId || null,
@@ -314,11 +288,11 @@ async function collectSpeAuditEvents(
                 tenantId,
                 containerId,
                 containerName: containerUrl,
-                userId: event.UserId || event.userId || null,
-                userEmail: event.UserId || event.userId || null,
+                userId: userId || null,
+                userEmail: userId || null,
                 eventType: operation,
                 severity,
-                description: `${operation} on container ${containerId} by ${event.UserId || "unknown"}`,
+                description: `${operation} on container ${containerId} by ${userId || "unknown"}`,
                 resourceId: event.ObjectId || null,
                 resourceName: event.SourceFileName || null,
                 clientIp: event.ClientIP || null,
@@ -328,7 +302,7 @@ async function collectSpeAuditEvents(
                   objectId: event.ObjectId || null,
                   targetUsers: event.TargetUserOrGroupName || null,
                 },
-                timestamp: event.CreationTime ? new Date(event.CreationTime) : new Date(),
+                timestamp: eventTime,
               });
               result.securityEventsCollected++;
             } catch (err: any) {
@@ -342,10 +316,36 @@ async function collectSpeAuditEvents(
         console.warn(`[SPE] Failed to process audit blob: ${blobErr.message}`);
       }
 
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    console.log(`[SPE] Collected ${result.accessEventsCollected} access + ${result.securityEventsCollected} security events for ${tenantName}`);
+    console.log(`[SPE] 7-day audit scan complete for ${tenantName}: found ${discoveredContainers.size} unique containers, ${result.accessEventsCollected} access + ${result.securityEventsCollected} security events`);
+
+    for (const [containerId, info] of discoveredContainers) {
+      try {
+        await storage.upsertSpeContainer({
+          tenantId,
+          containerId,
+          containerType: "audit-discovery",
+          displayName: info.url.startsWith("http") ? info.url : containerId,
+          description: `Discovered from ${info.totalEvents} audit events (${info.operations.size} operations, ${info.users.size} users) over 7 days`,
+          ownerAppId: null,
+          ownerId: null,
+          ownerEmail: info.users.size > 0 ? Array.from(info.users)[0] : null,
+          siteUrl: info.url.startsWith("http") ? info.url : null,
+          storageBytes: null,
+          itemCount: null,
+          sensitivityLabel: null,
+          status: "active",
+          createdAt: info.firstSeen,
+          collectedAt: new Date(),
+        });
+        result.containersCollected++;
+        console.log(`[SPE] Container ${containerId}: ${info.totalEvents} events, ${info.users.size} users, ops: ${Array.from(info.operations).join(",")}`);
+      } catch (err: any) {
+        result.errors.push(`Audit container ${containerId}: ${err.message}`);
+      }
+    }
   } catch (err: any) {
     console.warn(`[SPE] Audit event collection failed for ${tenantName}: ${err.message}`);
   }
@@ -357,7 +357,7 @@ async function discoverContainersFromAccessEvents(
   result: SpeCollectionResult
 ): Promise<void> {
   try {
-    const recentEvents = await storage.getSpeAccessEvents(tenantId, { limit: 500 });
+    const recentEvents = await storage.getSpeAccessEvents(tenantId, { limit: 1000 });
 
     const containerMap = new Map<string, { containerId: string; containerName: string; eventCount: number; latestEvent: Date }>();
 
@@ -378,19 +378,14 @@ async function discoverContainersFromAccessEvents(
       }
     }
 
-    if (containerMap.size === 0) {
-      console.log(`[SPE] No containers to discover from access events for ${tenantName}`);
-      return;
-    }
-
-    console.log(`[SPE] Discovering ${containerMap.size} containers from access events for ${tenantName}...`);
+    if (containerMap.size === 0) return;
 
     for (const [, info] of containerMap) {
       try {
         await storage.upsertSpeContainer({
           tenantId,
           containerId: info.containerId,
-          containerType: "discovered",
+          containerType: "audit-discovery",
           displayName: info.containerName,
           description: `Auto-discovered from ${info.eventCount} audit event(s)`,
           ownerAppId: null,
@@ -404,14 +399,11 @@ async function discoverContainersFromAccessEvents(
           createdAt: null,
           collectedAt: new Date(),
         });
-        result.containersCollected++;
       } catch (err: any) {
-        result.errors.push(`Discover container ${info.containerId}: ${err.message}`);
+        // ignore - container may already exist from audit scan
       }
     }
-
-    console.log(`[SPE] Discovered ${result.containersCollected} containers for ${tenantName}`);
   } catch (err: any) {
-    console.warn(`[SPE] Container discovery failed for ${tenantName}: ${err.message}`);
+    console.warn(`[SPE] Container discovery from events failed for ${tenantName}: ${err.message}`);
   }
 }
