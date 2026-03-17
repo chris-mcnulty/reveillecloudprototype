@@ -265,27 +265,39 @@ export default function SpEmbedded() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Name</TableHead>
+                        <TableHead>Container ID</TableHead>
+                        <TableHead>Site URL</TableHead>
                         <TableHead>Status</TableHead>
                         <TableHead>Storage</TableHead>
                         <TableHead>Items</TableHead>
-                        <TableHead>Owner App</TableHead>
-                        <TableHead>Created</TableHead>
+                        <TableHead>Source</TableHead>
+                        <TableHead>Last Seen</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {containers.map((c: any) => (
                         <TableRow key={c.id} data-testid={`row-container-${c.id}`}>
-                          <TableCell className="font-medium">{c.displayName}</TableCell>
+                          <TableCell className="font-mono text-xs">{c.containerId}</TableCell>
+                          <TableCell className="text-xs max-w-[250px] truncate">
+                            {c.siteUrl ? (
+                              <a href={c.siteUrl} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+                                {c.siteUrl}
+                              </a>
+                            ) : "—"}
+                          </TableCell>
                           <TableCell>
                             <Badge variant={c.status === "active" ? "default" : "secondary"}>
                               {c.status}
                             </Badge>
                           </TableCell>
-                          <TableCell>{formatBytes(c.storageBytes)}</TableCell>
+                          <TableCell>{c.storageBytes ? formatBytes(c.storageBytes) : "—"}</TableCell>
                           <TableCell>{c.itemCount ?? "—"}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{c.ownerAppId || "—"}</TableCell>
-                          <TableCell>{c.createdAt ? formatTimeAgo(c.createdAt) : "—"}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="text-xs">
+                              {c.containerType === "discovered" ? "Audit Log" : c.containerType || "Graph API"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs">{c.collectedAt ? formatTimeAgo(c.collectedAt) : "—"}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
