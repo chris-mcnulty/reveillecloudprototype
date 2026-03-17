@@ -23,6 +23,7 @@ import AuditLog from "@/pages/AuditLog";
 import PowerPlatform from "@/pages/PowerPlatform";
 import AgentObservability from "@/pages/AgentObservability";
 import EntraSignIns from "@/pages/EntraSignIns";
+import SpEmbedded from "@/pages/SpEmbedded";
 
 function Router() {
   return (
@@ -38,6 +39,7 @@ function Router() {
       <Route path="/power-platform" component={PowerPlatform}/>
       <Route path="/agent-observability" component={AgentObservability}/>
       <Route path="/entra-signins" component={EntraSignIns}/>
+      <Route path="/spe" component={SpEmbedded}/>
       <Route path="/reports" component={Reports}/>
       <Route path="/onboarding" component={Onboarding}/>
       <Route path="/settings">
