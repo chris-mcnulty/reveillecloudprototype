@@ -24,6 +24,8 @@ import {
   Globe,
   Layers,
   MessageSquare,
+  Fingerprint,
+  HardDrive,
 } from "lucide-react";
 import { useState } from "react";
 import {
@@ -79,6 +81,18 @@ const JOB_META: Record<string, { label: string; icon: any; interval: string; des
     icon: MessageSquare,
     interval: "Every 1 hr",
     description: "Collects Microsoft 365 Copilot prompt/response interaction history per user via Graph beta",
+  },
+  entraSignIns: {
+    label: "Entra Sign-Ins",
+    icon: Fingerprint,
+    interval: "Every 30 min",
+    description: "Collects Entra ID sign-in logs including risk events, MFA status, and conditional access results",
+  },
+  speData: {
+    label: "SharePoint Embedded",
+    icon: HardDrive,
+    interval: "Every 30 min",
+    description: "Discovers SPE containers and collects access events, security events, and content type statistics",
   },
 };
 
