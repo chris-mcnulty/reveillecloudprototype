@@ -6,6 +6,7 @@ import { collectAuditLogs } from "./collectors/auditLogs";
 import { collectSiteStructure } from "./collectors/siteStructure";
 import { collectPowerPlatformTelemetry } from "./collectors/powerPlatform";
 import { collectCopilotInteractions } from "./collectors/copilotInteractions";
+import { collectSpeData } from "./collectors/spEmbedded";
 import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -25,6 +26,7 @@ const jobStatus: Record<string, JobStatus> = {
   siteStructure: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   powerPlatform: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   copilotInteractions: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  spEmbedded: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -547,6 +549,59 @@ async function runCopilotInteractionsJob(): Promise<void> {
   }
 }
 
+async function runSpeJob(): Promise<void> {
+  if (jobStatus.spEmbedded.isRunning) {
+    console.log("[Scheduler] SPE collection already running, skipping...");
+    return;
+  }
+
+  jobStatus.spEmbedded.isRunning = true;
+  console.log("[Scheduler] Starting SharePoint Embedded collection...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+    const azureConfigured = isAzureAppConfigured();
+
+    for (const tenant of consentedTenants) {
+      if (!azureConfigured || !tenant.azureTenantId) continue;
+
+      const jobRunId = await trackJobStart("spEmbedded", tenant.id, undefined, `SPE collection for ${tenant.name}`);
+      jobStatus.spEmbedded.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectSpeData(tenant.id);
+        const hasErrors = result.errors.length > 0;
+        const totalCollected = result.containersCollected + result.accessEventsCollected + result.securityEventsCollected + result.contentTypeStatsCollected;
+        await trackJobComplete(
+          jobRunId,
+          hasErrors && totalCollected === 0 ? "failed" : "completed",
+          {
+            containers: result.containersCollected,
+            accessEvents: result.accessEventsCollected,
+            securityEvents: result.securityEventsCollected,
+            contentTypeStats: result.contentTypeStatsCollected,
+            errors: result.errors,
+          },
+          hasErrors && totalCollected === 0 ? result.errors.join("; ") : undefined
+        );
+        console.log(`[Scheduler] SPE for ${tenant.name}: ${result.containersCollected} containers, ${result.accessEventsCollected} access events, ${result.securityEventsCollected} security events`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] SPE failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] SPE job failed:", error);
+  } finally {
+    jobStatus.spEmbedded.isRunning = false;
+    jobStatus.spEmbedded.activeJobRunId = null;
+    jobStatus.spEmbedded.lastRun = new Date();
+  }
+}
+
 let syntheticTestInterval: NodeJS.Timeout | null = null;
 let graphReportsInterval: NodeJS.Timeout | null = null;
 let serviceHealthInterval: NodeJS.Timeout | null = null;
@@ -554,6 +609,7 @@ let auditLogsInterval: NodeJS.Timeout | null = null;
 let siteStructureInterval: NodeJS.Timeout | null = null;
 let powerPlatformInterval: NodeJS.Timeout | null = null;
 let copilotInteractionsInterval: NodeJS.Timeout | null = null;
+let spEmbeddedInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 export function startScheduler(): void {
@@ -566,6 +622,7 @@ export function startScheduler(): void {
   if (siteStructureInterval) clearInterval(siteStructureInterval);
   if (powerPlatformInterval) clearInterval(powerPlatformInterval);
   if (copilotInteractionsInterval) clearInterval(copilotInteractionsInterval);
+  if (spEmbeddedInterval) clearInterval(spEmbeddedInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -595,6 +652,10 @@ export function startScheduler(): void {
   copilotInteractionsInterval = setInterval(() => {
     runCopilotInteractionsJob();
   }, 60 * 60 * 1000);
+
+  spEmbeddedInterval = setInterval(() => {
+    runSpeJob();
+  }, 30 * 60 * 1000); // every 30 minutes
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -641,6 +702,11 @@ export function startScheduler(): void {
     runCopilotInteractionsJob();
   }, 65 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial SPE collection...");
+    runSpeJob();
+  }, 75 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -649,6 +715,7 @@ export function startScheduler(): void {
   console.log("  - Site structure: every 1h (initial in 45s)");
   console.log("  - Power Platform: every 30m (initial in 55s)");
   console.log("  - Copilot interactions: every 1h (initial in 65s)");
+  console.log("  - SPE: every 30m (initial in 75s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -660,6 +727,7 @@ export function stopScheduler(): void {
   if (siteStructureInterval) { clearInterval(siteStructureInterval); siteStructureInterval = null; }
   if (powerPlatformInterval) { clearInterval(powerPlatformInterval); powerPlatformInterval = null; }
   if (copilotInteractionsInterval) { clearInterval(copilotInteractionsInterval); copilotInteractionsInterval = null; }
+  if (spEmbeddedInterval) { clearInterval(spEmbeddedInterval); spEmbeddedInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -703,6 +771,10 @@ export async function triggerPowerPlatformNow(): Promise<void> {
 
 export async function triggerCopilotInteractionsNow(): Promise<void> {
   runCopilotInteractionsJob();
+}
+
+export async function triggerSpeNow(): Promise<void> {
+  runSpeJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

@@ -121,6 +121,11 @@ export function useUpdateAlertRule() {
   return useMutation({ mutationFn: ({ id, ...data }: any) => patchJson(`/api/alert-rules/${id}`, data), onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/tenants"] }) });
 }
 
+export function useDeleteAlertRule() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => deleteReq(`/api/alert-rules/${id}`), onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/tenants"] }) });
+}
+
 export function useMetrics(tenantId: string | null) {
   return useQuery<Metric[]>({ queryKey: ["/api/tenants", tenantId, "metrics"], queryFn: () => fetchJson(`/api/tenants/${tenantId}/metrics`), enabled: !!tenantId, refetchInterval: 30000 });
 }
@@ -305,5 +310,64 @@ export function useAuditLogStats(tenantId: string | null) {
     queryKey: ["/api/tenants", tenantId, "audit-log", "stats"],
     queryFn: () => fetchJson(`/api/tenants/${tenantId}/audit-log/stats`),
     enabled: !!tenantId,
+  });
+}
+
+// SharePoint Embedded hooks
+export function useSpeContainers(tenantId: string | null) {
+  return useQuery<any[]>({
+    queryKey: ["/api/tenants", tenantId, "spe/containers"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/spe/containers`),
+    enabled: !!tenantId,
+    refetchInterval: 60000,
+  });
+}
+
+export function useSpeAccessEvents(tenantId: string | null, opts?: { containerId?: string; since?: string; limit?: number; operation?: string }) {
+  const params = new URLSearchParams();
+  if (opts?.containerId) params.set("containerId", opts.containerId);
+  if (opts?.since) params.set("since", opts.since);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.operation) params.set("operation", opts.operation);
+  const endpoint = opts?.containerId
+    ? `/api/tenants/${tenantId}/spe/containers/${opts.containerId}/access-events?${params.toString()}`
+    : `/api/tenants/${tenantId}/spe/access-events?${params.toString()}`;
+  return useQuery<any[]>({
+    queryKey: ["/api/tenants", tenantId, "spe/access-events", opts],
+    queryFn: () => fetchJson(endpoint),
+    enabled: !!tenantId,
+    refetchInterval: 30000,
+  });
+}
+
+export function useSpeSecurityEvents(tenantId: string | null, opts?: { since?: string; limit?: number; severity?: string }) {
+  const params = new URLSearchParams();
+  if (opts?.since) params.set("since", opts.since);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.severity) params.set("severity", opts.severity);
+  return useQuery<any[]>({
+    queryKey: ["/api/tenants", tenantId, "spe/security-events", opts],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/spe/security-events?${params.toString()}`),
+    enabled: !!tenantId,
+    refetchInterval: 30000,
+  });
+}
+
+export function useSpeContentTypeStats(tenantId: string | null, containerId?: string) {
+  const params = new URLSearchParams();
+  if (containerId) params.set("containerId", containerId);
+  return useQuery<any[]>({
+    queryKey: ["/api/tenants", tenantId, "spe/content-type-stats", containerId],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/spe/content-type-stats?${params.toString()}`),
+    enabled: !!tenantId,
+  });
+}
+
+export function useSpeStats(tenantId: string | null) {
+  return useQuery<any>({
+    queryKey: ["/api/tenants", tenantId, "spe/stats"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/spe/stats`),
+    enabled: !!tenantId,
+    refetchInterval: 60000,
   });
 }

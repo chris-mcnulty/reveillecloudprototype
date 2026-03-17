@@ -310,3 +310,118 @@ export const copilotInteractions = pgTable("copilot_interactions", {
 export const insertCopilotInteractionSchema = createInsertSchema(copilotInteractions).omit({ id: true, collectedAt: true });
 export type InsertCopilotInteraction = z.infer<typeof insertCopilotInteractionSchema>;
 export type CopilotInteraction = typeof copilotInteractions.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// SharePoint Embedded (SPE) — Observability & Performance Monitoring
+// ---------------------------------------------------------------------------
+
+/**
+ * SPE container inventory — one row per container per tenant.
+ * Containers are the top-level storage units in SharePoint Embedded apps.
+ */
+export const speContainers = pgTable("spe_containers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id").notNull(),           // Graph fileStorageContainer id
+  containerType: text("container_type"),                  // e.g. "fileStorageContainer"
+  displayName: text("display_name").notNull(),
+  description: text("description"),
+  ownerAppId: text("owner_app_id"),                       // consuming app that owns this container
+  ownerId: text("owner_id"),                              // user or service principal id
+  ownerEmail: text("owner_email"),
+  siteUrl: text("site_url"),
+  storageBytes: real("storage_bytes"),
+  itemCount: integer("item_count"),
+  sensitivityLabel: text("sensitivity_label"),
+  status: text("status").default("active"),               // active | deleted | locked
+  createdAt: timestamp("created_at"),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeContainerSchema = createInsertSchema(speContainers).omit({ id: true });
+export type InsertSpeContainer = z.infer<typeof insertSpeContainerSchema>;
+export type SpeContainer = typeof speContainers.$inferSelect;
+
+/**
+ * SPE content access events — per-request telemetry for read/write operations.
+ * Sourced from Graph callRecords, audit logs, and SPE usage reports.
+ */
+export const speAccessEvents = pgTable("spe_access_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id").notNull(),
+  containerName: text("container_name"),
+  userId: text("user_id"),
+  userEmail: text("user_email"),
+  appId: text("app_id"),                                  // consuming app making the request
+  operation: text("operation").notNull(),                 // FileRead, FileWrite, FileDelete, FolderCreate, SearchQuery, PermissionChange, SharingLink
+  resourceType: text("resource_type"),                    // file, folder, drive
+  resourceId: text("resource_id"),
+  resourceName: text("resource_name"),
+  resourcePath: text("resource_path"),
+  contentType: text("content_type"),                      // MIME type or SharePoint content type name
+  sensitivityLabel: text("sensitivity_label"),
+  sizeBytes: real("size_bytes"),
+  clientIp: text("client_ip"),
+  userAgent: text("user_agent"),
+  durationMs: real("duration_ms"),
+  statusCode: integer("status_code"),
+  success: boolean("success").default(true),
+  timestamp: timestamp("timestamp").notNull(),
+  details: jsonb("details").$type<Record<string, any>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeAccessEventSchema = createInsertSchema(speAccessEvents).omit({ id: true });
+export type InsertSpeAccessEvent = z.infer<typeof insertSpeAccessEventSchema>;
+export type SpeAccessEvent = typeof speAccessEvents.$inferSelect;
+
+/**
+ * SPE security events — anomalies, policy violations, permission changes,
+ * sharing link creation, sensitivity downgrades, external access.
+ */
+export const speSecurityEvents = pgTable("spe_security_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id"),
+  containerName: text("container_name"),
+  userId: text("user_id"),
+  userEmail: text("user_email"),
+  eventType: text("event_type").notNull(),               // ExternalSharingLink, PermissionEscalation, SensitivityDowngrade, UnusualAccess, AnonymousAccess, BulkDownload, MassDelete
+  severity: text("severity").notNull().default("medium"), // low | medium | high | critical
+  description: text("description"),
+  resourceId: text("resource_id"),
+  resourceName: text("resource_name"),
+  clientIp: text("client_ip"),
+  details: jsonb("details").$type<Record<string, any>>(),
+  timestamp: timestamp("timestamp").notNull(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeSecurityEventSchema = createInsertSchema(speSecurityEvents).omit({ id: true });
+export type InsertSpeSecurityEvent = z.infer<typeof insertSpeSecurityEventSchema>;
+export type SpeSecurityEvent = typeof speSecurityEvents.$inferSelect;
+
+/**
+ * SPE content type & metadata statistics — daily snapshots per container.
+ * Tracks distribution of content types, metadata completeness, and size.
+ */
+export const speContentTypeStats = pgTable("spe_content_type_stats", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id").notNull(),
+  containerName: text("container_name"),
+  contentType: text("content_type").notNull(),           // e.g. "application/pdf", "Document", "Image"
+  itemCount: integer("item_count").notNull().default(0),
+  totalSizeBytes: real("total_size_bytes").default(0),
+  avgSizeBytes: real("avg_size_bytes"),
+  withMetadataCount: integer("with_metadata_count").default(0),  // items that have custom metadata
+  withSensitivityCount: integer("with_sensitivity_count").default(0), // items with a sensitivity label
+  sensitivityBreakdown: jsonb("sensitivity_breakdown").$type<Record<string, number>>(), // { "Confidential": 5, "Public": 12 }
+  reportDate: text("report_date"),                        // YYYY-MM-DD
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeContentTypeStatSchema = createInsertSchema(speContentTypeStats).omit({ id: true });
+export type InsertSpeContentTypeStat = z.infer<typeof insertSpeContentTypeStatSchema>;
+export type SpeContentTypeStat = typeof speContentTypeStats.$inferSelect;

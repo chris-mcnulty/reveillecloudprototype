@@ -3,8 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema } from "@shared/schema";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerSpeNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
+import { deliverAlertNotifications } from "./notifications";
 
 async function logAdminAction(
   tenantId: string | null,
@@ -224,6 +225,14 @@ export async function registerRoutes(
     const parsed = insertAlertSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const alert = await storage.createAlert(parsed.data);
+    // Deliver channel notifications asynchronously (non-blocking)
+    if (alert.ruleId) {
+      storage.getAlertRule(alert.ruleId).then(rule => {
+        deliverAlertNotifications(alert, rule).catch(err =>
+          console.error("[Routes] Notification delivery error:", err)
+        );
+      }).catch(() => {});
+    }
     res.status(201).json(alert);
   });
 
@@ -300,6 +309,9 @@ export async function registerRoutes(
         break;
       case "copilotInteractions":
         await triggerCopilotInteractionsNow();
+        break;
+      case "spEmbedded":
+        await triggerSpeNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -851,6 +863,162 @@ export async function registerRoutes(
   app.get("/api/tenants/:tenantId/copilot-interactions/pairs/:requestId", async (req, res) => {
     const interactions = await storage.getCopilotInteractionsByRequestId(req.params.tenantId, req.params.requestId);
     res.json(interactions);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reports — CSV export
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/reports/export", async (req, res) => {
+    const tenantId = req.query.tenantId as string;
+    const reportType = (req.query.reportType as string) || "sla";
+    const range = (req.query.range as string) || "7d";
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" });
+
+    const tenant = await storage.getTenant(tenantId);
+    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+
+    const since = range === "24h" ? new Date(Date.now() - 86400000)
+                : range === "30d" ? new Date(Date.now() - 30 * 86400000)
+                : new Date(Date.now() - 7 * 86400000);
+
+    let csvContent = "";
+    const filename = `reveille-${reportType}-${range}-${tenant.name.replace(/\s+/g, "_")}-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    if (reportType === "sla" || reportType === "latency") {
+      const metrics = await storage.getMetrics(tenantId, since);
+      const headers = ["timestamp", "metricName", "value", "unit", "status", "site", "testId"];
+      const rows = metrics.map(m => [
+        new Date(m.timestamp).toISOString(),
+        m.metricName,
+        m.value,
+        m.unit || "ms",
+        m.status || "",
+        m.site || "",
+        m.testId || "",
+      ]);
+      csvContent = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+
+    } else if (reportType === "errors") {
+      const runs = await storage.getTestRunsByTenant(tenantId, 500);
+      const failed = runs.filter(r => r.status === "failed" && r.startedAt && new Date(r.startedAt) >= since);
+      const headers = ["startedAt", "testId", "status", "error", "durationMs"];
+      const rows = failed.map(r => [
+        r.startedAt ? new Date(r.startedAt).toISOString() : "",
+        r.testId,
+        r.status,
+        r.error || "",
+        r.durationMs || "",
+      ]);
+      csvContent = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+
+    } else if (reportType === "audit") {
+      const entries = await storage.getAuditLogEntries(tenantId, since, undefined, 2000);
+      const headers = ["timestamp", "operation", "userEmail", "siteUrl", "itemType", "objectId", "clientIp"];
+      const rows = entries.map(e => [
+        new Date(e.timestamp).toISOString(),
+        e.operation,
+        e.userEmail || "",
+        e.siteUrl || "",
+        e.itemType || "",
+        e.objectId || "",
+        e.clientIp || "",
+      ]);
+      csvContent = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+
+    } else if (reportType === "spe-access") {
+      const events = await storage.getSpeAccessEvents(tenantId, { since, limit: 5000 });
+      const headers = ["timestamp", "containerId", "containerName", "userId", "userEmail", "operation", "resourceName", "contentType", "sensitivityLabel", "clientIp", "durationMs"];
+      const rows = events.map(e => [
+        new Date(e.timestamp).toISOString(),
+        e.containerId,
+        e.containerName || "",
+        e.userId || "",
+        e.userEmail || "",
+        e.operation,
+        e.resourceName || "",
+        e.contentType || "",
+        e.sensitivityLabel || "",
+        e.clientIp || "",
+        e.durationMs || "",
+      ]);
+      csvContent = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+
+    } else if (reportType === "spe-security") {
+      const events = await storage.getSpeSecurityEvents(tenantId, { since, limit: 2000 });
+      const headers = ["timestamp", "eventType", "severity", "containerId", "userId", "userEmail", "resourceName", "description"];
+      const rows = events.map(e => [
+        new Date(e.timestamp).toISOString(),
+        e.eventType,
+        e.severity || "",
+        e.containerId || "",
+        e.userId || "",
+        e.userEmail || "",
+        e.resourceName || "",
+        e.description || "",
+      ]);
+      csvContent = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+
+    } else {
+      return res.status(400).json({ message: `Unknown reportType: ${reportType}` });
+    }
+
+    await logAdminAction(tenantId, "report.exported", "report", null, { reportType, range, rows: csvContent.split("\n").length - 1 });
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csvContent);
+  });
+
+  // ---------------------------------------------------------------------------
+  // SharePoint Embedded (SPE) routes
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/tenants/:tenantId/spe/containers", async (req, res) => {
+    const containers = await storage.getSpeContainers(req.params.tenantId);
+    res.json(containers);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/containers/:containerId", async (req, res) => {
+    const container = await storage.getSpeContainer(req.params.containerId);
+    if (!container) return res.status(404).json({ message: "Container not found" });
+    res.json(container);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/containers/:containerId/access-events", async (req, res) => {
+    const { containerId, tenantId } = req.params;
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 200;
+    const events = await storage.getSpeAccessEvents(tenantId, { containerId, since, limit });
+    res.json(events);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/access-events", async (req, res) => {
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 500;
+    const operation = req.query.operation as string | undefined;
+    const events = await storage.getSpeAccessEvents(req.params.tenantId, { since, limit, operation });
+    res.json(events);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/security-events", async (req, res) => {
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 200;
+    const severity = req.query.severity as string | undefined;
+    const events = await storage.getSpeSecurityEvents(req.params.tenantId, { since, limit, severity });
+    res.json(events);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/content-type-stats", async (req, res) => {
+    const containerId = req.query.containerId as string | undefined;
+    const stats = await storage.getSpeContentTypeStats(req.params.tenantId, containerId);
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/stats", async (req, res) => {
+    const stats = await storage.getSpeStats(req.params.tenantId);
+    res.json(stats);
   });
 
   return httpServer;
