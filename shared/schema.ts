@@ -399,3 +399,98 @@ export const entraSignIns = pgTable("entra_sign_ins", {
 export const insertEntraSignInSchema = createInsertSchema(entraSignIns).omit({ id: true, collectedAt: true });
 export type InsertEntraSignIn = z.infer<typeof insertEntraSignInSchema>;
 export type EntraSignIn = typeof entraSignIns.$inferSelect;
+
+export const speContainers = pgTable("spe_containers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id").notNull(),
+  containerType: text("container_type"),
+  displayName: text("display_name").notNull(),
+  description: text("description"),
+  ownerAppId: text("owner_app_id"),
+  ownerId: text("owner_id"),
+  ownerEmail: text("owner_email"),
+  siteUrl: text("site_url"),
+  storageBytes: real("storage_bytes"),
+  itemCount: integer("item_count"),
+  sensitivityLabel: text("sensitivity_label"),
+  status: text("status").default("active"),
+  createdAt: timestamp("created_at"),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeContainerSchema = createInsertSchema(speContainers).omit({ id: true });
+export type InsertSpeContainer = z.infer<typeof insertSpeContainerSchema>;
+export type SpeContainer = typeof speContainers.$inferSelect;
+
+export const speAccessEvents = pgTable("spe_access_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id").notNull(),
+  containerName: text("container_name"),
+  userId: text("user_id"),
+  userEmail: text("user_email"),
+  appId: text("app_id"),
+  operation: text("operation").notNull(),
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  resourceName: text("resource_name"),
+  resourcePath: text("resource_path"),
+  contentType: text("content_type"),
+  sensitivityLabel: text("sensitivity_label"),
+  sizeBytes: real("size_bytes"),
+  clientIp: text("client_ip"),
+  userAgent: text("user_agent"),
+  durationMs: real("duration_ms"),
+  statusCode: integer("status_code"),
+  success: boolean("success").default(true),
+  timestamp: timestamp("timestamp").notNull(),
+  details: jsonb("details").$type<Record<string, any>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeAccessEventSchema = createInsertSchema(speAccessEvents).omit({ id: true });
+export type InsertSpeAccessEvent = z.infer<typeof insertSpeAccessEventSchema>;
+export type SpeAccessEvent = typeof speAccessEvents.$inferSelect;
+
+export const speSecurityEvents = pgTable("spe_security_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id"),
+  containerName: text("container_name"),
+  userId: text("user_id"),
+  userEmail: text("user_email"),
+  eventType: text("event_type").notNull(),
+  severity: text("severity").notNull().default("medium"),
+  description: text("description"),
+  resourceId: text("resource_id"),
+  resourceName: text("resource_name"),
+  clientIp: text("client_ip"),
+  details: jsonb("details").$type<Record<string, any>>(),
+  timestamp: timestamp("timestamp").notNull(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeSecurityEventSchema = createInsertSchema(speSecurityEvents).omit({ id: true });
+export type InsertSpeSecurityEvent = z.infer<typeof insertSpeSecurityEventSchema>;
+export type SpeSecurityEvent = typeof speSecurityEvents.$inferSelect;
+
+export const speContentTypeStats = pgTable("spe_content_type_stats", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  containerId: text("container_id").notNull(),
+  containerName: text("container_name"),
+  contentType: text("content_type").notNull(),
+  itemCount: integer("item_count").notNull().default(0),
+  totalSizeBytes: real("total_size_bytes").default(0),
+  avgSizeBytes: real("avg_size_bytes"),
+  withMetadataCount: integer("with_metadata_count").default(0),
+  withSensitivityCount: integer("with_sensitivity_count").default(0),
+  sensitivityBreakdown: jsonb("sensitivity_breakdown").$type<Record<string, number>>(),
+  reportDate: text("report_date"),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+});
+
+export const insertSpeContentTypeStatSchema = createInsertSchema(speContentTypeStats).omit({ id: true });
+export type InsertSpeContentTypeStat = z.infer<typeof insertSpeContentTypeStatSchema>;
+export type SpeContentTypeStat = typeof speContentTypeStats.$inferSelect;

@@ -1339,5 +1339,42 @@ export async function registerRoutes(
     res.json({ count, message: "Demo Entra sign-in data seeded" });
   });
 
+  app.get("/api/tenants/:tenantId/spe/containers", async (req, res) => {
+    const containers = await storage.getSpeContainers(req.params.tenantId);
+    res.json(containers);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/access-events", async (req, res) => {
+    const { containerId, since, limit, operation } = req.query as any;
+    const events = await storage.getSpeAccessEvents(req.params.tenantId, {
+      containerId,
+      since: since ? new Date(since) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
+      operation,
+    });
+    res.json(events);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/security-events", async (req, res) => {
+    const { since, limit, severity, containerId } = req.query as any;
+    const events = await storage.getSpeSecurityEvents(req.params.tenantId, {
+      since: since ? new Date(since) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
+      severity,
+      containerId,
+    });
+    res.json(events);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/content-type-stats", async (req, res) => {
+    const stats = await storage.getSpeContentTypeStats(req.params.tenantId, req.query.containerId as string | undefined);
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/spe/stats", async (req, res) => {
+    const stats = await storage.getSpeStats(req.params.tenantId);
+    res.json(stats);
+  });
+
   return httpServer;
 }

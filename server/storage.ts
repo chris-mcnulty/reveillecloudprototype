@@ -22,6 +22,10 @@ import {
   mcpServers, type McpServer, type InsertMcpServer,
   mcpToolCalls, type McpToolCall, type InsertMcpToolCall,
   entraSignIns, type EntraSignIn, type InsertEntraSignIn,
+  speContainers, type SpeContainer, type InsertSpeContainer,
+  speAccessEvents, type SpeAccessEvent, type InsertSpeAccessEvent,
+  speSecurityEvents, type SpeSecurityEvent, type InsertSpeSecurityEvent,
+  speContentTypeStats, type SpeContentTypeStat, type InsertSpeContentTypeStat,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -140,6 +144,26 @@ export interface IStorage {
     userId: string; userPrincipalName: string; userDisplayName: string | null;
     loginCount: number; lastLogin: Date | null; failureCount: number; riskEvents: number;
   }[]>;
+
+  upsertSpeContainer(data: InsertSpeContainer): Promise<SpeContainer>;
+  getSpeContainers(tenantId: string): Promise<SpeContainer[]>;
+  getSpeContainer(containerId: string): Promise<SpeContainer | undefined>;
+  createSpeAccessEvent(data: InsertSpeAccessEvent): Promise<SpeAccessEvent>;
+  getSpeAccessEvents(tenantId: string, opts?: { containerId?: string; since?: Date; limit?: number; operation?: string }): Promise<SpeAccessEvent[]>;
+  createSpeSecurityEvent(data: InsertSpeSecurityEvent): Promise<SpeSecurityEvent>;
+  getSpeSecurityEvents(tenantId: string, opts?: { since?: Date; limit?: number; severity?: string; containerId?: string }): Promise<SpeSecurityEvent[]>;
+  upsertSpeContentTypeStat(data: InsertSpeContentTypeStat): Promise<SpeContentTypeStat>;
+  getSpeContentTypeStats(tenantId: string, containerId?: string): Promise<SpeContentTypeStat[]>;
+  getSpeStats(tenantId: string): Promise<{
+    totalContainers: number;
+    totalStorageBytes: number;
+    totalItems: number;
+    accessEventsLast24h: number;
+    securityEventsLast24h: number;
+    topOperations: { operation: string; count: number }[];
+    topContainers: { containerId: string; displayName: string; accessCount: number }[];
+    securityEventsBySeverity: { severity: string; count: number }[];
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1050,6 +1074,161 @@ export class DatabaseStorage implements IStorage {
       failureCount: Number(r.failure_count),
       riskEvents: Number(r.risk_events),
     }));
+  }
+
+  async upsertSpeContainer(data: InsertSpeContainer): Promise<SpeContainer> {
+    const [existing] = await db.select().from(speContainers)
+      .where(and(eq(speContainers.tenantId, data.tenantId), eq(speContainers.containerId, data.containerId)));
+    if (existing) {
+      const [updated] = await db.update(speContainers)
+        .set({ ...data, collectedAt: new Date() })
+        .where(eq(speContainers.id, existing.id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(speContainers).values(data).returning();
+    return created;
+  }
+
+  async getSpeContainers(tenantId: string): Promise<SpeContainer[]> {
+    return db.select().from(speContainers)
+      .where(eq(speContainers.tenantId, tenantId))
+      .orderBy(desc(speContainers.collectedAt));
+  }
+
+  async getSpeContainer(containerId: string): Promise<SpeContainer | undefined> {
+    const [row] = await db.select().from(speContainers).where(eq(speContainers.containerId, containerId));
+    return row;
+  }
+
+  async createSpeAccessEvent(data: InsertSpeAccessEvent): Promise<SpeAccessEvent> {
+    const [created] = await db.insert(speAccessEvents).values(data).returning();
+    return created;
+  }
+
+  async getSpeAccessEvents(
+    tenantId: string,
+    opts?: { containerId?: string; since?: Date; limit?: number; operation?: string }
+  ): Promise<SpeAccessEvent[]> {
+    const conditions: any[] = [eq(speAccessEvents.tenantId, tenantId)];
+    if (opts?.containerId) conditions.push(eq(speAccessEvents.containerId, opts.containerId));
+    if (opts?.since) conditions.push(gte(speAccessEvents.timestamp, opts.since));
+    if (opts?.operation) conditions.push(eq(speAccessEvents.operation, opts.operation));
+    return db.select().from(speAccessEvents)
+      .where(and(...conditions))
+      .orderBy(desc(speAccessEvents.timestamp))
+      .limit(opts?.limit ?? 500);
+  }
+
+  async createSpeSecurityEvent(data: InsertSpeSecurityEvent): Promise<SpeSecurityEvent> {
+    const [created] = await db.insert(speSecurityEvents).values(data).returning();
+    return created;
+  }
+
+  async getSpeSecurityEvents(
+    tenantId: string,
+    opts?: { since?: Date; limit?: number; severity?: string; containerId?: string }
+  ): Promise<SpeSecurityEvent[]> {
+    const conditions: any[] = [eq(speSecurityEvents.tenantId, tenantId)];
+    if (opts?.since) conditions.push(gte(speSecurityEvents.timestamp, opts.since));
+    if (opts?.severity) conditions.push(eq(speSecurityEvents.severity, opts.severity));
+    if (opts?.containerId) conditions.push(eq(speSecurityEvents.containerId, opts.containerId));
+    return db.select().from(speSecurityEvents)
+      .where(and(...conditions))
+      .orderBy(desc(speSecurityEvents.timestamp))
+      .limit(opts?.limit ?? 200);
+  }
+
+  async upsertSpeContentTypeStat(data: InsertSpeContentTypeStat): Promise<SpeContentTypeStat> {
+    const [existing] = await db.select().from(speContentTypeStats)
+      .where(and(
+        eq(speContentTypeStats.tenantId, data.tenantId),
+        eq(speContentTypeStats.containerId, data.containerId),
+        eq(speContentTypeStats.contentType, data.contentType),
+        sql`${speContentTypeStats.reportDate} = ${data.reportDate}`
+      ));
+    if (existing) {
+      const [updated] = await db.update(speContentTypeStats)
+        .set({ ...data, collectedAt: new Date() })
+        .where(eq(speContentTypeStats.id, existing.id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(speContentTypeStats).values(data).returning();
+    return created;
+  }
+
+  async getSpeContentTypeStats(tenantId: string, containerId?: string): Promise<SpeContentTypeStat[]> {
+    const conditions: any[] = [eq(speContentTypeStats.tenantId, tenantId)];
+    if (containerId) conditions.push(eq(speContentTypeStats.containerId, containerId));
+    return db.select().from(speContentTypeStats)
+      .where(and(...conditions))
+      .orderBy(desc(speContentTypeStats.collectedAt));
+  }
+
+  async getSpeStats(tenantId: string): Promise<{
+    totalContainers: number;
+    totalStorageBytes: number;
+    totalItems: number;
+    accessEventsLast24h: number;
+    securityEventsLast24h: number;
+    topOperations: { operation: string; count: number }[];
+    topContainers: { containerId: string; displayName: string; accessCount: number }[];
+    securityEventsBySeverity: { severity: string; count: number }[];
+  }> {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const containers = await db.select({
+      count: sql<number>`count(*)`,
+      totalStorage: sql<number>`coalesce(sum(${speContainers.storageBytes}), 0)`,
+      totalItems: sql<number>`coalesce(sum(${speContainers.itemCount}), 0)`,
+    }).from(speContainers).where(eq(speContainers.tenantId, tenantId));
+
+    const accessCount24h = await db.select({ count: sql<number>`count(*)` })
+      .from(speAccessEvents)
+      .where(and(eq(speAccessEvents.tenantId, tenantId), gte(speAccessEvents.timestamp, since24h)));
+
+    const securityCount24h = await db.select({ count: sql<number>`count(*)` })
+      .from(speSecurityEvents)
+      .where(and(eq(speSecurityEvents.tenantId, tenantId), gte(speSecurityEvents.timestamp, since24h)));
+
+    const topOps = await db.select({
+      operation: speAccessEvents.operation,
+      count: sql<number>`count(*)`,
+    }).from(speAccessEvents)
+      .where(and(eq(speAccessEvents.tenantId, tenantId), gte(speAccessEvents.timestamp, since24h)))
+      .groupBy(speAccessEvents.operation)
+      .orderBy(desc(sql`count(*)`))
+      .limit(8);
+
+    const topConts = await db.select({
+      containerId: speAccessEvents.containerId,
+      displayName: speAccessEvents.containerName,
+      accessCount: sql<number>`count(*)`,
+    }).from(speAccessEvents)
+      .where(and(eq(speAccessEvents.tenantId, tenantId), gte(speAccessEvents.timestamp, since24h)))
+      .groupBy(speAccessEvents.containerId, speAccessEvents.containerName)
+      .orderBy(desc(sql`count(*)`))
+      .limit(5);
+
+    const sevBreakdown = await db.select({
+      severity: speSecurityEvents.severity,
+      count: sql<number>`count(*)`,
+    }).from(speSecurityEvents)
+      .where(eq(speSecurityEvents.tenantId, tenantId))
+      .groupBy(speSecurityEvents.severity)
+      .orderBy(desc(sql`count(*)`));
+
+    return {
+      totalContainers: Number(containers[0]?.count || 0),
+      totalStorageBytes: Number(containers[0]?.totalStorage || 0),
+      totalItems: Number(containers[0]?.totalItems || 0),
+      accessEventsLast24h: Number(accessCount24h[0]?.count || 0),
+      securityEventsLast24h: Number(securityCount24h[0]?.count || 0),
+      topOperations: topOps.map(r => ({ operation: r.operation, count: Number(r.count) })),
+      topContainers: topConts.map(r => ({ containerId: r.containerId, displayName: r.displayName || r.containerId, accessCount: Number(r.accessCount) })),
+      securityEventsBySeverity: sevBreakdown.map(r => ({ severity: r.severity, count: Number(r.count) })),
+    };
   }
 }
 
