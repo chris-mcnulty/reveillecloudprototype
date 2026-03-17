@@ -199,19 +199,26 @@ async function collectSpeAuditEvents(
 
   console.log(`[SPE] Processing ${allBlobs.length} audit blobs (${DAYS_BACK}-day window) for SPE events in ${tenantName}...`);
 
+  const speEvents: Array<{ event: any; containerId: string; containerUrl: string; operation: string; userId: string; eventTime: Date }> = [];
+
   try {
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < allBlobs.length; i += BATCH_SIZE) {
+      const batch = allBlobs.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.allSettled(
+        batch.map(async (blob: any) => {
+          const blobResponse = await fetch(blob.contentUri, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!blobResponse.ok) return [];
+          const events = await blobResponse.json();
+          return Array.isArray(events) ? events : [];
+        })
+      );
 
-    for (const blob of allBlobs) {
-      try {
-        const blobResponse = await fetch(blob.contentUri, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!blobResponse.ok) continue;
-
-        const events = await blobResponse.json();
-        if (!Array.isArray(events)) continue;
-
-        for (const event of events) {
+      for (const batchResult of batchResults) {
+        if (batchResult.status !== "fulfilled") continue;
+        for (const event of batchResult.value) {
           const siteUrl = event.SiteUrl || event.siteUrl || "";
           if (!isContentStorageUrl(siteUrl)) continue;
 
@@ -222,6 +229,8 @@ async function collectSpeAuditEvents(
           const containerUrl = siteUrl.split("/contentstorage/")[0] + "/contentstorage/" + containerId + "/";
           const userId = event.UserId || event.userId || "";
           const eventTime = event.CreationTime ? new Date(event.CreationTime) : new Date();
+
+          speEvents.push({ event, containerId, containerUrl, operation, userId, eventTime });
 
           const existing = discoveredContainers.get(containerId);
           if (!existing) {
@@ -240,83 +249,83 @@ async function collectSpeAuditEvents(
             if (eventTime > existing.lastSeen) existing.lastSeen = eventTime;
             existing.totalEvents++;
           }
+        }
+      }
+    }
 
-          if (SPE_FILE_OPERATIONS.includes(operation)) {
-            try {
-              await storage.createSpeAccessEvent({
-                tenantId,
-                containerId,
-                containerName: containerUrl,
-                userId: userId || null,
-                userEmail: userId || null,
-                appId: event.AppId || null,
-                operation,
-                resourceType: event.ItemType || null,
-                resourceId: event.ListItemUniqueId || null,
-                resourceName: event.SourceFileName || null,
-                resourcePath: event.SourceRelativeUrl || null,
-                contentType: event.ItemType || null,
-                sensitivityLabel: null,
-                sizeBytes: event.FileSizeBytes || null,
-                clientIp: event.ClientIP || null,
-                userAgent: event.UserAgent || null,
-                durationMs: null,
-                statusCode: null,
-                success: true,
-                timestamp: eventTime,
-                details: {
-                  eventSource: event.EventSource || null,
-                  correlationId: event.CorrelationId || null,
-                  objectId: event.ObjectId || null,
-                },
-              });
-              result.accessEventsCollected++;
-            } catch (err: any) {
-              if (!err.message?.includes("duplicate")) {
-                result.errors.push(`SPE access event: ${err.message}`);
-              }
-            }
-          } else if (SPE_SECURITY_OPERATIONS.includes(operation)) {
-            const severity = ["AnonymousLinkCreated", "SharingPolicyChanged", "SiteCollectionAdminAdded"].includes(operation)
-              ? "high"
-              : ["SharingSet", "PermissionLevelAdded", "PermissionLevelsModified"].includes(operation)
-                ? "medium"
-                : "low";
+    console.log(`[SPE] Fetched ${speEvents.length} contentstorage events from ${allBlobs.length} blobs for ${tenantName}`);
 
-            try {
-              await storage.createSpeSecurityEvent({
-                tenantId,
-                containerId,
-                containerName: containerUrl,
-                userId: userId || null,
-                userEmail: userId || null,
-                eventType: operation,
-                severity,
-                description: `${operation} on container ${containerId} by ${userId || "unknown"}`,
-                resourceId: event.ObjectId || null,
-                resourceName: event.SourceFileName || null,
-                clientIp: event.ClientIP || null,
-                details: {
-                  eventSource: event.EventSource || null,
-                  correlationId: event.CorrelationId || null,
-                  objectId: event.ObjectId || null,
-                  targetUsers: event.TargetUserOrGroupName || null,
-                },
-                timestamp: eventTime,
-              });
-              result.securityEventsCollected++;
-            } catch (err: any) {
-              if (!err.message?.includes("duplicate")) {
-                result.errors.push(`SPE security event: ${err.message}`);
-              }
-            }
+    for (const { event, containerId, containerUrl, operation, userId, eventTime } of speEvents) {
+      if (SPE_FILE_OPERATIONS.includes(operation)) {
+        try {
+          await storage.createSpeAccessEvent({
+            tenantId,
+            containerId,
+            containerName: containerUrl,
+            userId: userId || null,
+            userEmail: userId || null,
+            appId: event.AppId || null,
+            operation,
+            resourceType: event.ItemType || null,
+            resourceId: event.ListItemUniqueId || null,
+            resourceName: event.SourceFileName || null,
+            resourcePath: event.SourceRelativeUrl || null,
+            contentType: event.ItemType || null,
+            sensitivityLabel: null,
+            sizeBytes: event.FileSizeBytes || null,
+            clientIp: event.ClientIP || null,
+            userAgent: event.UserAgent || null,
+            durationMs: null,
+            statusCode: null,
+            success: true,
+            timestamp: eventTime,
+            details: {
+              eventSource: event.EventSource || null,
+              correlationId: event.CorrelationId || null,
+              objectId: event.ObjectId || null,
+            },
+          });
+          result.accessEventsCollected++;
+        } catch (err: any) {
+          if (!err.message?.includes("duplicate")) {
+            result.errors.push(`SPE access event: ${err.message}`);
           }
         }
-      } catch (blobErr: any) {
-        console.warn(`[SPE] Failed to process audit blob: ${blobErr.message}`);
-      }
+      } else if (SPE_SECURITY_OPERATIONS.includes(operation)) {
+        const severity = ["AnonymousLinkCreated", "SharingPolicyChanged", "SiteCollectionAdminAdded"].includes(operation)
+          ? "high"
+          : ["SharingSet", "PermissionLevelAdded", "PermissionLevelsModified"].includes(operation)
+            ? "medium"
+            : "low";
 
-      await new Promise(resolve => setTimeout(resolve, 50));
+        try {
+          await storage.createSpeSecurityEvent({
+            tenantId,
+            containerId,
+            containerName: containerUrl,
+            userId: userId || null,
+            userEmail: userId || null,
+            eventType: operation,
+            severity,
+            description: `${operation} on container ${containerId} by ${userId || "unknown"}`,
+            resourceId: event.ObjectId || null,
+            resourceName: event.SourceFileName || null,
+            clientIp: event.ClientIP || null,
+            details: {
+              eventSource: event.EventSource || null,
+              correlationId: event.CorrelationId || null,
+              objectId: event.ObjectId || null,
+              targetUsers: event.TargetUserOrGroupName || null,
+            },
+            timestamp: eventTime,
+          });
+          result.securityEventsCollected++;
+        } catch (err: any) {
+          if (!err.message?.includes("duplicate")) {
+            result.errors.push(`SPE security event: ${err.message}`);
+          }
+        }
+      }
     }
 
     console.log(`[SPE] 7-day audit scan complete for ${tenantName}: found ${discoveredContainers.size} unique containers, ${result.accessEventsCollected} access + ${result.securityEventsCollected} security events`);
