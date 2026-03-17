@@ -66,6 +66,8 @@ export async function collectSpeData(tenantId: string): Promise<SpeCollectionRes
 
   await collectContainersViaGraphApi(graphClient, tenantId, tenantName, result);
 
+  await discoverContainersViaSiteEnumeration(graphClient, tenantId, tenantName, result);
+
   await collectSpeAuditEvents(tenant.azureTenantId, tenantId, tenantName, result);
 
   await discoverContainersFromAccessEvents(tenantId, tenantName, result);
@@ -162,6 +164,164 @@ async function collectContainersViaGraphApi(
     } else {
       console.warn(`[SPE] Graph containerTypes failed for ${tenantName}: ${code} - ${msg} ${body}`);
     }
+  }
+}
+
+function graphSiteIdToCspGuid(graphSiteId: string): string | null {
+  try {
+    const b64 = graphSiteId.replace("b!", "");
+    const b64std = b64.replace(/-/g, "+").replace(/_/g, "/");
+    const buf = Buffer.from(b64std, "base64");
+    if (buf.length < 16) return null;
+    const d1 = buf.readUInt32LE(0).toString(16).padStart(8, "0");
+    const d2 = buf.readUInt16LE(4).toString(16).padStart(4, "0");
+    const d3 = buf.readUInt16LE(6).toString(16).padStart(4, "0");
+    const d4 = buf.subarray(8, 10).toString("hex");
+    const d5 = buf.subarray(10, 16).toString("hex");
+    return `${d1}-${d2}-${d3}-${d4}-${d5}`;
+  } catch {
+    return null;
+  }
+}
+
+async function discoverContainersViaSiteEnumeration(
+  graphClient: any,
+  tenantId: string,
+  tenantName: string,
+  result: SpeCollectionResult
+): Promise<void> {
+  try {
+    console.log(`[SPE] Attempting site enumeration for contentstorage sites in ${tenantName}...`);
+
+    const siteMap = new Map<string, any>();
+
+    // Strategy 1: GET /sites/getAllSites (beta) with $filter on webUrl containing contentstorage
+    try {
+      let resp = await graphClient.api("/sites/getAllSites")
+        .version("beta")
+        .filter("webUrl ne null")
+        .select("id,webUrl,displayName,createdDateTime,description")
+        .top(999)
+        .get();
+      let pages = 0;
+      let totalScanned = 0;
+      while (resp) {
+        const sites = resp?.value || [];
+        totalScanned += sites.length;
+        for (const s of sites) {
+          if (s.webUrl?.includes("/contentstorage/")) {
+            siteMap.set(s.id, s);
+          }
+        }
+        pages++;
+        if (resp["@odata.nextLink"] && pages < 200) {
+          resp = await graphClient.api(resp["@odata.nextLink"]).get();
+        } else {
+          break;
+        }
+      }
+      console.log(`[SPE] getAllSites found ${siteMap.size} contentstorage sites (scanned ${totalScanned} sites across ${pages} pages) for ${tenantName}`);
+    } catch (err: any) {
+      const code = err.code || err.statusCode || "?";
+      console.log(`[SPE] getAllSites: ${code} - ${(err.message || "").substring(0, 150)}`);
+    }
+
+    // Strategy 2: search-based discovery (always run as complement)
+    const searchTerms = ["contentstorage", "CSP_"];
+    for (const term of searchTerms) {
+      try {
+        let searchResp = await graphClient.api("/sites")
+          .query({ search: term })
+          .select("id,webUrl,displayName,createdDateTime,description")
+          .top(999)
+          .get();
+        let searchPages = 0;
+        let termFound = 0;
+        while (searchResp) {
+          const searchSites = searchResp?.value || [];
+          for (const s of searchSites) {
+            if (s.webUrl?.includes("/contentstorage/") && !siteMap.has(s.id)) {
+              siteMap.set(s.id, s);
+              termFound++;
+            }
+          }
+          searchPages++;
+          if (searchResp["@odata.nextLink"] && searchPages < 10) {
+            searchResp = await graphClient.api(searchResp["@odata.nextLink"]).get();
+          } else {
+            break;
+          }
+        }
+        if (termFound > 0) {
+          console.log(`[SPE] search "${term}" found ${termFound} new contentstorage sites (total now ${siteMap.size}) for ${tenantName}`);
+        }
+      } catch (err: any) {
+        const code = err.code || err.statusCode || "?";
+        console.log(`[SPE] sites?search=${term}: ${code} - ${(err.message || "").substring(0, 150)}`);
+      }
+    }
+    console.log(`[SPE] Site search total: ${siteMap.size} contentstorage sites for ${tenantName}`);
+
+    if (siteMap.size === 0) {
+      console.log(`[SPE] No contentstorage sites found via site enumeration for ${tenantName}`);
+      return;
+    }
+
+    let discovered = 0;
+    for (const [, site] of siteMap) {
+      try {
+        const webUrl = site.webUrl || "";
+        const cspMatch = webUrl.match(/(CSP_[0-9a-f-]+)/i);
+        let containerId: string | null = cspMatch ? cspMatch[1] : null;
+
+        if (!containerId && site.id?.startsWith("b!")) {
+          const guid = graphSiteIdToCspGuid(site.id);
+          if (guid) containerId = `CSP_${guid}`;
+        }
+
+        if (!containerId) {
+          const urlParts = webUrl.split("/contentstorage/");
+          if (urlParts.length > 1) {
+            const segment = urlParts[1].replace(/\/$/, "");
+            if (segment.startsWith("CSP_")) containerId = segment;
+            else containerId = `CSP_${segment}`;
+          }
+        }
+
+        if (!containerId) continue;
+
+        const displayName = site.displayName || containerId;
+
+        await storage.upsertSpeContainer({
+          tenantId,
+          containerId,
+          containerType: "site-enumeration",
+          displayName,
+          description: site.description || null,
+          graphSiteId: site.id || null,
+          ownerAppId: null,
+          ownerId: null,
+          ownerEmail: null,
+          siteUrl: webUrl || null,
+          storageBytes: null,
+          itemCount: null,
+          sensitivityLabel: null,
+          status: "active",
+          createdAt: site.createdDateTime ? new Date(site.createdDateTime) : null,
+          collectedAt: new Date(),
+        });
+        discovered++;
+      } catch (err: any) {
+        console.log(`[SPE] Site enum container error: ${(err.message || "").substring(0, 100)}`);
+      }
+    }
+
+    if (discovered > 0) {
+      result.containersCollected += discovered;
+      console.log(`[SPE] Site enumeration discovered ${discovered} containers for ${tenantName}`);
+    }
+  } catch (err: any) {
+    console.warn(`[SPE] Site enumeration failed for ${tenantName}: ${err.message}`);
   }
 }
 
@@ -501,8 +661,13 @@ async function enrichContainersFromGraph(
 
     if (tenantDomain) {
       const hostname = `${tenantDomain}.sharepoint.com`;
-      console.log(`[SPE] Attempting Graph site enrichment for ${containers.length} containers via ${hostname}...`);
-      for (const container of containers) {
+      const needsGraphEnrichment = containers.filter(c =>
+        !c.siteUrl && !c.graphSiteId && c.displayName === c.containerId
+      );
+      if (needsGraphEnrichment.length > 0) {
+        console.log(`[SPE] Attempting Graph site enrichment for ${needsGraphEnrichment.length}/${containers.length} containers needing names via ${hostname}...`);
+      }
+      for (const container of needsGraphEnrichment) {
         const cspId = container.containerId;
         try {
           const siteResp = await graphClient
