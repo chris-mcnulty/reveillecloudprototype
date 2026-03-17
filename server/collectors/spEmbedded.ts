@@ -134,11 +134,33 @@ async function collectContainersViaGraphApi(
   } catch (err: any) {
     const code = err.code || err.statusCode || "?";
     const msg = err.message || "";
+    const body = err.body ? JSON.stringify(err.body).substring(0, 300) : "";
     if (code === "accessDenied") {
-      console.log(`[SPE] Graph container APIs require FileStorageContainer.Selected permission (not consented for ${tenantName})`);
+      console.log(`[SPE] Graph containerTypes accessDenied for ${tenantName}: ${msg.substring(0, 200)}`);
+
+      try {
+        const token = await graphClient.api("/me").version("v1.0")
+          .header("Authorization", "").get().catch(() => null);
+        // Decode token to check roles
+        const { getClientCredentialsToken } = await import("./azureAuth");
+        const tenantRecord = await storage.getTenants();
+        const t = tenantRecord.find((t: any) => t.name === tenantName);
+        if (t?.azureTenantId) {
+          const rawToken = await getClientCredentialsToken(t.azureTenantId);
+          const parts = rawToken.split(".");
+          if (parts.length >= 2) {
+            const payload = JSON.parse(Buffer.from(parts[1], "base64").toString());
+            const roles = payload.roles || [];
+            console.log(`[SPE] Token roles for ${tenantName}: ${roles.join(", ")}`);
+            const hasFSC = roles.some((r: string) => r.includes("FileStorageContainer"));
+            console.log(`[SPE] FileStorageContainer.Selected in token: ${hasFSC}`);
+          }
+        }
+      } catch { }
+
       console.log(`[SPE] Will discover containers from 7-day audit log history instead`);
     } else {
-      console.warn(`[SPE] Graph containerTypes failed for ${tenantName}: ${code} - ${msg}`);
+      console.warn(`[SPE] Graph containerTypes failed for ${tenantName}: ${code} - ${msg} ${body}`);
     }
   }
 }
@@ -479,6 +501,7 @@ async function enrichContainersFromGraph(
 
     if (tenantDomain) {
       const hostname = `${tenantDomain}.sharepoint.com`;
+      console.log(`[SPE] Attempting Graph site enrichment for ${containers.length} containers via ${hostname}...`);
       for (const container of containers) {
         const cspId = container.containerId;
         try {
@@ -527,8 +550,9 @@ async function enrichContainersFromGraph(
             enriched++;
             console.log(`[SPE] Graph enriched ${cspId}: "${siteResp.displayName}" items=${driveItemCount ?? "?"} storage=${driveStorage ?? "?"}`);
           }
-        } catch {
-          // Graph access to contentstorage requires FileStorageContainer.Selected - expected to fail
+        } catch (siteErr: any) {
+          const siteCode = siteErr.code || siteErr.statusCode || "?";
+          console.log(`[SPE] Graph site query ${cspId}: ${siteCode} - ${(siteErr.message || "").substring(0, 120)}`);
         }
       }
     }

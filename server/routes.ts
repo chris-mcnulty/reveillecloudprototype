@@ -611,7 +611,11 @@ export async function registerRoutes(
             azureTenantId: String(azureTenantId),
             method: "azure_ad_admin_consent",
           });
-          console.log(`[Auth Callback] Consent granted for tenant ${tenant.name} (Azure: ${azureTenantId})`);
+          clearTokenCache(tenant.azureTenantId);
+          if (azureTenantId && String(azureTenantId) !== tenant.azureTenantId) {
+            clearTokenCache(String(azureTenantId));
+          }
+          console.log(`[Auth Callback] Consent granted for tenant ${tenant.name} (Azure: ${azureTenantId}) — token cache cleared`);
         }
       }
 
@@ -1343,8 +1347,25 @@ export async function registerRoutes(
     res.json({ count, message: "Demo Entra sign-in data seeded" });
   });
 
+  app.post("/api/tenants/:tenantId/flush-token-cache", async (req, res) => {
+    try {
+      const tenant = await storage.getTenant(req.params.tenantId);
+      if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+      clearTokenCache(tenant.azureTenantId);
+      console.log(`[TokenCache] Flushed all cached tokens for ${tenant.name} (${tenant.azureTenantId})`);
+      res.json({ success: true, message: `Token cache cleared for ${tenant.name}` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/tenants/:tenantId/spe/collect", async (req, res) => {
     try {
+      const tenant = await storage.getTenant(req.params.tenantId);
+      if (tenant) {
+        clearTokenCache(tenant.azureTenantId);
+        console.log(`[SPE] Token cache cleared before collection for ${tenant.name} — fresh tokens will pick up any new permissions`);
+      }
       const result = await collectSpeData(req.params.tenantId);
       await logAdminAction(req.params.tenantId, "collect", "speData", null, {
         containersCollected: result.containersCollected,
