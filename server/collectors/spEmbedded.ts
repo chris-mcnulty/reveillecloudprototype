@@ -39,6 +39,7 @@ export async function collectSpeData(tenantId: string): Promise<SpeCollectionRes
         .get();
 
       const containers = containersResp?.value || [];
+      console.log(`[SPE] Found ${containers.length} containers for tenant ${tenant.name}`);
       for (const c of containers) {
         try {
           await storage.upsertSpeContainer({
@@ -64,11 +65,11 @@ export async function collectSpeData(tenantId: string): Promise<SpeCollectionRes
         }
       }
     } catch (err: any) {
-      if (err.statusCode === 403 || err.statusCode === 401) {
-        result.errors.push(`Containers: insufficient permissions (${err.statusCode})`);
-      } else {
-        result.errors.push(`Containers: ${err.message}`);
-      }
+      const graphBody = err.body ? JSON.stringify(err.body) : "";
+      const code = err.code || err.statusCode || "unknown";
+      const msg = err.message || "";
+      console.error(`[SPE] Containers API error for ${tenant.name}: code=${code} message=${msg} body=${graphBody}`);
+      result.errors.push(`Containers: ${code} - ${msg}${graphBody ? ` (${graphBody})` : ""}`);
     }
   } catch (err: any) {
     result.errors.push(`Graph client: ${err.message}`);
