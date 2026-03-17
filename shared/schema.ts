@@ -408,6 +408,8 @@ export const speContainers = pgTable("spe_containers", {
   displayName: text("display_name").notNull(),
   description: text("description"),
   ownerAppId: text("owner_app_id"),
+  applicationName: text("application_name"),
+  graphSiteId: text("graph_site_id"),
   ownerId: text("owner_id"),
   ownerEmail: text("owner_email"),
   siteUrl: text("site_url"),
