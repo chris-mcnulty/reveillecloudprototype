@@ -13,6 +13,7 @@ import {
   Layers,
   ScanSearch,
   Fingerprint,
+  HardDrive,
 } from "lucide-react";
 import {
   Tooltip,
@@ -42,6 +43,7 @@ export function Sidebar() {
     { href: "/power-platform", icon: Layers, label: "Power Platform" },
     { href: "/agent-observability", icon: ScanSearch, label: "Agent Observability" },
     { href: "/entra-signins", icon: Fingerprint, label: "Entra Sign-Ins" },
+    { href: "/spe", icon: HardDrive, label: "SharePoint Embedded" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
     ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
