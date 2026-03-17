@@ -70,6 +70,8 @@ export async function collectSpeData(tenantId: string): Promise<SpeCollectionRes
 
   await discoverContainersFromAccessEvents(tenantId, tenantName, result);
 
+  await enrichContainersFromGraph(graphClient, tenantId, tenantName);
+
   return result;
 }
 
@@ -357,6 +359,183 @@ async function collectSpeAuditEvents(
     }
   } catch (err: any) {
     console.warn(`[SPE] Audit event collection failed for ${tenantName}: ${err.message}`);
+  }
+}
+
+async function enrichContainersFromGraph(
+  graphClient: any,
+  tenantId: string,
+  tenantName: string
+): Promise<void> {
+  try {
+    const containers = await storage.getSpeContainers(tenantId);
+    if (!containers || containers.length === 0) return;
+
+    const accessEvents = await storage.getSpeAccessEvents(tenantId, { limit: 5000 });
+
+    const containerStats = new Map<string, {
+      uniqueFiles: Set<string>;
+      uniqueUsers: Set<string>;
+      totalSizeBytes: number;
+      fileTypes: Map<string, number>;
+      latestActivity: Date | null;
+      ownerApp: string | null;
+    }>();
+
+    for (const event of accessEvents) {
+      let stats = containerStats.get(event.containerId);
+      if (!stats) {
+        stats = {
+          uniqueFiles: new Set(),
+          uniqueUsers: new Set(),
+          totalSizeBytes: 0,
+          fileTypes: new Map(),
+          latestActivity: null,
+          ownerApp: null,
+        };
+        containerStats.set(event.containerId, stats);
+      }
+
+      if (event.resourceName) {
+        const fileKey = event.resourcePath ? `${event.resourcePath}/${event.resourceName}` : event.resourceName;
+        stats.uniqueFiles.add(fileKey);
+      }
+      if (event.userEmail) stats.uniqueUsers.add(event.userEmail);
+      if (event.sizeBytes) stats.totalSizeBytes += event.sizeBytes;
+      if (event.appId && !stats.ownerApp) stats.ownerApp = event.appId;
+
+      if (event.resourceName) {
+        const ext = event.resourceName.split(".").pop()?.toLowerCase() || "other";
+        stats.fileTypes.set(ext, (stats.fileTypes.get(ext) || 0) + 1);
+      }
+
+      if (event.timestamp && (!stats.latestActivity || event.timestamp > stats.latestActivity)) {
+        stats.latestActivity = event.timestamp;
+      }
+    }
+
+    console.log(`[SPE] Enriching ${containers.length} containers from ${accessEvents.length} audit events for ${tenantName}...`);
+
+    let enriched = 0;
+    for (const container of containers) {
+      const cspId = container.containerId;
+      const stats = containerStats.get(cspId);
+
+      const itemCount = stats ? stats.uniqueFiles.size : null;
+      const storageBytes = stats && stats.totalSizeBytes > 0 ? stats.totalSizeBytes : null;
+      const ownerApp = stats?.ownerApp || container.ownerAppId;
+
+      const topTypes = stats ? Array.from(stats.fileTypes.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([ext, count]) => `${ext}:${count}`)
+        .join(", ") : "";
+
+      const userCount = stats ? stats.uniqueUsers.size : 0;
+      const description = stats
+        ? `${stats.uniqueFiles.size} unique files (${topTypes}), ${userCount} active user${userCount !== 1 ? "s" : ""}`
+        : container.description;
+
+      const needsUpdate = itemCount !== container.itemCount ||
+        storageBytes !== container.storageBytes ||
+        description !== container.description;
+
+      if (needsUpdate && stats) {
+        await storage.upsertSpeContainer({
+          tenantId,
+          containerId: cspId,
+          containerType: container.containerType || "audit-discovery",
+          displayName: container.displayName,
+          description,
+          ownerAppId: ownerApp,
+          ownerId: container.ownerId,
+          ownerEmail: stats.uniqueUsers.size > 0 ? Array.from(stats.uniqueUsers)[0] : container.ownerEmail,
+          siteUrl: container.siteUrl,
+          storageBytes: storageBytes ?? container.storageBytes,
+          itemCount: itemCount ?? container.itemCount,
+          sensitivityLabel: container.sensitivityLabel,
+          status: container.status || "active",
+          createdAt: container.createdAt,
+          collectedAt: new Date(),
+        });
+        enriched++;
+        console.log(`[SPE] Enriched ${cspId}: ${itemCount} files, ${userCount} users, ${topTypes}`);
+      }
+    }
+
+    let tenantDomain: string | null = null;
+    try {
+      const orgResp = await graphClient.api("/organization").select("verifiedDomains").get();
+      const org = orgResp?.value?.[0];
+      if (org?.verifiedDomains) {
+        for (const d of org.verifiedDomains) {
+          if (d.name?.endsWith(".onmicrosoft.com") && !d.name?.includes(".mail.")) {
+            tenantDomain = d.name.replace(".onmicrosoft.com", "");
+            break;
+          }
+        }
+      }
+    } catch { }
+
+    if (tenantDomain) {
+      const hostname = `${tenantDomain}.sharepoint.com`;
+      for (const container of containers) {
+        const cspId = container.containerId;
+        try {
+          const siteResp = await graphClient
+            .api(`/sites/${hostname}:/contentstorage/${cspId}`)
+            .select("id,webUrl,displayName,createdDateTime,description")
+            .get();
+
+          if (siteResp?.displayName && siteResp.displayName !== cspId) {
+            const siteId = siteResp.id;
+            let driveItemCount: number | null = null;
+            let driveStorage: number | null = null;
+
+            try {
+              const driveResp = await graphClient.api(`/sites/${siteId}/drive`).select("quota").get();
+              if (driveResp?.quota) {
+                driveStorage = driveResp.quota.used ?? null;
+                driveItemCount = driveResp.quota.fileCount ?? null;
+              }
+            } catch { }
+
+            if (!driveItemCount) {
+              try {
+                const rootResp = await graphClient.api(`/sites/${siteId}/drive/root`).select("id,childCount").get();
+                driveItemCount = rootResp?.childCount ?? null;
+              } catch { }
+            }
+
+            await storage.upsertSpeContainer({
+              tenantId,
+              containerId: cspId,
+              containerType: container.containerType || "enriched",
+              displayName: siteResp.displayName,
+              description: siteResp.description || container.description,
+              ownerAppId: container.ownerAppId,
+              ownerId: container.ownerId,
+              ownerEmail: container.ownerEmail,
+              siteUrl: siteResp.webUrl || container.siteUrl,
+              storageBytes: driveStorage ?? container.storageBytes,
+              itemCount: driveItemCount ?? container.itemCount,
+              sensitivityLabel: container.sensitivityLabel,
+              status: container.status || "active",
+              createdAt: siteResp.createdDateTime ? new Date(siteResp.createdDateTime) : container.createdAt,
+              collectedAt: new Date(),
+            });
+            enriched++;
+            console.log(`[SPE] Graph enriched ${cspId}: "${siteResp.displayName}" items=${driveItemCount ?? "?"} storage=${driveStorage ?? "?"}`);
+          }
+        } catch {
+          // Graph access to contentstorage requires FileStorageContainer.Selected - expected to fail
+        }
+      }
+    }
+
+    console.log(`[SPE] Enriched ${enriched}/${containers.length} containers for ${tenantName}`);
+  } catch (err: any) {
+    console.warn(`[SPE] Container enrichment failed for ${tenantName}: ${err.message}`);
   }
 }
 

@@ -265,41 +265,67 @@ export default function SpEmbedded() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Container ID</TableHead>
-                        <TableHead>Site URL</TableHead>
+                        <TableHead>Container</TableHead>
+                        <TableHead>Details</TableHead>
                         <TableHead>Status</TableHead>
                         <TableHead>Storage</TableHead>
-                        <TableHead>Items</TableHead>
-                        <TableHead>Source</TableHead>
+                        <TableHead>Files</TableHead>
+                        <TableHead>Owner</TableHead>
                         <TableHead>Last Seen</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {containers.map((c: any) => (
-                        <TableRow key={c.id} data-testid={`row-container-${c.id}`}>
-                          <TableCell className="font-mono text-xs">{c.containerId}</TableCell>
-                          <TableCell className="text-xs max-w-[250px] truncate">
-                            {c.siteUrl ? (
-                              <a href={c.siteUrl} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-                                {c.siteUrl}
-                              </a>
-                            ) : "—"}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={c.status === "active" ? "default" : "secondary"}>
-                              {c.status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>{c.storageBytes ? formatBytes(c.storageBytes) : "—"}</TableCell>
-                          <TableCell>{c.itemCount ?? "—"}</TableCell>
-                          <TableCell>
-                            <Badge variant="outline" className="text-xs">
-                              {c.containerType === "discovered" ? "Audit Log" : c.containerType || "Graph API"}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-xs">{c.collectedAt ? formatTimeAgo(c.collectedAt) : "—"}</TableCell>
-                        </TableRow>
-                      ))}
+                      {containers.map((c: any) => {
+                        const shortId = c.containerId?.replace("CSP_", "").substring(0, 8) || c.containerId;
+                        const isUrl = c.displayName?.startsWith("http");
+                        const friendlyName = isUrl ? `Container ${shortId}` : c.displayName;
+                        const fileTypeMatch = c.description?.match(/\(([^)]+)\)/);
+                        const fileTypes = fileTypeMatch ? fileTypeMatch[1] : null;
+                        const userMatch = c.description?.match(/(\d+) active user/);
+                        const activeUsers = userMatch ? parseInt(userMatch[1]) : null;
+
+                        return (
+                          <TableRow key={c.id} data-testid={`row-container-${c.id}`}>
+                            <TableCell>
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-medium text-sm">{friendlyName}</span>
+                                <span className="font-mono text-[10px] text-muted-foreground">{c.containerId}</span>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex flex-col gap-0.5 text-xs">
+                                {fileTypes && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {fileTypes.split(", ").map((ft: string) => {
+                                      const [ext, count] = ft.split(":");
+                                      return (
+                                        <Badge key={ext} variant="outline" className="text-[10px] px-1 py-0">
+                                          .{ext} ({count})
+                                        </Badge>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {activeUsers !== null && (
+                                  <span className="text-muted-foreground">{activeUsers} active user{activeUsers !== 1 ? "s" : ""}</span>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={c.status === "active" ? "default" : "secondary"}>
+                                {c.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>{c.storageBytes ? formatBytes(c.storageBytes) : "—"}</TableCell>
+                            <TableCell>{c.itemCount ?? "—"}</TableCell>
+                            <TableCell className="text-xs max-w-[150px] truncate">
+                              {c.ownerEmail && c.ownerEmail !== "app@sharepoint" ? c.ownerEmail : 
+                               c.ownerEmail === "app@sharepoint" ? <span className="text-muted-foreground">System</span> : "—"}
+                            </TableCell>
+                            <TableCell className="text-xs">{c.collectedAt ? formatTimeAgo(c.collectedAt) : "—"}</TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}
