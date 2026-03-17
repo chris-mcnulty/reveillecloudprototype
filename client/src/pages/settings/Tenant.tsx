@@ -378,7 +378,7 @@ export default function TenantSettings() {
   const azureConfigured = azureAppStatus.data?.configured ?? false;
 
   const consentUrlQuery = useConsentUrl(
-    azureConfigured && isPending && tenant ? tenant.id : null
+    azureConfigured && tenant ? tenant.id : null
   );
 
   useEffect(() => {
@@ -554,16 +554,32 @@ export default function TenantSettings() {
           </CardContent>
           <CardFooter className="border-t bg-muted/10 p-4">
             {isConnected ? (
-              <Button
-                variant="outline"
-                className="w-full text-destructive hover:bg-destructive/10"
-                onClick={handleRevokeConsent}
-                disabled={revokeMutation.isPending}
-                data-testid="button-revoke-consent"
-              >
-                {revokeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Revoke Consent
-              </Button>
+              <div className="w-full space-y-2">
+                <Button
+                  className="w-full bg-[#0078D4] hover:bg-[#0078D4]/90 text-white"
+                  onClick={handleGrantConsent}
+                  disabled={consentMutation.isPending || (azureConfigured && consentUrlQuery.isLoading)}
+                  data-testid="button-reconsent"
+                >
+                  {(consentMutation.isPending || consentUrlQuery.isLoading) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {azureConfigured && <ExternalLink className="mr-2 h-4 w-4" />}
+                  Re-consent (Update Permissions)
+                </Button>
+                <p className="text-xs text-muted-foreground text-center">
+                  Use this when new permissions have been added to the app registration.
+                  The tenant admin will be redirected to Microsoft to approve updated permissions.
+                </p>
+                <Button
+                  variant="outline"
+                  className="w-full text-destructive hover:bg-destructive/10"
+                  onClick={handleRevokeConsent}
+                  disabled={revokeMutation.isPending}
+                  data-testid="button-revoke-consent"
+                >
+                  {revokeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Revoke Consent
+                </Button>
+              </div>
             ) : (
               <Button
                 className="w-full bg-[#0078D4] hover:bg-[#0078D4]/90 text-white"
