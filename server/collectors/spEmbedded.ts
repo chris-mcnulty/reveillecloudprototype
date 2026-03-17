@@ -54,14 +54,12 @@ async function collectContainers(
       name: "beta /storage/fileStorage/containers",
       fn: () => graphClient.api("/storage/fileStorage/containers")
         .version("beta")
-        .top(999)
         .get(),
     },
     {
       name: "v1.0 /storage/fileStorage/containers",
       fn: () => graphClient.api("/storage/fileStorage/containers")
         .version("v1.0")
-        .top(999)
         .get(),
     },
   ];

@@ -86,7 +86,13 @@ export default function SpEmbedded() {
     );
   }
 
-  const hasData = stats && stats.totalContainers > 0;
+  const hasData = stats && (
+    stats.totalContainers > 0 ||
+    stats.accessEventsLast24h > 0 ||
+    stats.securityEventsLast24h > 0 ||
+    stats.topOperations?.length > 0 ||
+    stats.topContainers?.length > 0
+  );
 
   return (
     <Shell title="SharePoint Embedded">
