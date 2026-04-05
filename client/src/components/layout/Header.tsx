@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, LayoutGrid, Lock } from "lucide-react";
+import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, LayoutGrid, Lock, ShieldCheck, FileBarChart, ScrollText, Layers, ScanSearch, Fingerprint, HardDrive } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,7 +40,14 @@ export function Header() {
   const navItems = [
     { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
+    { href: "/service-health", icon: ShieldCheck, label: "Service Health" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
+    { href: "/usage-reports", icon: FileBarChart, label: "Usage Reports" },
+    { href: "/audit-log", icon: ScrollText, label: "Audit & Compliance" },
+    { href: "/power-platform", icon: Layers, label: "Power Platform" },
+    { href: "/agent-observability", icon: ScanSearch, label: "Agent Observability" },
+    { href: "/entra-signins", icon: Fingerprint, label: "Entra Sign-Ins" },
+    { href: "/spe", icon: HardDrive, label: "SharePoint Embedded" },
     { href: "/reports", icon: BarChart3, label: "Reports" },
     ...mspOnlyItems,
     { href: "/settings/tenant", icon: Settings, label: "Settings" },
