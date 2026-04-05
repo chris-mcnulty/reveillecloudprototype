@@ -1976,6 +1976,24 @@ export default function AgentObservability() {
     },
   });
 
+  const collectCopilotMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/scheduler/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job: "copilotInteractions" }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["/api/copilot-interactions"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/copilot-interactions/stats"] });
+      }, 3000);
+    },
+  });
+
   const filteredTraces = useMemo(() => {
     if (!agentSearch) return traces;
     return traces.filter(t =>
@@ -2033,6 +2051,20 @@ export default function AgentObservability() {
           >
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
             Refresh
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => collectCopilotMutation.mutate()}
+            disabled={collectCopilotMutation.isPending}
+            data-testid="button-collect-copilot"
+          >
+            {collectCopilotMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            {collectCopilotMutation.isPending ? "Collecting…" : collectCopilotMutation.isSuccess ? "Queued!" : "Collect from Tenant"}
           </Button>
           <Button
             variant="outline"

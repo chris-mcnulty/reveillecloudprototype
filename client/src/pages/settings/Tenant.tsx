@@ -97,6 +97,14 @@ const WORKLOAD_PERMISSIONS: Record<string, WorkloadConfig> = {
       { scope: "ThreatAssessment.Read.All", purpose: "Threat assessment requests (URL/file/email threat evaluation)", status: "optional", api: "Graph" },
     ],
   },
+  copilot: {
+    label: "Copilot & AI",
+    color: "bg-[#FFB900]",
+    permissions: [
+      { scope: "AiEnterpriseInteraction.Read.All", purpose: "Copilot interaction history per user — prompts, responses, app context, session data", status: "required", api: "Graph" },
+      { scope: "Reports.Read.All", purpose: "Copilot usage counts, active users, adoption trends by app", status: "required", api: "Graph" },
+    ],
+  },
 };
 
 function WorkloadPermissions({ isConnected }: { isConnected: boolean }) {
