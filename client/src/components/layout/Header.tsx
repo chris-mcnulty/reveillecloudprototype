@@ -64,8 +64,8 @@ export function Header() {
             <span className="sr-only">Toggle Menu</span>
           </Button>
         </SheetTrigger>
-        <SheetContent side="left" className="sm:max-w-xs">
-          <nav className="grid gap-6 text-lg font-medium mt-6">
+        <SheetContent side="left" className="sm:max-w-xs flex flex-col">
+          <nav className="grid gap-6 text-lg font-medium mt-6 overflow-y-auto flex-1 pb-6">
             <Link href="/" className="group flex h-10 shrink-0 items-center gap-2">
               <img src={logoUrl} alt="Reveille Cloud" className="h-8 w-auto object-contain transition-all group-hover:scale-105 dark:hidden" />
               <img src={logoUrlDark} alt="Reveille Cloud" className="h-8 w-auto object-contain transition-all group-hover:scale-105 hidden dark:block" />
