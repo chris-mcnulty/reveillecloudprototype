@@ -280,7 +280,7 @@ export async function registerRoutes(
   });
 
   app.post("/api/scheduler/trigger", async (req, res) => {
-    const jobType = req.query.jobType as string || "syntheticTests";
+    const jobType = (req.body?.jobType || req.body?.job || req.query.jobType as string) || "syntheticTests";
     switch (jobType) {
       case "syntheticTests":
         await triggerSyntheticTestsNow();

@@ -120,6 +120,7 @@ export interface IStorage {
   getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
+  getLatestCopilotInteractionDateForUser(tenantId: string, userId: string): Promise<Date | null>;
   getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
 
   createMcpServer(data: InsertMcpServer): Promise<McpServer>;
@@ -790,6 +791,17 @@ export class DatabaseStorage implements IStorage {
       maxDate: sql<Date | null>`max(${copilotInteractions.createdAt})`,
     }).from(copilotInteractions)
       .where(eq(copilotInteractions.tenantId, tenantId));
+    return result?.maxDate || null;
+  }
+
+  async getLatestCopilotInteractionDateForUser(tenantId: string, userId: string): Promise<Date | null> {
+    const [result] = await db.select({
+      maxDate: sql<Date | null>`max(${copilotInteractions.createdAt})`,
+    }).from(copilotInteractions)
+      .where(and(
+        eq(copilotInteractions.tenantId, tenantId),
+        eq(copilotInteractions.userId, userId),
+      ));
     return result?.maxDate || null;
   }
 
