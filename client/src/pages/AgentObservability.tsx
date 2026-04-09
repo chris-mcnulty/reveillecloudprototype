@@ -53,6 +53,9 @@ import {
   Users,
   Hash,
   ArrowRight,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
   User,
   Plus,
   Pencil,
@@ -706,6 +709,8 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   const [appFilter, setAppFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [userSearch, setUserSearch] = useState("");
+  const [sessionSortBy, setSessionSortBy] = useState<"latestTime" | "turns" | "userId">("latestTime");
+  const [sessionSortOrder, setSessionSortOrder] = useState<"asc" | "desc">("desc");
   const [debouncedUserSearch, setDebouncedUserSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -720,7 +725,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
 
   useEffect(() => {
     setPage(0);
-  }, [appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo]);
+  }, [appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo, sessionSortBy, sessionSortOrder]);
 
   const { data: stats } = useQuery<CopilotStats>({
     queryKey: ["/api/copilot-interactions/stats", tenantId],
@@ -742,9 +747,11 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   if (dateTo) sessionParams.set("dateTo", dateTo);
   sessionParams.set("offset", String(page * pageSize));
   sessionParams.set("limit", String(pageSize));
+  sessionParams.set("sortBy", sessionSortBy);
+  sessionParams.set("sortOrder", sessionSortOrder);
 
   const { data: sessionData, isLoading } = useQuery<{ sessions: SessionSummary[]; total: number }>({
-    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo, page],
+    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo, page, sessionSortBy, sessionSortOrder],
     queryFn: async () => {
       if (!tenantId) return { sessions: [], total: 0 };
       const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions/session-list?${sessionParams.toString()}`);
@@ -1100,11 +1107,53 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Session</TableHead>
-                      <TableHead>User</TableHead>
+                      <TableHead
+                        className="cursor-pointer select-none hover:text-foreground"
+                        onClick={() => {
+                          if (sessionSortBy === "userId") setSessionSortOrder(o => o === "asc" ? "desc" : "asc");
+                          else { setSessionSortBy("userId"); setSessionSortOrder("asc"); }
+                        }}
+                        data-testid="th-sort-user"
+                      >
+                        <span className="flex items-center gap-1">
+                          User
+                          {sessionSortBy === "userId"
+                            ? sessionSortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                            : <ChevronsUpDown className="h-3 w-3 opacity-40" />}
+                        </span>
+                      </TableHead>
                       <TableHead>App</TableHead>
                       <TableHead>Status</TableHead>
-                      <TableHead>Turns</TableHead>
-                      <TableHead>Last Activity</TableHead>
+                      <TableHead
+                        className="cursor-pointer select-none hover:text-foreground"
+                        onClick={() => {
+                          if (sessionSortBy === "turns") setSessionSortOrder(o => o === "asc" ? "desc" : "asc");
+                          else { setSessionSortBy("turns"); setSessionSortOrder("desc"); }
+                        }}
+                        data-testid="th-sort-turns"
+                      >
+                        <span className="flex items-center gap-1">
+                          Turns
+                          {sessionSortBy === "turns"
+                            ? sessionSortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                            : <ChevronsUpDown className="h-3 w-3 opacity-40" />}
+                        </span>
+                      </TableHead>
+                      <TableHead
+                        className="cursor-pointer select-none hover:text-foreground"
+                        onClick={() => {
+                          if (sessionSortBy === "latestTime") setSessionSortOrder(o => o === "asc" ? "desc" : "asc");
+                          else { setSessionSortBy("latestTime"); setSessionSortOrder("desc"); }
+                        }}
+                        data-testid="th-sort-last-activity"
+                      >
+                        <span className="flex items-center gap-1">
+                          Last Activity
+                          {sessionSortBy === "latestTime"
+                            ? sessionSortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                            : <ChevronsUpDown className="h-3 w-3 opacity-40" />}
+                        </span>
+                      </TableHead>
                       <TableHead>Preview</TableHead>
                       <TableHead className="w-10"></TableHead>
                     </TableRow>

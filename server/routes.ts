@@ -842,7 +842,7 @@ export async function registerRoutes(
 
   app.get("/api/tenants/:tenantId/copilot-interactions/session-list", async (req, res) => {
     const { tenantId } = req.params;
-    const { appClass, userId, status, dateFrom, dateTo, offset, limit } = req.query;
+    const { appClass, userId, status, dateFrom, dateTo, offset, limit, sortBy, sortOrder } = req.query;
     const result = await storage.getCopilotSessions(tenantId, {
       appClass: appClass as string | undefined,
       userId: userId as string | undefined,
@@ -851,6 +851,8 @@ export async function registerRoutes(
       dateTo: dateTo as string | undefined,
       offset: offset ? parseInt(offset as string, 10) : 0,
       limit: limit ? parseInt(limit as string, 10) : 25,
+      sortBy: sortBy as string | undefined,
+      sortOrder: sortOrder as string | undefined,
     });
     res.json(result);
   });

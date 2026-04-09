@@ -121,7 +121,7 @@ export interface IStorage {
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
   getLatestCopilotInteractionDateForUser(tenantId: string, userId: string): Promise<Date | null>;
-  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
+  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number; sortBy?: string; sortOrder?: string }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
 
   createMcpServer(data: InsertMcpServer): Promise<McpServer>;
   updateMcpServer(id: string, data: Partial<InsertMcpServer>): Promise<McpServer | undefined>;
@@ -805,7 +805,7 @@ export class DatabaseStorage implements IStorage {
     return result?.maxDate || null;
   }
 
-  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }> {
+  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number; sortBy?: string; sortOrder?: string }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }> {
     const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
     if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
     if (options?.userId) conditions.push(sql`(${copilotInteractions.userId} ILIKE ${'%' + options.userId + '%'} OR ${copilotInteractions.userName} ILIKE ${'%' + options.userId + '%'})`);
@@ -821,17 +821,14 @@ export class DatabaseStorage implements IStorage {
       ? sql`HAVING count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end) = 0`
       : sql``;
 
-    const countRows = await db.execute(sql`
-      SELECT count(*) as "total" FROM (
-        SELECT ${copilotInteractions.sessionId}
-        FROM ${copilotInteractions}
-        WHERE ${and(...conditions)}
-        GROUP BY ${copilotInteractions.sessionId}
-        ${havingClause}
-      ) sub
-    `);
-    const total = Number((countRows.rows[0] as any)?.total || 0);
+    const sortOrder = options?.sortOrder === "asc" ? "ASC" : "DESC";
+    const orderByExpr = options?.sortBy === "turns"
+      ? sql`count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end) ${sql.raw(sortOrder)}`
+      : options?.sortBy === "userId"
+      ? sql`max(case when ${copilotInteractions.interactionType} = 'userPrompt' then ${copilotInteractions.userId} else null end) ${sql.raw(sortOrder)} NULLS LAST`
+      : sql`max(${copilotInteractions.createdAt}) ${sql.raw(sortOrder)}`;
 
+    // Single query: compute total via window function to avoid a separate count round-trip
     const rows = await db.execute(sql`
       SELECT
         ${copilotInteractions.sessionId} as "sessionId",
@@ -842,15 +839,18 @@ export class DatabaseStorage implements IStorage {
         max(${copilotInteractions.createdAt})::text as "latestTime",
         (array_agg(${copilotInteractions.bodyContent} order by ${copilotInteractions.createdAt}) filter (where ${copilotInteractions.interactionType} = 'userPrompt'))[1] as "firstPrompt",
         count(case when ${copilotInteractions.interactionType} = 'userPrompt' then 1 end)::int as "promptCount",
-        count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end)::int as "responseCount"
+        count(distinct case when ${copilotInteractions.interactionType} = 'aiResponse' then ${copilotInteractions.requestId} end)::int as "responseCount",
+        count(*) OVER() as "totalCount"
       FROM ${copilotInteractions}
       WHERE ${and(...conditions)}
       GROUP BY ${copilotInteractions.sessionId}
       ${havingClause}
-      ORDER BY max(${copilotInteractions.createdAt}) DESC
+      ORDER BY ${orderByExpr}
       LIMIT ${options?.limit ?? 25}
       OFFSET ${options?.offset ?? 0}
     `);
+
+    const total = rows.rows.length > 0 ? Number((rows.rows[0] as any).totalCount || 0) : 0;
 
     const sessions = (rows.rows as any[]).map(r => {
       const promptCount = Number(r.promptCount) || 0;
