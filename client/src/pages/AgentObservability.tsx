@@ -222,6 +222,24 @@ function formatTime(iso: string): string {
   }
 }
 
+function formatDateTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const sameYear = d.getFullYear() === now.getFullYear();
+    return d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      ...(sameYear ? {} : { year: "numeric" }),
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return iso;
+  }
+}
+
 function formatTimeAgo(iso: string | null): string {
   if (!iso) return "—";
   const diff = Date.now() - new Date(iso).getTime();
@@ -973,7 +991,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                         {group.prompt.appClass && (
                           <Badge className={`${appClassColor(group.prompt.appClass)} text-[10px]`}>{appClassLabel(group.prompt.appClass)}</Badge>
                         )}
-                        <span className="text-[11px] text-muted-foreground">{formatTime(group.prompt.createdAt)}</span>
+                        <span className="text-[11px] text-muted-foreground">{formatDateTime(group.prompt.createdAt)}</span>
                       </div>
                       <Card className="bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800">
                         <CardContent className="p-3 text-sm whitespace-pre-wrap">
@@ -992,7 +1010,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs font-medium">Copilot</span>
                         <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 text-[10px]">Reasoning</Badge>
-                        <span className="text-[11px] text-muted-foreground">{formatTime(group.thinking.createdAt)}</span>
+                        <span className="text-[11px] text-muted-foreground">{formatDateTime(group.thinking.createdAt)}</span>
                       </div>
                       <Card className="bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800">
                         <CardContent className="p-3 text-sm text-muted-foreground italic whitespace-pre-wrap">
@@ -1014,7 +1032,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                         <div className="flex items-center gap-2 mb-1">
                           <span className="text-xs font-medium">Copilot</span>
                           <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 text-[10px]">Response</Badge>
-                          <span className="text-[11px] text-muted-foreground">{formatTime(group.answer!.createdAt)}</span>
+                          <span className="text-[11px] text-muted-foreground">{formatDateTime(group.answer!.createdAt)}</span>
                         </div>
                         <Card className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800">
                           <CardContent className="p-3 text-sm whitespace-pre-wrap">
@@ -1122,7 +1140,7 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
                           )}
                         </TableCell>
                         <TableCell className="text-sm">{session.turns} turn{session.turns !== 1 ? "s" : ""}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground">{formatTime(session.latestTime)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{formatDateTime(session.latestTime)}</TableCell>
                         <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
                           {truncateContent(cleanPromptPreview(session.firstPrompt), 80)}
                         </TableCell>
@@ -1843,7 +1861,7 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
                                     data-testid={`row-tool-call-${call.id}`}
                                   >
                                     <TableCell className="text-xs">
-                                      {new Date(call.calledAt).toLocaleTimeString()}
+                                      {formatDateTime(call.calledAt)}
                                     </TableCell>
                                     <TableCell className="text-xs font-mono">{call.method}</TableCell>
                                     <TableCell className="text-xs font-medium">{call.toolName || "—"}</TableCell>
@@ -2341,7 +2359,7 @@ export default function AgentObservability() {
                             <TableCell className="font-medium text-sm">{trace.agentName}</TableCell>
                             <TableCell>{statusBadge(trace.status)}</TableCell>
                             <TableCell className="text-sm">{formatDuration(trace.totalDurationMs)}</TableCell>
-                            <TableCell className="text-sm text-muted-foreground">{formatTime(trace.startedAt)}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{formatDateTime(trace.startedAt)}</TableCell>
                             <TableCell className="text-xs text-red-400 max-w-[200px] truncate">{trace.errorSummary || ""}</TableCell>
                           </TableRow>
                           {expandedTraceId === trace.id && (
