@@ -42,8 +42,12 @@ async function listAgent365Agents(accessToken: string): Promise<any[]> {
   });
   const agents: any[] = [];
   try {
-    const resp = await client.api("/copilot/agents").get();
+    let resp = await client.api("/copilot/agents").get();
     if (Array.isArray(resp?.value)) agents.push(...resp.value);
+    while (resp?.["@odata.nextLink"]) {
+      resp = await client.api(resp["@odata.nextLink"]).get();
+      if (Array.isArray(resp?.value)) agents.push(...resp.value);
+    }
   } catch (err: any) {
     throw new Error(`Agent 365 listing failed: ${err?.message || err}`);
   }
