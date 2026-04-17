@@ -1296,18 +1296,17 @@ export class DatabaseStorage implements IStorage {
 
   async upsertKnownAgentByExternalId(data: InsertKnownAgent): Promise<KnownAgent> {
     if (!data.externalId) return this.createKnownAgent(data);
-    const existing = await db.select().from(knownAgents).where(
-      and(eq(knownAgents.tenantId, data.tenantId), eq(knownAgents.externalId, data.externalId))
-    );
-    if (existing.length > 0) {
-      const [updated] = await db.update(knownAgents)
-        .set({ ...data, lastSeenAt: new Date(), updatedAt: new Date() })
-        .where(eq(knownAgents.id, existing[0].id))
-        .returning();
-      return updated;
-    }
-    const [created] = await db.insert(knownAgents).values({ ...data, lastSeenAt: new Date() }).returning();
-    return created;
+
+    const now = new Date();
+    const [upserted] = await db.insert(knownAgents)
+      .values({ ...data, lastSeenAt: now })
+      .onConflictDoUpdate({
+        target: [knownAgents.tenantId, knownAgents.externalId],
+        set: { ...data, lastSeenAt: now, updatedAt: now },
+      })
+      .returning();
+
+    return upserted;
   }
 
   async updateKnownAgent(id: string, data: Partial<InsertKnownAgent>): Promise<KnownAgent | undefined> {
