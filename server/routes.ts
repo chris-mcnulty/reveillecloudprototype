@@ -1463,6 +1463,7 @@ export async function registerRoutes(
     const existing = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
     if (!existing) return res.status(404).json({ error: "Model not found" });
     const updated = await storage.updateLlmModel(req.params.modelId, req.body);
+    if (!updated) return res.status(404).json({ error: "Model not found" });
     res.json(maskLlmModel(updated));
   });
 
