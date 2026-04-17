@@ -496,3 +496,111 @@ export const speContentTypeStats = pgTable("spe_content_type_stats", {
 export const insertSpeContentTypeStatSchema = createInsertSchema(speContentTypeStats).omit({ id: true });
 export type InsertSpeContentTypeStat = z.infer<typeof insertSpeContentTypeStatSchema>;
 export type SpeContentTypeStat = typeof speContentTypeStats.$inferSelect;
+
+export const knownAgents = pgTable("known_agents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  source: text("source").notNull().default("manual"),
+  externalId: text("external_id"),
+  endpoint: text("endpoint"),
+  platform: text("platform").notNull().default("other"),
+  agentCard: jsonb("agent_card").$type<Record<string, any>>(),
+  capabilities: jsonb("capabilities").$type<Record<string, any>>(),
+  status: text("status").notNull().default("active"),
+  discoveredAt: timestamp("discovered_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertKnownAgentSchema = createInsertSchema(knownAgents).omit({
+  id: true,
+  discoveredAt: true,
+  updatedAt: true,
+});
+export type InsertKnownAgent = z.infer<typeof insertKnownAgentSchema>;
+export type KnownAgent = typeof knownAgents.$inferSelect;
+
+export const agentDiscoverySources = pgTable("agent_discovery_sources", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  kind: text("kind").notNull(),
+  label: text("label").notNull(),
+  baseUrl: text("base_url"),
+  enabled: boolean("enabled").notNull().default(true),
+  lastRunAt: timestamp("last_run_at"),
+  lastStatus: text("last_status"),
+  lastError: text("last_error"),
+  agentsFound: integer("agents_found").default(0),
+  config: jsonb("config").$type<Record<string, any>>(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertAgentDiscoverySourceSchema = createInsertSchema(agentDiscoverySources).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertAgentDiscoverySource = z.infer<typeof insertAgentDiscoverySourceSchema>;
+export type AgentDiscoverySource = typeof agentDiscoverySources.$inferSelect;
+
+export const llmModels = pgTable("llm_models", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  provider: text("provider").notNull(),
+  modelName: text("model_name").notNull(),
+  displayName: text("display_name"),
+  deploymentName: text("deployment_name"),
+  endpoint: text("endpoint"),
+  apiVersion: text("api_version"),
+  apiKeyEnvVar: text("api_key_env_var"),
+  endpointEnvVar: text("endpoint_env_var"),
+  inputCostPerMtok: real("input_cost_per_mtok"),
+  outputCostPerMtok: real("output_cost_per_mtok"),
+  maxContextTokens: integer("max_context_tokens"),
+  capabilities: jsonb("capabilities").$type<Record<string, any>>(),
+  status: text("status").notNull().default("unknown"),
+  lastHealthCheck: timestamp("last_health_check"),
+  registeredAt: timestamp("registered_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertLlmModelSchema = createInsertSchema(llmModels).omit({
+  id: true,
+  registeredAt: true,
+  updatedAt: true,
+});
+export type InsertLlmModel = z.infer<typeof insertLlmModelSchema>;
+export type LlmModel = typeof llmModels.$inferSelect;
+
+export const llmCalls = pgTable("llm_calls", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  modelId: varchar("model_id").notNull().references(() => llmModels.id),
+  agentId: varchar("agent_id").references(() => knownAgents.id),
+  traceId: varchar("trace_id").references(() => agentTraces.id),
+  spanId: varchar("span_id").references(() => agentTraceSpans.id),
+  agentName: text("agent_name"),
+  operation: text("operation").notNull().default("chat.completions"),
+  durationMs: real("duration_ms"),
+  ttftMs: real("ttft_ms"),
+  tokensPerSec: real("tokens_per_sec"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  cachedInputTokens: integer("cached_input_tokens"),
+  costCents: real("cost_cents"),
+  temperature: real("temperature"),
+  maxTokensRequested: integer("max_tokens_requested"),
+  stream: boolean("stream").default(false),
+  status: text("status").notNull().default("success"),
+  errorClass: text("error_class"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  requestId: text("request_id"),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+  calledAt: timestamp("called_at").notNull().defaultNow(),
+});
+
+export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
+export type InsertLlmCall = z.infer<typeof insertLlmCallSchema>;
+export type LlmCall = typeof llmCalls.$inferSelect;

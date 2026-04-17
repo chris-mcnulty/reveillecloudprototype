@@ -22,6 +22,8 @@ import UsageReports from "@/pages/UsageReports";
 import AuditLog from "@/pages/AuditLog";
 import PowerPlatform from "@/pages/PowerPlatform";
 import AgentObservability from "@/pages/AgentObservability";
+import LlmPerformance from "@/pages/LlmPerformance";
+import KnownAgents from "@/pages/KnownAgents";
 import EntraSignIns from "@/pages/EntraSignIns";
 import SpEmbedded from "@/pages/SpEmbedded";
 
@@ -38,6 +40,8 @@ function Router() {
       <Route path="/audit-log" component={AuditLog}/>
       <Route path="/power-platform" component={PowerPlatform}/>
       <Route path="/agent-observability" component={AgentObservability}/>
+      <Route path="/llm-performance" component={LlmPerformance}/>
+      <Route path="/known-agents" component={KnownAgents}/>
       <Route path="/entra-signins" component={EntraSignIns}/>
       <Route path="/spe" component={SpEmbedded}/>
       <Route path="/reports" component={Reports}/>
