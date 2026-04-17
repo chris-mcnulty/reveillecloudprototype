@@ -1436,7 +1436,7 @@ export class DatabaseStorage implements IStorage {
         COUNT(*)::int AS calls,
         COALESCE(AVG(lc.duration_ms), 0)::real AS avg_duration,
         COALESCE(AVG(lc.ttft_ms), 0)::real AS avg_ttft,
-        COALESCE(SUM(lc.input_tokens + lc.output_tokens), 0)::int AS total_tokens,
+        COALESCE(SUM(COALESCE(lc.input_tokens, 0) + COALESCE(lc.output_tokens, 0)), 0)::int AS total_tokens,
         COALESCE(SUM(lc.cost_cents), 0)::real AS cost_cents,
         COUNT(*) FILTER (WHERE lc.status = 'error')::int AS errors
       FROM llm_calls lc
