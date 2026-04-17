@@ -26,6 +26,10 @@ import {
   speAccessEvents, type SpeAccessEvent, type InsertSpeAccessEvent,
   speSecurityEvents, type SpeSecurityEvent, type InsertSpeSecurityEvent,
   speContentTypeStats, type SpeContentTypeStat, type InsertSpeContentTypeStat,
+  knownAgents, type KnownAgent, type InsertKnownAgent,
+  agentDiscoverySources, type AgentDiscoverySource, type InsertAgentDiscoverySource,
+  llmModels, type LlmModel, type InsertLlmModel,
+  llmCalls, type LlmCall, type InsertLlmCall,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -165,6 +169,44 @@ export interface IStorage {
     topContainers: { containerId: string; displayName: string; accessCount: number }[];
     securityEventsBySeverity: { severity: string; count: number }[];
   }>;
+
+  createKnownAgent(data: InsertKnownAgent): Promise<KnownAgent>;
+  upsertKnownAgentByExternalId(data: InsertKnownAgent): Promise<KnownAgent>;
+  updateKnownAgent(id: string, data: Partial<InsertKnownAgent>): Promise<KnownAgent | undefined>;
+  getKnownAgents(tenantId: string, opts?: { source?: string; status?: string }): Promise<KnownAgent[]>;
+  getKnownAgent(id: string): Promise<KnownAgent | undefined>;
+  deleteKnownAgent(id: string): Promise<void>;
+
+  createAgentDiscoverySource(data: InsertAgentDiscoverySource): Promise<AgentDiscoverySource>;
+  updateAgentDiscoverySource(id: string, data: Partial<InsertAgentDiscoverySource>): Promise<AgentDiscoverySource | undefined>;
+  getAgentDiscoverySources(tenantId: string): Promise<AgentDiscoverySource[]>;
+  getAgentDiscoverySource(id: string): Promise<AgentDiscoverySource | undefined>;
+  deleteAgentDiscoverySource(id: string): Promise<void>;
+
+  createLlmModel(data: InsertLlmModel): Promise<LlmModel>;
+  updateLlmModel(id: string, data: Partial<InsertLlmModel>): Promise<LlmModel | undefined>;
+  getLlmModels(tenantId: string): Promise<LlmModel[]>;
+  getLlmModel(id: string): Promise<LlmModel | undefined>;
+  deleteLlmModel(id: string): Promise<void>;
+
+  createLlmCall(data: InsertLlmCall): Promise<LlmCall>;
+  getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number }): Promise<LlmCall[]>;
+  getLlmStats(tenantId: string, opts?: { since?: Date; agentId?: string }): Promise<{
+    totalCalls: number;
+    successCount: number;
+    errorRate: number;
+    avgDurationMs: number;
+    avgTtftMs: number;
+    avgTokensPerSec: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalCostCents: number;
+    byModel: { modelId: string; modelName: string; provider: string; calls: number; avgDurationMs: number; avgTtftMs: number; totalTokens: number; costCents: number; errorRate: number }[];
+    byProvider: { provider: string; calls: number; costCents: number }[];
+    byErrorClass: { errorClass: string; count: number }[];
+    timeseries: { bucket: string; calls: number; avgDurationMs: number; costCents: number }[];
+  }>;
+  getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -217,6 +259,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    await db.delete(llmCalls).where(eq(llmCalls.tenantId, id));
+    await db.delete(llmModels).where(eq(llmModels.tenantId, id));
+    await db.delete(knownAgents).where(eq(knownAgents.tenantId, id));
+    await db.delete(agentDiscoverySources).where(eq(agentDiscoverySources.tenantId, id));
     const servers = await db.select({ id: mcpServers.id }).from(mcpServers).where(eq(mcpServers.tenantId, id));
     for (const s of servers) {
       await db.delete(mcpToolCalls).where(eq(mcpToolCalls.serverId, s.id));
@@ -1240,6 +1286,261 @@ export class DatabaseStorage implements IStorage {
       topOperations: topOps.map(r => ({ operation: r.operation, count: Number(r.count) })),
       topContainers: topConts.map(r => ({ containerId: r.containerId, displayName: r.displayName || r.containerId, accessCount: Number(r.accessCount) })),
       securityEventsBySeverity: sevBreakdown.map(r => ({ severity: r.severity, count: Number(r.count) })),
+    };
+  }
+
+  async createKnownAgent(data: InsertKnownAgent): Promise<KnownAgent> {
+    const [created] = await db.insert(knownAgents).values(data).returning();
+    return created;
+  }
+
+  async upsertKnownAgentByExternalId(data: InsertKnownAgent): Promise<KnownAgent> {
+    if (!data.externalId) return this.createKnownAgent(data);
+
+    const now = new Date();
+    const [upserted] = await db.insert(knownAgents)
+      .values({ ...data, lastSeenAt: now })
+      .onConflictDoUpdate({
+        target: [knownAgents.tenantId, knownAgents.externalId],
+        set: { ...data, lastSeenAt: now, updatedAt: now },
+      })
+      .returning();
+
+    return upserted;
+  }
+
+  async updateKnownAgent(id: string, data: Partial<InsertKnownAgent>): Promise<KnownAgent | undefined> {
+    const [updated] = await db.update(knownAgents)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(knownAgents.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getKnownAgents(tenantId: string, opts?: { source?: string; status?: string }): Promise<KnownAgent[]> {
+    const conditions = [eq(knownAgents.tenantId, tenantId)];
+    if (opts?.source) conditions.push(eq(knownAgents.source, opts.source));
+    if (opts?.status) conditions.push(eq(knownAgents.status, opts.status));
+    return db.select().from(knownAgents).where(and(...conditions)).orderBy(desc(knownAgents.discoveredAt));
+  }
+
+  async getKnownAgent(id: string): Promise<KnownAgent | undefined> {
+    const [agent] = await db.select().from(knownAgents).where(eq(knownAgents.id, id));
+    return agent;
+  }
+
+  async deleteKnownAgent(id: string): Promise<void> {
+    await db.update(llmCalls).set({ agentId: null }).where(eq(llmCalls.agentId, id));
+    await db.delete(knownAgents).where(eq(knownAgents.id, id));
+  }
+
+  async createAgentDiscoverySource(data: InsertAgentDiscoverySource): Promise<AgentDiscoverySource> {
+    const [created] = await db.insert(agentDiscoverySources).values(data).returning();
+    return created;
+  }
+
+  async updateAgentDiscoverySource(id: string, data: Partial<InsertAgentDiscoverySource>): Promise<AgentDiscoverySource | undefined> {
+    const [updated] = await db.update(agentDiscoverySources).set(data).where(eq(agentDiscoverySources.id, id)).returning();
+    return updated;
+  }
+
+  async getAgentDiscoverySources(tenantId: string): Promise<AgentDiscoverySource[]> {
+    return db.select().from(agentDiscoverySources).where(eq(agentDiscoverySources.tenantId, tenantId)).orderBy(desc(agentDiscoverySources.createdAt));
+  }
+
+  async getAgentDiscoverySource(id: string): Promise<AgentDiscoverySource | undefined> {
+    const [row] = await db.select().from(agentDiscoverySources).where(eq(agentDiscoverySources.id, id));
+    return row;
+  }
+
+  async deleteAgentDiscoverySource(id: string): Promise<void> {
+    await db.delete(agentDiscoverySources).where(eq(agentDiscoverySources.id, id));
+  }
+
+  async createLlmModel(data: InsertLlmModel): Promise<LlmModel> {
+    const [created] = await db.insert(llmModels).values(data).returning();
+    return created;
+  }
+
+  async updateLlmModel(id: string, data: Partial<InsertLlmModel>): Promise<LlmModel | undefined> {
+    const [updated] = await db.update(llmModels).set({ ...data, updatedAt: new Date() }).where(eq(llmModels.id, id)).returning();
+    return updated;
+  }
+
+  async getLlmModels(tenantId: string): Promise<LlmModel[]> {
+    return db.select().from(llmModels).where(eq(llmModels.tenantId, tenantId)).orderBy(desc(llmModels.registeredAt));
+  }
+
+  async getLlmModel(id: string): Promise<LlmModel | undefined> {
+    const [model] = await db.select().from(llmModels).where(eq(llmModels.id, id));
+    return model;
+  }
+
+  async deleteLlmModel(id: string): Promise<void> {
+    await db.delete(llmCalls).where(eq(llmCalls.modelId, id));
+    await db.delete(llmModels).where(eq(llmModels.id, id));
+  }
+
+  async createLlmCall(data: InsertLlmCall): Promise<LlmCall> {
+    const [created] = await db.insert(llmCalls).values(data).returning();
+    return created;
+  }
+
+  async getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number }): Promise<LlmCall[]> {
+    const conditions = [eq(llmCalls.tenantId, tenantId)];
+    if (opts?.modelId) conditions.push(eq(llmCalls.modelId, opts.modelId));
+    if (opts?.agentId) conditions.push(eq(llmCalls.agentId, opts.agentId));
+    if (opts?.status) conditions.push(eq(llmCalls.status, opts.status));
+    if (opts?.errorClass) conditions.push(eq(llmCalls.errorClass, opts.errorClass));
+    return db.select().from(llmCalls).where(and(...conditions)).orderBy(desc(llmCalls.calledAt)).limit(opts?.limit ?? 50);
+  }
+
+  async getLlmStats(tenantId: string, opts?: { since?: Date; agentId?: string }): Promise<{
+    totalCalls: number;
+    successCount: number;
+    errorRate: number;
+    avgDurationMs: number;
+    avgTtftMs: number;
+    avgTokensPerSec: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalCostCents: number;
+    byModel: { modelId: string; modelName: string; provider: string; calls: number; avgDurationMs: number; avgTtftMs: number; totalTokens: number; costCents: number; errorRate: number }[];
+    byProvider: { provider: string; calls: number; costCents: number }[];
+    byErrorClass: { errorClass: string; count: number }[];
+    timeseries: { bucket: string; calls: number; avgDurationMs: number; costCents: number }[];
+  }> {
+    const since = opts?.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const agentFilter = opts?.agentId ? sql`AND agent_id = ${opts.agentId}` : sql``;
+
+    const overallRows = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'success')::int AS successes,
+        COALESCE(AVG(duration_ms), 0)::real AS avg_duration,
+        COALESCE(AVG(ttft_ms), 0)::real AS avg_ttft,
+        COALESCE(AVG(tokens_per_sec), 0)::real AS avg_tps,
+        COALESCE(SUM(input_tokens), 0)::int AS input_tokens,
+        COALESCE(SUM(output_tokens), 0)::int AS output_tokens,
+        COALESCE(SUM(cost_cents), 0)::real AS cost_cents
+      FROM llm_calls
+      WHERE tenant_id = ${tenantId} AND called_at >= ${since} ${agentFilter}
+    `);
+    const overall = (overallRows.rows as any[])[0] || {};
+
+    const modelRows = await db.execute(sql`
+      SELECT
+        lc.model_id,
+        lm.model_name,
+        lm.provider,
+        COUNT(*)::int AS calls,
+        COALESCE(AVG(lc.duration_ms), 0)::real AS avg_duration,
+        COALESCE(AVG(lc.ttft_ms), 0)::real AS avg_ttft,
+        COALESCE(SUM(COALESCE(lc.input_tokens, 0) + COALESCE(lc.output_tokens, 0)), 0)::int AS total_tokens,
+        COALESCE(SUM(lc.cost_cents), 0)::real AS cost_cents,
+        COUNT(*) FILTER (WHERE lc.status = 'error')::int AS errors
+      FROM llm_calls lc
+      LEFT JOIN llm_models lm ON lm.id = lc.model_id
+      WHERE lc.tenant_id = ${tenantId} AND lc.called_at >= ${since} ${agentFilter}
+      GROUP BY lc.model_id, lm.model_name, lm.provider
+      ORDER BY calls DESC
+    `);
+
+    const providerRows = await db.execute(sql`
+      SELECT lm.provider, COUNT(*)::int AS calls, COALESCE(SUM(lc.cost_cents), 0)::real AS cost_cents
+      FROM llm_calls lc
+      LEFT JOIN llm_models lm ON lm.id = lc.model_id
+      WHERE lc.tenant_id = ${tenantId} AND lc.called_at >= ${since} ${agentFilter}
+      GROUP BY lm.provider
+      ORDER BY calls DESC
+    `);
+
+    const errorRows = await db.execute(sql`
+      SELECT COALESCE(error_class, 'other') AS error_class, COUNT(*)::int AS count
+      FROM llm_calls
+      WHERE tenant_id = ${tenantId} AND status = 'error' AND called_at >= ${since} ${agentFilter}
+      GROUP BY error_class
+      ORDER BY count DESC
+    `);
+
+    const timeseriesRows = await db.execute(sql`
+      SELECT
+        to_char(date_trunc('hour', called_at), 'YYYY-MM-DD"T"HH24:00') AS bucket,
+        COUNT(*)::int AS calls,
+        COALESCE(AVG(duration_ms), 0)::real AS avg_duration,
+        COALESCE(SUM(cost_cents), 0)::real AS cost_cents
+      FROM llm_calls
+      WHERE tenant_id = ${tenantId} AND called_at >= ${since} ${agentFilter}
+      GROUP BY bucket
+      ORDER BY bucket ASC
+    `);
+
+    const total = Number(overall.total) || 0;
+    const successes = Number(overall.successes) || 0;
+
+    return {
+      totalCalls: total,
+      successCount: successes,
+      errorRate: total > 0 ? ((total - successes) / total) * 100 : 0,
+      avgDurationMs: Number(overall.avg_duration) || 0,
+      avgTtftMs: Number(overall.avg_ttft) || 0,
+      avgTokensPerSec: Number(overall.avg_tps) || 0,
+      totalInputTokens: Number(overall.input_tokens) || 0,
+      totalOutputTokens: Number(overall.output_tokens) || 0,
+      totalCostCents: Number(overall.cost_cents) || 0,
+      byModel: (modelRows.rows as any[]).map(r => ({
+        modelId: r.model_id,
+        modelName: r.model_name || "(unknown)",
+        provider: r.provider || "unknown",
+        calls: Number(r.calls),
+        avgDurationMs: Number(r.avg_duration),
+        avgTtftMs: Number(r.avg_ttft),
+        totalTokens: Number(r.total_tokens),
+        costCents: Number(r.cost_cents),
+        errorRate: Number(r.calls) > 0 ? (Number(r.errors) / Number(r.calls)) * 100 : 0,
+      })),
+      byProvider: (providerRows.rows as any[]).map(r => ({
+        provider: r.provider || "unknown",
+        calls: Number(r.calls),
+        costCents: Number(r.cost_cents),
+      })),
+      byErrorClass: (errorRows.rows as any[]).map(r => ({
+        errorClass: r.error_class,
+        count: Number(r.count),
+      })),
+      timeseries: (timeseriesRows.rows as any[]).map(r => ({
+        bucket: r.bucket,
+        calls: Number(r.calls),
+        avgDurationMs: Number(r.avg_duration),
+        costCents: Number(r.cost_cents),
+      })),
+    };
+  }
+
+  async getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }> {
+    const recentCalls = await db.select().from(llmCalls)
+      .where(eq(llmCalls.modelId, modelId))
+      .orderBy(desc(llmCalls.calledAt))
+      .limit(20);
+    const statsRows = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'error')::int AS errors,
+        COALESCE(AVG(duration_ms), 0)::real AS avg_duration,
+        COALESCE(AVG(ttft_ms), 0)::real AS avg_ttft,
+        COALESCE(SUM(cost_cents), 0)::real AS cost_cents
+      FROM llm_calls
+      WHERE model_id = ${modelId}
+    `);
+    const stats = (statsRows.rows as any[])[0] || {};
+    const total = Number(stats.total) || 0;
+    return {
+      recentCalls,
+      errorRate: total > 0 ? (Number(stats.errors) / total) * 100 : 0,
+      avgDurationMs: Number(stats.avg_duration) || 0,
+      avgTtftMs: Number(stats.avg_ttft) || 0,
+      totalCalls: total,
+      totalCostCents: Number(stats.cost_cents) || 0,
     };
   }
 }

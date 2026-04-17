@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, Fragment } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -2150,6 +2151,8 @@ export default function AgentObservability() {
         </div>
       </div>
 
+      <LlmSummaryWidget tenantId={activeTenantId} />
+
       <Tabs defaultValue="traces" className="w-full">
         <TabsList data-testid="tabs-agent-observability">
           <TabsTrigger value="traces" data-testid="tab-agent-traces">
@@ -2432,5 +2435,110 @@ export default function AgentObservability() {
       </Tabs>
     </div>
     </Shell>
+  );
+}
+
+interface LlmSummaryStats {
+  totalCalls: number;
+  errorRate: number;
+  avgDurationMs: number;
+  avgTtftMs: number;
+  totalCostCents: number;
+  byModel: { modelId: string; modelName: string; provider: string; calls: number; avgDurationMs: number }[];
+}
+
+function LlmSummaryWidget({ tenantId }: { tenantId: string | null }) {
+  const [, navigate] = useLocation();
+  const { data: stats } = useQuery<LlmSummaryStats>({
+    queryKey: ["/api/llm-models/stats", tenantId, "widget"],
+    enabled: !!tenantId,
+    queryFn: async () => {
+      const res = await fetch(`/api/tenants/${tenantId}/llm-models/stats`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  const { data: agents = [] } = useQuery<{ id: string }[]>({
+    queryKey: ["/api/known-agents", tenantId, "widget-count"],
+    enabled: !!tenantId,
+    queryFn: async () => {
+      const res = await fetch(`/api/tenants/${tenantId}/known-agents`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+  });
+
+  if (!tenantId) return null;
+
+  const topByLatency = [...(stats?.byModel ?? [])]
+    .filter(m => m.calls > 0)
+    .sort((a, b) => b.avgDurationMs - a.avgDurationMs)
+    .slice(0, 3);
+
+  const costLabel = stats && stats.totalCostCents > 0
+    ? (stats.totalCostCents < 100 ? `$${(stats.totalCostCents / 100).toFixed(4)}` : `$${(stats.totalCostCents / 100).toFixed(2)}`)
+    : "$0.00";
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CardTitle className="text-base">LLM &amp; Agent Registry</CardTitle>
+          <Badge variant="outline" className="text-xs">Last 24h</Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate("/known-agents")} data-testid="button-view-known-agents">
+            <Bot className="h-3.5 w-3.5 mr-1.5" />
+            Known agents ({agents.length})
+          </Button>
+          <Button variant="default" size="sm" onClick={() => navigate("/llm-performance")} data-testid="button-view-llm-performance">
+            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+            LLM Performance
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-4 md:grid-cols-5">
+          <div>
+            <div className="text-xs text-muted-foreground">LLM calls</div>
+            <div className="text-xl font-bold">{stats ? stats.totalCalls.toLocaleString() : "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Error rate</div>
+            <div className={`text-xl font-bold ${stats && stats.errorRate > 5 ? "text-red-500" : ""}`}>{stats ? `${stats.errorRate.toFixed(1)}%` : "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Avg duration</div>
+            <div className="text-xl font-bold">{stats ? `${Math.round(stats.avgDurationMs)} ms` : "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Avg TTFT</div>
+            <div className="text-xl font-bold">{stats ? `${Math.round(stats.avgTtftMs)} ms` : "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Total cost</div>
+            <div className="text-xl font-bold">{costLabel}</div>
+          </div>
+        </div>
+        {topByLatency.length > 0 && (
+          <div className="mt-4 border-t pt-3">
+            <div className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">Slowest models</div>
+            <div className="space-y-1">
+              {topByLatency.map(m => (
+                <div key={m.modelId} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs">{m.provider}</Badge>
+                    <span>{m.modelName}</span>
+                  </div>
+                  <div className="tabular-nums text-muted-foreground">{Math.round(m.avgDurationMs)} ms over {m.calls} calls</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

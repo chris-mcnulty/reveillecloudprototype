@@ -1,7 +1,10 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema } from "@shared/schema";
+import { foundryChatCompletion } from "./llm/foundryClient";
+import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
+import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerEntraSignInsNow, triggerSpeDataNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
@@ -1415,6 +1418,374 @@ export async function registerRoutes(
   app.get("/api/tenants/:tenantId/spe/stats", async (req, res) => {
     const stats = await storage.getSpeStats(req.params.tenantId);
     res.json(stats);
+  });
+
+  function maskLlmModel(m: any) {
+    return { ...m };
+  }
+
+  async function getLlmModelForTenant(modelId: string, tenantId: string) {
+    const model = await storage.getLlmModel(modelId);
+    if (!model || model.tenantId !== tenantId) return null;
+    return model;
+  }
+
+  app.get("/api/tenants/:tenantId/llm-models", async (req, res) => {
+    const models = await storage.getLlmModels(req.params.tenantId);
+    res.json(models.map(maskLlmModel));
+  });
+
+  app.post("/api/tenants/:tenantId/llm-models", async (req, res) => {
+    const parsed = insertLlmModelSchema.safeParse({ ...req.body, tenantId: req.params.tenantId });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const model = await storage.createLlmModel(parsed.data);
+    await logAdminAction(req.params.tenantId, "create", "llmModel", model.id, { name: model.modelName, provider: model.provider });
+    res.status(201).json(maskLlmModel(model));
+  });
+
+  app.get("/api/tenants/:tenantId/llm-models/stats", async (req, res) => {
+    const { since, agentId } = req.query as any;
+    const stats = await storage.getLlmStats(req.params.tenantId, {
+      since: since ? new Date(since) : undefined,
+      agentId,
+    });
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/llm-models/:modelId", async (req, res) => {
+    const model = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
+    if (!model) return res.status(404).json({ error: "Model not found" });
+    const health = await storage.getLlmModelHealth(req.params.modelId);
+    res.json({ ...maskLlmModel(model), health, apiKeyConfigured: model.apiKeyEnvVar ? !!process.env[model.apiKeyEnvVar] : false });
+  });
+
+  app.patch("/api/tenants/:tenantId/llm-models/:modelId", async (req, res) => {
+    const existing = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
+    if (!existing) return res.status(404).json({ error: "Model not found" });
+    const updated = await storage.updateLlmModel(req.params.modelId, req.body);
+    if (!updated) return res.status(404).json({ error: "Model not found" });
+    res.json(maskLlmModel(updated));
+  });
+
+  app.delete("/api/tenants/:tenantId/llm-models/:modelId", async (req, res) => {
+    const existing = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
+    if (!existing) return res.status(404).json({ error: "Model not found" });
+    await storage.deleteLlmModel(req.params.modelId);
+    await logAdminAction(req.params.tenantId, "delete", "llmModel", req.params.modelId);
+    res.json({ success: true });
+  });
+
+  app.get("/api/tenants/:tenantId/llm-models/:modelId/calls", async (req, res) => {
+    const model = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
+    if (!model) return res.status(404).json({ error: "Model not found" });
+    const { limit, status, errorClass, agentId } = req.query as any;
+    const calls = await storage.getLlmCalls(req.params.tenantId, {
+      modelId: req.params.modelId,
+      status,
+      errorClass,
+      agentId,
+      limit: limit ? parseInt(limit) : undefined,
+    });
+    res.json(calls);
+  });
+
+  app.post("/api/tenants/:tenantId/llm-models/:modelId/chat", async (req, res) => {
+    const model = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
+    if (!model) return res.status(404).json({ error: "Model not found" });
+    if (model.provider !== "foundry") return res.status(400).json({ error: `Chat invocation only supported for provider=foundry (got ${model.provider})` });
+
+    const { messages, temperature, maxTokens, stream, agentId, traceId, spanId, agentName, metadata } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+    const result = await foundryChatCompletion({
+      modelId: model.id,
+      messages,
+      temperature,
+      maxTokens,
+      stream,
+      agentId: agentId ?? null,
+      traceId: traceId ?? null,
+      spanId: spanId ?? null,
+      agentName: agentName ?? null,
+      metadata: metadata ?? null,
+    });
+    res.json(result);
+  });
+
+  app.post("/api/tenants/:tenantId/llm-calls", async (req, res) => {
+    const parsed = insertLlmCallSchema.safeParse({ ...req.body, tenantId: req.params.tenantId });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const call = await storage.createLlmCall(parsed.data);
+    res.status(201).json(call);
+  });
+
+  app.get("/api/tenants/:tenantId/llm-calls", async (req, res) => {
+    const { modelId, agentId, status, errorClass, limit } = req.query as any;
+    const calls = await storage.getLlmCalls(req.params.tenantId, {
+      modelId, agentId, status, errorClass,
+      limit: limit ? parseInt(limit) : undefined,
+    });
+    res.json(calls);
+  });
+
+  app.get("/api/tenants/:tenantId/known-agents", async (req, res) => {
+    const { source, status } = req.query as any;
+    const agents = await storage.getKnownAgents(req.params.tenantId, { source, status });
+    res.json(agents);
+  });
+
+  app.post("/api/tenants/:tenantId/known-agents", async (req, res) => {
+    const parsed = insertKnownAgentSchema.safeParse({ ...req.body, tenantId: req.params.tenantId });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const agent = await storage.createKnownAgent(parsed.data);
+    await logAdminAction(req.params.tenantId, "create", "knownAgent", agent.id, { name: agent.name, source: agent.source });
+    res.status(201).json(agent);
+  });
+
+  app.get("/api/tenants/:tenantId/known-agents/:agentId", async (req, res) => {
+    const agent = await storage.getKnownAgent(req.params.agentId);
+    if (!agent || agent.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Agent not found" });
+    const stats = await storage.getLlmStats(req.params.tenantId, { agentId: agent.id });
+    res.json({ ...agent, stats });
+  });
+
+  app.patch("/api/tenants/:tenantId/known-agents/:agentId", async (req, res) => {
+    const agent = await storage.getKnownAgent(req.params.agentId);
+    if (!agent || agent.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Agent not found" });
+    const updated = await storage.updateKnownAgent(req.params.agentId, req.body);
+    res.json(updated);
+  });
+
+  app.delete("/api/tenants/:tenantId/known-agents/:agentId", async (req, res) => {
+    const agent = await storage.getKnownAgent(req.params.agentId);
+    if (!agent || agent.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Agent not found" });
+    await storage.deleteKnownAgent(req.params.agentId);
+    await logAdminAction(req.params.tenantId, "delete", "knownAgent", req.params.agentId);
+    res.json({ success: true });
+  });
+
+  app.get("/api/tenants/:tenantId/agent-discovery-sources", async (req, res) => {
+    const sources = await storage.getAgentDiscoverySources(req.params.tenantId);
+    res.json(sources);
+  });
+
+  app.post("/api/tenants/:tenantId/agent-discovery-sources", async (req, res) => {
+    const parsed = insertAgentDiscoverySourceSchema.safeParse({ ...req.body, tenantId: req.params.tenantId });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const src = await storage.createAgentDiscoverySource(parsed.data);
+    await logAdminAction(req.params.tenantId, "create", "agentDiscoverySource", src.id, { kind: src.kind, label: src.label });
+    res.status(201).json(src);
+  });
+
+  app.patch("/api/tenants/:tenantId/agent-discovery-sources/:sourceId", async (req, res) => {
+    const existing = await storage.getAgentDiscoverySource(req.params.sourceId);
+    if (!existing || existing.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Source not found" });
+    const updated = await storage.updateAgentDiscoverySource(req.params.sourceId, req.body);
+    res.json(updated);
+  });
+
+  app.delete("/api/tenants/:tenantId/agent-discovery-sources/:sourceId", async (req, res) => {
+    const existing = await storage.getAgentDiscoverySource(req.params.sourceId);
+    if (!existing || existing.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Source not found" });
+    await storage.deleteAgentDiscoverySource(req.params.sourceId);
+    await logAdminAction(req.params.tenantId, "delete", "agentDiscoverySource", req.params.sourceId);
+    res.json({ success: true });
+  });
+
+  app.post("/api/tenants/:tenantId/known-agents/discover", async (req, res) => {
+    const { source, sourceId, url } = req.body || {};
+    try {
+      if (url && source === "a2a") {
+        const result = await discoverA2aAgentAtUrl(req.params.tenantId, sourceId ?? "ad-hoc", url);
+        await logAdminAction(req.params.tenantId, "discover", "knownAgent", null, { source: "a2a", url, status: result.status });
+        return res.json({ a2a: [result] });
+      }
+      const response: Record<string, any> = {};
+      if (!source || source === "a2a") {
+        response.a2a = await runA2aDiscoveryForTenant(req.params.tenantId, { sourceId });
+      }
+      if (!source || source === "agent365") {
+        response.agent365 = await runAgent365DiscoveryForTenant(req.params.tenantId, { sourceId });
+      }
+      await logAdminAction(req.params.tenantId, "discover", "knownAgent", null, { source: source ?? "all" });
+      res.json(response);
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message || err) });
+    }
+  });
+
+  app.post("/api/tenants/:tenantId/llm-models/seed-demo", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const now = Date.now();
+
+    const demoAgents = [
+      {
+        tenantId,
+        name: "Customer Support Triage",
+        description: "Copilot agent classifying inbound support tickets and routing to specialists.",
+        source: "agent365",
+        externalId: "demo-agent-triage",
+        endpoint: "https://graph.microsoft.com/copilot/agents/demo-agent-triage",
+        platform: "copilot",
+        agentCard: { displayName: "Customer Support Triage", publisher: "Contoso IT", version: "1.2.0" },
+        capabilities: { skills: ["classify", "summarize", "route"], streaming: true },
+        status: "active",
+      },
+      {
+        tenantId,
+        name: "SharePoint Research Agent",
+        description: "A2A-discovered agent that retrieves and summarizes SharePoint content.",
+        source: "a2a",
+        externalId: "https://research-agent.contoso.com",
+        endpoint: "https://research-agent.contoso.com",
+        platform: "foundry",
+        agentCard: { name: "SharePoint Research Agent", url: "https://research-agent.contoso.com", capabilities: { streaming: true }, skills: [{ id: "search_sp", name: "Search SharePoint" }] },
+        capabilities: { skills: ["search", "summarize"], streaming: true },
+        status: "active",
+      },
+      {
+        tenantId,
+        name: "Compliance Copilot",
+        description: "Manually registered agent for DLP policy analysis.",
+        source: "manual",
+        externalId: "manual-compliance-copilot",
+        endpoint: null,
+        platform: "other",
+        agentCard: null,
+        capabilities: { skills: ["policy_review", "risk_score"] },
+        status: "active",
+      },
+    ];
+    const createdAgents: any[] = [];
+    for (const a of demoAgents) {
+      const agent = await storage.upsertKnownAgentByExternalId(a as any);
+      createdAgents.push(agent);
+    }
+
+    const demoSources = [
+      {
+        tenantId,
+        kind: "a2a",
+        label: "Contoso research cluster",
+        baseUrl: "https://research-agent.contoso.com",
+        enabled: true,
+        lastRunAt: new Date(now - 60_000),
+        lastStatus: "success",
+        agentsFound: 1,
+        config: null,
+      },
+      {
+        tenantId,
+        kind: "agent365",
+        label: "Contoso Microsoft 365 tenant",
+        baseUrl: null,
+        enabled: true,
+        lastRunAt: null,
+        lastStatus: "not_configured",
+        agentsFound: 0,
+        config: {
+          tenantIdEnvVar: "AGENT365_TENANT_ID",
+          clientIdEnvVar: "AGENT365_CLIENT_ID",
+          clientSecretEnvVar: "AGENT365_CLIENT_SECRET",
+        },
+      },
+    ];
+    for (const s of demoSources) {
+      await storage.createAgentDiscoverySource(s as any);
+    }
+
+    const demoModels = [
+      {
+        tenantId, provider: "foundry", modelName: "gpt-4o", displayName: "GPT-4o (Foundry East US)",
+        deploymentName: "gpt-4o-eastus", endpoint: "https://contoso-foundry.openai.azure.com",
+        apiVersion: "2024-10-21", apiKeyEnvVar: "AZURE_FOUNDRY_KEY_EASTUS",
+        inputCostPerMtok: 2.5, outputCostPerMtok: 10.0, maxContextTokens: 128000,
+        capabilities: { streaming: true, tools: true, vision: true }, status: "active",
+        lastHealthCheck: new Date(now - 120_000),
+      },
+      {
+        tenantId, provider: "foundry", modelName: "gpt-4o-mini", displayName: "GPT-4o mini (Foundry East US)",
+        deploymentName: "gpt-4o-mini-eastus", endpoint: "https://contoso-foundry.openai.azure.com",
+        apiVersion: "2024-10-21", apiKeyEnvVar: "AZURE_FOUNDRY_KEY_EASTUS",
+        inputCostPerMtok: 0.15, outputCostPerMtok: 0.6, maxContextTokens: 128000,
+        capabilities: { streaming: true, tools: true }, status: "active",
+        lastHealthCheck: new Date(now - 60_000),
+      },
+      {
+        tenantId, provider: "foundry", modelName: "phi-4", displayName: "Phi-4 (Foundry Serverless)",
+        deploymentName: "phi-4-serverless", endpoint: "https://contoso-foundry.inference.ai.azure.com",
+        apiVersion: "2024-05-01-preview", apiKeyEnvVar: "AZURE_FOUNDRY_PHI_KEY",
+        inputCostPerMtok: 0.1, outputCostPerMtok: 0.4, maxContextTokens: 16000,
+        capabilities: { streaming: true }, status: "degraded",
+        lastHealthCheck: new Date(now - 300_000),
+      },
+      {
+        tenantId, provider: "openai", modelName: "gpt-4-turbo", displayName: "GPT-4 Turbo (direct)",
+        deploymentName: null, endpoint: "https://api.openai.com/v1",
+        apiVersion: null, apiKeyEnvVar: "OPENAI_API_KEY",
+        inputCostPerMtok: 10.0, outputCostPerMtok: 30.0, maxContextTokens: 128000,
+        capabilities: { streaming: true, tools: true }, status: "active",
+        lastHealthCheck: new Date(now - 90_000),
+      },
+    ];
+    const createdModels: any[] = [];
+    for (const m of demoModels) {
+      const model = await storage.createLlmModel(m as any);
+      createdModels.push(model);
+    }
+
+    const errorClasses = ["rate_limit", "context_overflow", "timeout", "server_error", "auth"];
+    const agentIds = [null, ...createdAgents.map(a => a.id as string | null)];
+    let totalCalls = 0;
+
+    for (const model of createdModels) {
+      const callCount = model.status === "active" ? 80 : 25;
+      for (let i = 0; i < callCount; i++) {
+        const ageMs = Math.random() * 24 * 3600 * 1000;
+        const isError = Math.random() < (model.status === "degraded" ? 0.25 : 0.05);
+        const inputTokens = Math.floor(200 + Math.random() * 3800);
+        const outputTokens = isError ? 0 : Math.floor(50 + Math.random() * 1200);
+        const ttft = isError ? 5 + Math.random() * 100 : 80 + Math.random() * 600;
+        const duration = isError ? ttft + Math.random() * 200 : ttft + (outputTokens / (15 + Math.random() * 40)) * 1000;
+        const tokensPerSec = outputTokens > 0 ? outputTokens / ((duration - ttft) / 1000) : 0;
+        const costCents = ((inputTokens / 1_000_000) * (model.inputCostPerMtok ?? 0) + (outputTokens / 1_000_000) * (model.outputCostPerMtok ?? 0)) * 100;
+        const errorClass = isError ? errorClasses[Math.floor(Math.random() * errorClasses.length)] : null;
+        const agentId = agentIds[Math.floor(Math.random() * agentIds.length)];
+        const picked = agentId ? createdAgents.find(a => a.id === agentId) : null;
+
+        await storage.createLlmCall({
+          tenantId,
+          modelId: model.id,
+          agentId,
+          traceId: null,
+          spanId: null,
+          agentName: picked?.name ?? null,
+          operation: "chat.completions",
+          durationMs: Math.round(duration),
+          ttftMs: Math.round(ttft),
+          tokensPerSec,
+          inputTokens,
+          outputTokens,
+          cachedInputTokens: Math.random() < 0.2 ? Math.floor(inputTokens * 0.3) : null,
+          costCents,
+          temperature: 0.7,
+          maxTokensRequested: 2000,
+          stream: Math.random() < 0.5,
+          status: isError ? "error" : "success",
+          errorClass,
+          errorCode: isError ? (errorClass === "rate_limit" ? "429" : errorClass === "auth" ? "401" : "500") : null,
+          errorMessage: isError ? `${errorClass} simulated for demo` : null,
+          requestId: `demo-req-${model.id.slice(0, 6)}-${i}`,
+          metadata: null,
+          calledAt: new Date(now - ageMs),
+        } as any);
+        totalCalls++;
+      }
+    }
+
+    await logAdminAction(tenantId, "seed_demo", "llmModels", null, { models: createdModels.length, agents: createdAgents.length, calls: totalCalls });
+    res.json({ models: createdModels.length, agents: createdAgents.length, calls: totalCalls, message: "Demo LLM models, known agents, and calls seeded" });
   });
 
   return httpServer;
