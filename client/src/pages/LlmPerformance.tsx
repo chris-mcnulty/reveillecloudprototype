@@ -33,6 +33,8 @@ import {
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
+import { useUrlWindow } from "@/lib/use-url-window";
+import { WindowFilterBadge } from "@/components/WindowFilterBadge";
 import {
   LineChart,
   Line,
@@ -124,6 +126,7 @@ export default function LlmPerformance() {
   const queryClient = useQueryClient();
   const { activeTenantId, activeOrgId, organization } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
+  const { since: windowSince } = useUrlWindow();
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [errorClassFilter, setErrorClassFilter] = useState<string>("all");
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
@@ -242,6 +245,7 @@ export default function LlmPerformance() {
           <div className="flex items-center gap-2">
             <Brain className="h-6 w-6" />
             <h1 className="text-2xl font-bold" data-testid="text-page-title">LLM Performance</h1>
+            <WindowFilterBadge />
             {hasData && (
               <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30 text-xs font-medium">
                 <Activity className="h-3 w-3 mr-1" />Live
@@ -301,7 +305,7 @@ export default function LlmPerformance() {
             <CardContent>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={stats?.timeseries ?? []}>
+                  <LineChart data={(stats?.timeseries ?? []).filter((p) => !windowSince || (p.bucket != null && new Date(p.bucket) >= windowSince))}>
                     <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                     <XAxis dataKey="bucket" tickFormatter={v => v?.slice(11, 16) ?? ""} className="text-xs" />
                     <YAxis yAxisId="left" className="text-xs" />
@@ -402,7 +406,7 @@ export default function LlmPerformance() {
                           <TableCell colSpan={11} className="bg-muted/30">
                             <div className="py-2">
                               <div className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">Recent calls</div>
-                              {recentCalls.length === 0 ? (
+                              {(windowSince ? recentCalls.filter(c => c.calledAt && new Date(c.calledAt) >= windowSince) : recentCalls).length === 0 ? (
                                 <p className="text-sm text-muted-foreground">No recent calls for this model.</p>
                               ) : (
                                 <Table>
@@ -419,7 +423,7 @@ export default function LlmPerformance() {
                                     </TableRow>
                                   </TableHeader>
                                   <TableBody>
-                                    {recentCalls.map(c => (
+                                    {(windowSince ? recentCalls.filter(c => c.calledAt && new Date(c.calledAt) >= windowSince) : recentCalls).map(c => (
                                       <TableRow key={c.id}>
                                         <TableCell className="text-xs">{new Date(c.calledAt).toLocaleTimeString()}</TableCell>
                                         <TableCell className="text-xs">{c.agentName || <span className="text-muted-foreground">ad-hoc</span>}</TableCell>

@@ -660,6 +660,39 @@ export async function registerRoutes(
     res.json(updated);
   });
 
+  app.get("/api/benchmarking", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    const windowParam = ((req.query.window as string) || "7d").toLowerCase();
+    const windowMap: Record<string, number> = {
+      "24h": 24 * 60 * 60 * 1000,
+      "7d": 7 * 24 * 60 * 60 * 1000,
+      "30d": 30 * 24 * 60 * 60 * 1000,
+      "90d": 90 * 24 * 60 * 60 * 1000,
+    };
+    if (!orgId) {
+      return res.status(400).json({ message: "orgId query parameter is required" });
+    }
+    if (!(windowParam in windowMap)) {
+      return res.status(400).json({ message: "window must be one of 24h, 7d, 30d, 90d" });
+    }
+    const windowMs = windowMap[windowParam];
+
+    const org = await storage.getOrganization(orgId);
+    if (!org) return res.status(404).json({ message: "Organization not found" });
+    if (org.mode !== "msp") {
+      return res.status(403).json({ message: "Benchmarking is only available for MSP organizations" });
+    }
+
+    const data = await storage.getBenchmarkingMatrix(org.id, windowMs);
+    res.json({
+      orgId: org.id,
+      orgName: org.name,
+      windowLabel: windowParam,
+      generatedAt: new Date().toISOString(),
+      ...data,
+    });
+  });
+
   app.get("/api/agent-traces", async (req, res) => {
     const tenantId = req.query.tenantId as string | undefined;
     const platform = req.query.platform as string | undefined;

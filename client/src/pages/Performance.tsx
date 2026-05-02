@@ -10,6 +10,8 @@ import {
 } from "recharts";
 import { useMetrics, useTenantTestRuns, useLatestUsageReport, useServiceHealth } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { useUrlWindow } from "@/lib/use-url-window";
+import { WindowFilterBadge } from "@/components/WindowFilterBadge";
 
 const CHART_COLORS = {
   primary: "hsl(var(--primary))",
@@ -29,6 +31,7 @@ const tooltipStyle = {
 export default function Performance() {
   const { activeTenantId } = useActiveTenant();
   const tenantId = activeTenantId;
+  const { since: windowSince } = useUrlWindow();
 
   const { data: allMetrics, isLoading: loadingMetrics } = useMetrics(tenantId);
   const { data: testRuns, isLoading: loadingRuns } = useTenantTestRuns(tenantId);
@@ -46,8 +49,18 @@ export default function Performance() {
     );
   }
 
-  const metrics = allMetrics || [];
-  const runs = testRuns || [];
+  const allMetricsArr = allMetrics || [];
+  const allRuns = testRuns || [];
+  const metrics = windowSince
+    ? allMetricsArr.filter((m) => m.timestamp != null && new Date(m.timestamp) >= windowSince)
+    : allMetricsArr;
+  const runs = windowSince
+    ? allRuns.filter((r) => {
+        const ts = (r as { finishedAt?: string | Date | null; startedAt?: string | Date | null }).finishedAt
+          ?? (r as { finishedAt?: string | Date | null; startedAt?: string | Date | null }).startedAt;
+        return ts ? new Date(ts) >= windowSince : true;
+      })
+    : allRuns;
   const syntheticData = buildSyntheticTimeSeries(metrics);
   const phaseData = buildPhaseBreakdowns(runs);
   const successRate = computeSuccessRate(runs);
@@ -61,7 +74,10 @@ export default function Performance() {
     <Shell>
       <div className="flex items-center justify-between space-y-2">
         <div>
-          <h2 data-testid="text-page-title" className="text-2xl font-bold tracking-tight">Performance Explorer</h2>
+          <div className="flex items-center gap-2">
+            <h2 data-testid="text-page-title" className="text-2xl font-bold tracking-tight">Performance Explorer</h2>
+            <WindowFilterBadge />
+          </div>
           <p className="text-muted-foreground">
             Synthetic test performance, real API phase timings, and Graph usage insights.
           </p>

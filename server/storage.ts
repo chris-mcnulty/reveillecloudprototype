@@ -232,6 +232,16 @@ export interface IStorage {
   deleteSavedView(id: string): Promise<void>;
   getSavedView(id: string): Promise<SavedView | undefined>;
   listSavedViewsForUser(orgId: string, userId: string, pageKey?: string): Promise<SavedView[]>;
+
+
+  getBenchmarkingMatrix(orgId: string, selectedWindowMs: number): Promise<{
+    metricWindows: Record<string, { ms: number; label: string }>;
+    tenants: Array<{
+      tenantId: string;
+      tenantName: string;
+      metrics: Record<string, { value: number; prev: number | null; delta: number | null; sparkline: number[] }>;
+    }>;
+  }>;
 }
 
 function sameStringArray(a: string[] | null, b: string[] | null): boolean {
@@ -2021,6 +2031,287 @@ export class DatabaseStorage implements IStorage {
       ? and(ownership, eq(savedViews.pageKey, pageKey))
       : ownership;
     return db.select().from(savedViews).where(where).orderBy(desc(savedViews.isSystem), desc(savedViews.createdAt));
+  }
+
+  async getBenchmarkingMatrix(orgId: string, selectedWindowMs: number): Promise<{
+    metricWindows: Record<string, { ms: number; label: string }>;
+    tenants: Array<{
+      tenantId: string;
+      tenantName: string;
+      metrics: Record<string, { value: number; prev: number | null; delta: number | null; sparkline: number[] }>;
+    }>;
+  }> {
+    const tenantList = await db.select().from(tenants).where(eq(tenants.organizationId, orgId));
+    const bucketCount = 8;
+
+    const now = new Date();
+    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const mtdMs = Math.max(60_000, now.getTime() - startOfMonth.getTime());
+
+    const labelForMs = (ms: number): string => {
+      const d = ms / 86400000;
+      if (Math.abs(d - 1) < 0.05) return "24h";
+      if (Math.abs(d - 7) < 0.5) return "7d";
+      if (Math.abs(d - 28) < 0.5) return "28d";
+      if (Math.abs(d - 30) < 0.5) return "30d";
+      if (Math.abs(d - 90) < 0.5) return "90d";
+      return `${Math.round(d)}d`;
+    };
+
+    const metricWindows: Record<string, { ms: number; label: string }> = {
+      latencyP95: { ms: selectedWindowMs, label: labelForMs(selectedWindowMs) },
+      alertCount: { ms: selectedWindowMs, label: labelForMs(selectedWindowMs) },
+      agentErrorRate: { ms: selectedWindowMs, label: labelForMs(selectedWindowMs) },
+      copilotUsers: { ms: 28 * 86400000, label: "28d" },
+      llmSpend: { ms: mtdMs, label: "MTD" },
+      riskySignIns: { ms: 7 * 86400000, label: "7d" },
+    };
+
+    if (tenantList.length === 0) {
+      return { metricWindows, tenants: [] };
+    }
+
+    const metricKeys = Object.keys(metricWindows);
+    const emptyMetric = () => ({ value: 0, prev: null as number | null, delta: null as number | null, sparkline: new Array(bucketCount).fill(0) });
+    const computeDelta = (curr: number, prev: number | null): number | null => {
+      if (prev == null) return null;
+      if (prev === 0) return curr > 0 ? 100 : 0;
+      return ((curr - prev) / prev) * 100;
+    };
+
+    const result = new Map<string, { tenantId: string; tenantName: string; metrics: Record<string, ReturnType<typeof emptyMetric>> }>();
+    for (const t of tenantList) {
+      result.set(t.id, {
+        tenantId: t.id,
+        tenantName: t.name,
+        metrics: Object.fromEntries(metricKeys.map(k => [k, emptyMetric()])),
+      });
+    }
+
+    const tenantIds = tenantList.map(t => t.id);
+    const idIn = sql.join(tenantIds.map(id => sql`${id}`), sql`, `);
+
+    const bucketSecFor = (ms: number) => Math.max(60, Math.floor(ms / 1000 / bucketCount));
+    const winFor = (key: string) => {
+      const ms = metricWindows[key].ms;
+      return {
+        winStart: new Date(now.getTime() - ms),
+        prevStart: new Date(now.getTime() - 2 * ms),
+        bucketSec: bucketSecFor(ms),
+      };
+    };
+
+    // 1. Synthetic latency p95 - filtered to page_load metric (canonical synthetic-test latency in ms)
+    {
+      const { winStart, prevStart, bucketSec } = winFor("latencyP95");
+      const cur = await db.execute(sql`
+        SELECT tenant_id,
+          percentile_cont(0.95) WITHIN GROUP (ORDER BY value) FILTER (WHERE timestamp >= ${winStart}) AS cur,
+          percentile_cont(0.95) WITHIN GROUP (ORDER BY value) FILTER (WHERE timestamp >= ${prevStart} AND timestamp < ${winStart}) AS prev
+        FROM metrics
+        WHERE tenant_id IN (${idIn}) AND timestamp >= ${prevStart} AND metric_name = 'page_load' AND unit = 'ms'
+        GROUP BY tenant_id
+      `);
+      for (const r of cur.rows as any[]) {
+        const m = result.get(r.tenant_id)?.metrics.latencyP95;
+        if (!m) continue;
+        m.value = Number(r.cur) || 0;
+        m.prev = r.prev != null ? Number(r.prev) : null;
+        m.delta = computeDelta(m.value, m.prev);
+      }
+      const spk = await db.execute(sql`
+        SELECT tenant_id,
+          floor(EXTRACT(EPOCH FROM (timestamp - ${winStart}::timestamp)) / ${bucketSec})::int AS idx,
+          percentile_cont(0.95) WITHIN GROUP (ORDER BY value) AS v
+        FROM metrics
+        WHERE tenant_id IN (${idIn}) AND timestamp >= ${winStart} AND metric_name = 'page_load' AND unit = 'ms'
+        GROUP BY tenant_id, idx
+      `);
+      for (const r of spk.rows as any[]) {
+        const idx = Math.min(bucketCount - 1, Math.max(0, Number(r.idx)));
+        const m = result.get(r.tenant_id)?.metrics.latencyP95;
+        if (m) m.sparkline[idx] = Number(r.v) || 0;
+      }
+    }
+
+    // 2. Alert count (selectable window)
+    {
+      const { winStart, prevStart, bucketSec } = winFor("alertCount");
+      const cur = await db.execute(sql`
+        SELECT tenant_id,
+          COUNT(*) FILTER (WHERE timestamp >= ${winStart})::int AS cur,
+          COUNT(*) FILTER (WHERE timestamp >= ${prevStart} AND timestamp < ${winStart})::int AS prev
+        FROM alerts
+        WHERE tenant_id IN (${idIn}) AND timestamp >= ${prevStart}
+        GROUP BY tenant_id
+      `);
+      for (const r of cur.rows as any[]) {
+        const m = result.get(r.tenant_id)?.metrics.alertCount;
+        if (!m) continue;
+        m.value = Number(r.cur) || 0;
+        m.prev = Number(r.prev) || 0;
+        m.delta = computeDelta(m.value, m.prev);
+      }
+      const spk = await db.execute(sql`
+        SELECT tenant_id,
+          floor(EXTRACT(EPOCH FROM (timestamp - ${winStart}::timestamp)) / ${bucketSec})::int AS idx,
+          COUNT(*)::int AS c
+        FROM alerts
+        WHERE tenant_id IN (${idIn}) AND timestamp >= ${winStart}
+        GROUP BY tenant_id, idx
+      `);
+      for (const r of spk.rows as any[]) {
+        const idx = Math.min(bucketCount - 1, Math.max(0, Number(r.idx)));
+        const m = result.get(r.tenant_id)?.metrics.alertCount;
+        if (m) m.sparkline[idx] = Number(r.c) || 0;
+      }
+    }
+
+    // 3. Agent error rate %, selectable window
+    {
+      const { winStart, prevStart, bucketSec } = winFor("agentErrorRate");
+      const cur = await db.execute(sql`
+        SELECT tenant_id,
+          COUNT(*) FILTER (WHERE started_at >= ${winStart})::int AS cur_total,
+          COUNT(*) FILTER (WHERE started_at >= ${winStart} AND status = 'failed')::int AS cur_failed,
+          COUNT(*) FILTER (WHERE started_at >= ${prevStart} AND started_at < ${winStart})::int AS prev_total,
+          COUNT(*) FILTER (WHERE started_at >= ${prevStart} AND started_at < ${winStart} AND status = 'failed')::int AS prev_failed
+        FROM agent_traces
+        WHERE tenant_id IN (${idIn}) AND started_at >= ${prevStart}
+        GROUP BY tenant_id
+      `);
+      for (const r of cur.rows as any[]) {
+        const m = result.get(r.tenant_id)?.metrics.agentErrorRate;
+        if (!m) continue;
+        const ct = Number(r.cur_total) || 0;
+        const cf = Number(r.cur_failed) || 0;
+        const pt = Number(r.prev_total) || 0;
+        const pf = Number(r.prev_failed) || 0;
+        m.value = ct > 0 ? (cf / ct) * 100 : 0;
+        m.prev = pt > 0 ? (pf / pt) * 100 : null;
+        m.delta = computeDelta(m.value, m.prev);
+      }
+      const spk = await db.execute(sql`
+        SELECT tenant_id,
+          floor(EXTRACT(EPOCH FROM (started_at - ${winStart}::timestamp)) / ${bucketSec})::int AS idx,
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+        FROM agent_traces
+        WHERE tenant_id IN (${idIn}) AND started_at >= ${winStart}
+        GROUP BY tenant_id, idx
+      `);
+      for (const r of spk.rows as any[]) {
+        const idx = Math.min(bucketCount - 1, Math.max(0, Number(r.idx)));
+        const m = result.get(r.tenant_id)?.metrics.agentErrorRate;
+        const total = Number(r.total) || 0;
+        const failed = Number(r.failed) || 0;
+        if (m && total > 0) m.sparkline[idx] = (failed / total) * 100;
+      }
+    }
+
+    // 4. Copilot users (distinct user_id) - fixed 28d
+    {
+      const { winStart, prevStart, bucketSec } = winFor("copilotUsers");
+      const cur = await db.execute(sql`
+        SELECT tenant_id,
+          COUNT(DISTINCT user_id) FILTER (WHERE created_at >= ${winStart})::int AS cur,
+          COUNT(DISTINCT user_id) FILTER (WHERE created_at >= ${prevStart} AND created_at < ${winStart})::int AS prev
+        FROM copilot_interactions
+        WHERE tenant_id IN (${idIn}) AND created_at >= ${prevStart} AND user_id IS NOT NULL
+        GROUP BY tenant_id
+      `);
+      for (const r of cur.rows as any[]) {
+        const m = result.get(r.tenant_id)?.metrics.copilotUsers;
+        if (!m) continue;
+        m.value = Number(r.cur) || 0;
+        m.prev = Number(r.prev) || 0;
+        m.delta = computeDelta(m.value, m.prev);
+      }
+      const spk = await db.execute(sql`
+        SELECT tenant_id,
+          floor(EXTRACT(EPOCH FROM (created_at - ${winStart}::timestamp)) / ${bucketSec})::int AS idx,
+          COUNT(DISTINCT user_id)::int AS u
+        FROM copilot_interactions
+        WHERE tenant_id IN (${idIn}) AND created_at >= ${winStart} AND user_id IS NOT NULL
+        GROUP BY tenant_id, idx
+      `);
+      for (const r of spk.rows as any[]) {
+        const idx = Math.min(bucketCount - 1, Math.max(0, Number(r.idx)));
+        const m = result.get(r.tenant_id)?.metrics.copilotUsers;
+        if (m) m.sparkline[idx] = Number(r.u) || 0;
+      }
+    }
+
+    // 5. LLM spend (cost_cents) - fixed MTD
+    {
+      const { winStart, prevStart, bucketSec } = winFor("llmSpend");
+      const cur = await db.execute(sql`
+        SELECT tenant_id,
+          COALESCE(SUM(cost_cents) FILTER (WHERE called_at >= ${winStart}), 0)::real AS cur,
+          COALESCE(SUM(cost_cents) FILTER (WHERE called_at >= ${prevStart} AND called_at < ${winStart}), 0)::real AS prev
+        FROM llm_calls
+        WHERE tenant_id IN (${idIn}) AND called_at >= ${prevStart}
+        GROUP BY tenant_id
+      `);
+      for (const r of cur.rows as any[]) {
+        const m = result.get(r.tenant_id)?.metrics.llmSpend;
+        if (!m) continue;
+        m.value = Number(r.cur) || 0;
+        m.prev = Number(r.prev) || 0;
+        m.delta = computeDelta(m.value, m.prev);
+      }
+      const spk = await db.execute(sql`
+        SELECT tenant_id,
+          floor(EXTRACT(EPOCH FROM (called_at - ${winStart}::timestamp)) / ${bucketSec})::int AS idx,
+          COALESCE(SUM(cost_cents), 0)::real AS s
+        FROM llm_calls
+        WHERE tenant_id IN (${idIn}) AND called_at >= ${winStart}
+        GROUP BY tenant_id, idx
+      `);
+      for (const r of spk.rows as any[]) {
+        const idx = Math.min(bucketCount - 1, Math.max(0, Number(r.idx)));
+        const m = result.get(r.tenant_id)?.metrics.llmSpend;
+        if (m) m.sparkline[idx] = Number(r.s) || 0;
+      }
+    }
+
+    // 6. High-risk sign-ins (risk_level = 'high') - fixed 7d
+    {
+      const { winStart, prevStart, bucketSec } = winFor("riskySignIns");
+      const cur = await db.execute(sql`
+        SELECT tenant_id,
+          COUNT(*) FILTER (WHERE sign_in_at >= ${winStart} AND risk_level = 'high')::int AS cur,
+          COUNT(*) FILTER (WHERE sign_in_at >= ${prevStart} AND sign_in_at < ${winStart} AND risk_level = 'high')::int AS prev
+        FROM entra_sign_ins
+        WHERE tenant_id IN (${idIn}) AND sign_in_at >= ${prevStart}
+        GROUP BY tenant_id
+      `);
+      for (const r of cur.rows as any[]) {
+        const m = result.get(r.tenant_id)?.metrics.riskySignIns;
+        if (!m) continue;
+        m.value = Number(r.cur) || 0;
+        m.prev = Number(r.prev) || 0;
+        m.delta = computeDelta(m.value, m.prev);
+      }
+      const spk = await db.execute(sql`
+        SELECT tenant_id,
+          floor(EXTRACT(EPOCH FROM (sign_in_at - ${winStart}::timestamp)) / ${bucketSec})::int AS idx,
+          COUNT(*)::int AS c
+        FROM entra_sign_ins
+        WHERE tenant_id IN (${idIn}) AND sign_in_at >= ${winStart} AND risk_level = 'high'
+        GROUP BY tenant_id, idx
+      `);
+      for (const r of spk.rows as any[]) {
+        const idx = Math.min(bucketCount - 1, Math.max(0, Number(r.idx)));
+        const m = result.get(r.tenant_id)?.metrics.riskySignIns;
+        if (m) m.sparkline[idx] = Number(r.c) || 0;
+      }
+    }
+
+    return {
+      metricWindows,
+      tenants: Array.from(result.values()),
+    };
   }
 }
 

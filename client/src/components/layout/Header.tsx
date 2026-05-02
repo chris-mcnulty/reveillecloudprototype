@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, LayoutGrid, Lock, ShieldCheck, FileBarChart, ScrollText, Layers, ScanSearch, Fingerprint, HardDrive, BrainCircuit } from "lucide-react";
+import { Search, Bell, Building2, Menu, Home, Activity, AlertCircle, BarChart3, Settings, LayoutGrid, Lock, ShieldCheck, FileBarChart, ScrollText, Layers, ScanSearch, Fingerprint, HardDrive, BrainCircuit, GitCompare } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -62,6 +62,7 @@ export function Header() {
   const mspOnlyItems = isMsp ? [
     { href: "/environments", icon: LayoutGrid, label: "Environments" },
     { href: "/tenants", icon: Building2, label: "Tenants" },
+    { href: "/benchmarking", icon: GitCompare, label: "Benchmarking" },
   ] : [];
 
   const navItems = [

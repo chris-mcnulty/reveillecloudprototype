@@ -67,6 +67,8 @@ import {
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
+import { useUrlWindow } from "@/lib/use-url-window";
+import { WindowFilterBadge } from "@/components/WindowFilterBadge";
 import {
   BarChart,
   Bar,
@@ -2502,6 +2504,7 @@ export default function AgentObservability() {
   const queryClient = useQueryClient();
   const { activeTenantId, activeOrgId, organization } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
+  const { since: windowSince } = useUrlWindow();
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
@@ -2617,6 +2620,9 @@ export default function AgentObservability() {
 
   const filteredTraces = useMemo(() => {
     let list = traces;
+    if (windowSince) {
+      list = list.filter(t => t.startedAt && new Date(t.startedAt) >= windowSince);
+    }
     if (agentSearch) {
       list = list.filter(t => t.agentName.toLowerCase().includes(agentSearch.toLowerCase()));
     }
@@ -2628,7 +2634,7 @@ export default function AgentObservability() {
       list = list.filter(t => new Date(t.startedAt).getTime() >= cutoff);
     }
     return list;
-  }, [traces, agentSearch, datePreset]);
+  }, [traces, agentSearch, datePreset, windowSince]);
 
   const healthyCount = healthData.filter(a => a.status === "healthy").length;
   const degradedCount = healthData.filter(a => a.status === "degraded").length;

@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
+import { useUrlWindow } from "@/lib/use-url-window";
+import { WindowFilterBadge } from "@/components/WindowFilterBadge";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell,
@@ -57,6 +59,7 @@ const PIE_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4
 export default function EntraSignIns() {
   const { activeTenantId, activeOrgId, organization } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
+  const { since: windowSince } = useUrlWindow();
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [riskFilter, setRiskFilter] = useState<string>("all");
@@ -113,6 +116,9 @@ export default function EntraSignIns() {
 
   const filteredSignIns = useMemo(() => {
     let list = signIns as any[];
+    if (windowSince) {
+      list = list.filter((s: { signInAt?: string | Date | null }) => s.signInAt != null && new Date(s.signInAt) >= windowSince);
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       list = list.filter((s: any) =>
@@ -130,7 +136,7 @@ export default function EntraSignIns() {
       list = list.filter((s: any) => s.signInAt && new Date(s.signInAt).getTime() >= cutoff);
     }
     return list;
-  }, [signIns, searchQuery, datePreset]);
+  }, [signIns, searchQuery, datePreset, windowSince]);
 
   const trendData = useMemo(() => {
     if (!stats?.trend) return [];
@@ -160,7 +166,10 @@ export default function EntraSignIns() {
         <div className="flex items-center gap-3">
           <Fingerprint className="h-7 w-7 text-blue-500" />
           <div>
-            <h1 className="text-2xl font-bold" data-testid="text-page-title">Entra ID Sign-Ins</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold" data-testid="text-page-title">Entra ID Sign-Ins</h1>
+              <WindowFilterBadge />
+            </div>
             <p className="text-sm text-muted-foreground">Microsoft Entra identity and access monitoring</p>
           </div>
           {stats?.totalSignIns > 0 && (
