@@ -31,7 +31,9 @@ import {
   agentDiscoverySources, type AgentDiscoverySource, type InsertAgentDiscoverySource,
   llmModels, type LlmModel, type InsertLlmModel,
   llmCalls, type LlmCall, type InsertLlmCall,
+  savedViews, type SavedView, type InsertSavedView,
 } from "@shared/schema";
+import { or } from "drizzle-orm";
 
 export interface IStorage {
   getOrganizations(): Promise<Organization[]>;
@@ -208,6 +210,12 @@ export interface IStorage {
     timeseries: { bucket: string; calls: number; avgDurationMs: number; costCents: number }[];
   }>;
   getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }>;
+
+  createSavedView(data: InsertSavedView): Promise<SavedView>;
+  updateSavedView(id: string, data: Partial<InsertSavedView>): Promise<SavedView | undefined>;
+  deleteSavedView(id: string): Promise<void>;
+  getSavedView(id: string): Promise<SavedView | undefined>;
+  listSavedViewsForUser(orgId: string, userId: string, pageKey?: string): Promise<SavedView[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1646,6 +1654,36 @@ export class DatabaseStorage implements IStorage {
       totalCalls: total,
       totalCostCents: Number(stats.cost_cents) || 0,
     };
+  }
+
+  async createSavedView(data: InsertSavedView): Promise<SavedView> {
+    const [created] = await db.insert(savedViews).values(data).returning();
+    return created;
+  }
+
+  async updateSavedView(id: string, data: Partial<InsertSavedView>): Promise<SavedView | undefined> {
+    const [updated] = await db.update(savedViews).set(data).where(eq(savedViews.id, id)).returning();
+    return updated;
+  }
+
+  async deleteSavedView(id: string): Promise<void> {
+    await db.delete(savedViews).where(eq(savedViews.id, id));
+  }
+
+  async getSavedView(id: string): Promise<SavedView | undefined> {
+    const [view] = await db.select().from(savedViews).where(eq(savedViews.id, id));
+    return view;
+  }
+
+  async listSavedViewsForUser(orgId: string, userId: string, pageKey?: string): Promise<SavedView[]> {
+    const ownership = or(
+      and(eq(savedViews.orgId, orgId), eq(savedViews.userId, userId)),
+      and(eq(savedViews.orgId, orgId), eq(savedViews.scope, "org")),
+    );
+    const where = pageKey
+      ? and(ownership, eq(savedViews.pageKey, pageKey))
+      : ownership;
+    return db.select().from(savedViews).where(where).orderBy(desc(savedViews.isSystem), desc(savedViews.createdAt));
   }
 }
 

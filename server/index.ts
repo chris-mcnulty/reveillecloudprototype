@@ -62,8 +62,13 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  const { seedDatabase } = await import("./seed");
+  const { seedDatabase, seedDefaultViewsForExistingOrgs } = await import("./seed");
   await seedDatabase();
+  try {
+    await seedDefaultViewsForExistingOrgs();
+  } catch (err: any) {
+    console.warn("[seed] Skipping default-view seeding:", err?.message || err);
+  }
   await registerRoutes(httpServer, app);
   attachLiveWebSocket(httpServer);
 

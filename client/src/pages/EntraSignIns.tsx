@@ -17,6 +17,7 @@ import {
   RefreshCw, Database, Clock, MapPin, Search, Activity, Lock,
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { SavedViews } from "@/components/SavedViews";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell,
@@ -61,6 +62,7 @@ export default function EntraSignIns() {
   const [riskFilter, setRiskFilter] = useState<string>("all");
   const [appFilter, setAppFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [datePreset, setDatePreset] = useState<string>("");
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
 
   const { data: stats } = useQuery({
@@ -110,15 +112,25 @@ export default function EntraSignIns() {
   });
 
   const filteredSignIns = useMemo(() => {
-    if (!searchQuery) return signIns;
-    const q = searchQuery.toLowerCase();
-    return signIns.filter((s: any) =>
-      (s.userPrincipalName || "").toLowerCase().includes(q) ||
-      (s.userDisplayName || "").toLowerCase().includes(q) ||
-      (s.ipAddress || "").includes(q) ||
-      (s.appDisplayName || "").toLowerCase().includes(q)
-    );
-  }, [signIns, searchQuery]);
+    let list = signIns as any[];
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((s: any) =>
+        (s.userPrincipalName || "").toLowerCase().includes(q) ||
+        (s.userDisplayName || "").toLowerCase().includes(q) ||
+        (s.ipAddress || "").includes(q) ||
+        (s.appDisplayName || "").toLowerCase().includes(q)
+      );
+    }
+    if (datePreset === "today") {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      list = list.filter((s: any) => s.signInAt && new Date(s.signInAt).getTime() >= cutoff);
+    } else if (datePreset === "this_week") {
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      list = list.filter((s: any) => s.signInAt && new Date(s.signInAt).getTime() >= cutoff);
+    }
+    return list;
+  }, [signIns, searchQuery, datePreset]);
 
   const trendData = useMemo(() => {
     if (!stats?.trend) return [];
@@ -390,6 +402,18 @@ export default function EntraSignIns() {
 
             <TabsContent value="signins" className="space-y-4">
               <div className="flex flex-wrap gap-3 items-center">
+                <SavedViews
+                  pageKey="entra-signins"
+                  currentFilters={{ statusFilter, riskFilter, appFilter, searchQuery, datePreset }}
+                  defaultFilters={{ statusFilter: "all", riskFilter: "all", appFilter: "all", searchQuery: "", datePreset: "" }}
+                  onApply={(f) => {
+                    setStatusFilter(f.statusFilter);
+                    setRiskFilter(f.riskFilter);
+                    setAppFilter(f.appFilter);
+                    setSearchQuery(f.searchQuery);
+                    setDatePreset(f.datePreset || "");
+                  }}
+                />
                 <div className="relative flex-1 min-w-[200px] max-w-sm">
                   <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input

@@ -32,6 +32,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { SavedViews } from "@/components/SavedViews";
 import {
   LineChart,
   Line,
@@ -124,6 +125,7 @@ export default function LlmPerformance() {
   const { activeTenantId, activeOrgId, organization } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
   const [agentFilter, setAgentFilter] = useState<string>("all");
+  const [errorClassFilter, setErrorClassFilter] = useState<string>("all");
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
 
   const { data: models = [] } = useQuery<LlmModel[]>({
@@ -164,7 +166,7 @@ export default function LlmPerformance() {
     refetchInterval: 90000,
   });
 
-  const { data: recentCalls = [] } = useQuery<LlmCall[]>({
+  const { data: rawRecentCalls = [] } = useQuery<LlmCall[]>({
     queryKey: ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter],
     enabled: !!activeTenantId && !!expandedModelId,
     queryFn: async () => {
@@ -177,6 +179,11 @@ export default function LlmPerformance() {
     },
     refetchInterval: 90000,
   });
+
+  const recentCalls = useMemo(() => {
+    if (errorClassFilter === "all") return rawRecentCalls;
+    return rawRecentCalls.filter(c => c.errorClass === errorClassFilter);
+  }, [rawRecentCalls, errorClassFilter]);
 
   const handleLlmLive = useCallback((event: LiveEvent) => {
     if (event.type !== "llm_call.recorded") return;
@@ -242,6 +249,15 @@ export default function LlmPerformance() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <SavedViews
+              pageKey="llm-calls"
+              currentFilters={{ agentFilter, errorClass: errorClassFilter }}
+              defaultFilters={{ agentFilter: "all", errorClass: "all" }}
+              onApply={(f) => {
+                setAgentFilter(f.agentFilter);
+                setErrorClassFilter(f.errorClass || "all");
+              }}
+            />
             <Select value={agentFilter} onValueChange={setAgentFilter}>
               <SelectTrigger className="w-[220px]" data-testid="select-agent-filter">
                 <SelectValue placeholder="All agents" />

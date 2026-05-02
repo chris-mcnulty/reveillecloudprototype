@@ -1,6 +1,86 @@
 import { db } from "./db";
-import { organizations, tenants, monitoredSystems, syntheticTests, alertRules, alerts } from "@shared/schema";
-import { sql } from "drizzle-orm";
+import { organizations, tenants, monitoredSystems, syntheticTests, alertRules, alerts, savedViews, type Organization } from "@shared/schema";
+import { sql, and, eq } from "drizzle-orm";
+
+const DEFAULT_VIEWS: Array<{ pageKey: string; name: string; filtersJson: Record<string, any> }> = [
+  {
+    pageKey: "agent-traces",
+    name: "Failed traces today",
+    filtersJson: { statusFilter: "failed", platformFilter: "all", agentSearch: "", datePreset: "today", columnVisibility: {} },
+  },
+  {
+    pageKey: "entra-signins",
+    name: "High-risk sign-ins this week",
+    filtersJson: { statusFilter: "all", riskFilter: "high", appFilter: "all", searchQuery: "", datePreset: "this_week", columnVisibility: {} },
+  },
+  {
+    pageKey: "copilot-sessions",
+    name: "Top 20 most active Copilot users",
+    filtersJson: {
+      appFilter: "all",
+      statusFilter: "all",
+      userSearch: "",
+      dateFrom: "",
+      dateTo: "",
+      sessionSortBy: "turns",
+      sessionSortOrder: "desc",
+      limit: 20,
+      columnVisibility: {},
+    },
+  },
+  {
+    pageKey: "llm-calls",
+    name: "Throttled LLM calls today",
+    filtersJson: { agentFilter: "all", errorClass: "rate_limit", datePreset: "today", columnVisibility: {} },
+  },
+  {
+    pageKey: "mcp-tool-calls",
+    name: "Failed MCP tool calls",
+    filtersJson: { toolCallFilter: "error", columnVisibility: {} },
+  },
+];
+
+export async function seedDefaultViewsForOrg(org: Pick<Organization, "id">) {
+  for (const def of DEFAULT_VIEWS) {
+    const existing = await db
+      .select({ id: savedViews.id })
+      .from(savedViews)
+      .where(
+        and(
+          eq(savedViews.orgId, org.id),
+          eq(savedViews.isSystem, true),
+          eq(savedViews.pageKey, def.pageKey),
+        ),
+      );
+    if (existing.length > 0) {
+      const [keep, ...duplicates] = existing;
+      await db
+        .update(savedViews)
+        .set({ name: def.name, filtersJson: def.filtersJson, scope: "org", userId: "system" })
+        .where(eq(savedViews.id, keep.id));
+      for (const dup of duplicates) {
+        await db.delete(savedViews).where(eq(savedViews.id, dup.id));
+      }
+      continue;
+    }
+    await db.insert(savedViews).values({
+      orgId: org.id,
+      userId: "system",
+      scope: "org",
+      pageKey: def.pageKey,
+      name: def.name,
+      filtersJson: def.filtersJson,
+      isSystem: true,
+    });
+  }
+}
+
+export async function seedDefaultViewsForExistingOrgs() {
+  const orgs = await db.select().from(organizations);
+  for (const org of orgs) {
+    await seedDefaultViewsForOrg(org);
+  }
+}
 
 export async function seedDatabase() {
   const existingOrgs = await db.select({ count: sql<number>`count(*)` }).from(organizations);
@@ -66,6 +146,9 @@ export async function seedDatabase() {
     { tenantId: globex.id, title: "Warning: OpenText latency elevated", severity: "warning", message: "OpenText API response times degraded to 1.2s average.", acknowledged: false },
     { tenantId: acme.id, title: "Resolved: HR Portal brief outage", severity: "info", message: "HR Portal experienced 5 min outage, now recovered.", acknowledged: true },
   ]);
+
+  await seedDefaultViewsForOrg(cascadiaOrg);
+  await seedDefaultViewsForOrg(synozurOrg);
 
   console.log("Database seeded successfully.");
 }

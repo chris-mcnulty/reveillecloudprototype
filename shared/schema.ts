@@ -658,3 +658,22 @@ export const llmCalls = pgTable("llm_calls", {
 export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
 export type InsertLlmCall = z.infer<typeof insertLlmCallSchema>;
 export type LlmCall = typeof llmCalls.$inferSelect;
+
+export const savedViews = pgTable("saved_views", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id),
+  scope: text("scope").notNull().default("user"),
+  pageKey: text("page_key").notNull(),
+  name: text("name").notNull(),
+  filtersJson: jsonb("filters_json").$type<Record<string, any>>().notNull(),
+  isSystem: boolean("is_system").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertSavedViewSchema = createInsertSchema(savedViews).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertSavedView = z.infer<typeof insertSavedViewSchema>;
+export type SavedView = typeof savedViews.$inferSelect;

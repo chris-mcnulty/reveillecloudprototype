@@ -66,6 +66,7 @@ import {
   Settings,
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { SavedViews } from "@/components/SavedViews";
 import {
   BarChart,
   Bar,
@@ -718,7 +719,8 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
   const [dateTo, setDateTo] = useState("");
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const pageSize = 25;
+  const [limitOverride, setLimitOverride] = useState<number | null>(null);
+  const pageSize = limitOverride ?? 25;
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedUserSearch(userSearch), 400);
@@ -896,6 +898,21 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
       </div>
 
       <div className="flex gap-3 flex-wrap items-end">
+        <SavedViews
+          pageKey="copilot-sessions"
+          currentFilters={{ appFilter, statusFilter, userSearch, dateFrom, dateTo, sessionSortBy, sessionSortOrder, limit: limitOverride ?? 0 }}
+          defaultFilters={{ appFilter: "all", statusFilter: "all", userSearch: "", dateFrom: "", dateTo: "", sessionSortBy: "latestTime", sessionSortOrder: "desc", limit: 0 }}
+          onApply={(f) => {
+            setAppFilter(f.appFilter);
+            setStatusFilter(f.statusFilter);
+            setUserSearch(f.userSearch);
+            setDateFrom(f.dateFrom);
+            setDateTo(f.dateTo);
+            setSessionSortBy(f.sessionSortBy as "userId" | "turns" | "latestTime");
+            setSessionSortOrder(f.sessionSortOrder as "asc" | "desc");
+            setLimitOverride(f.limit && f.limit > 0 ? f.limit : null);
+          }}
+        />
         <Select value={appFilter} onValueChange={setAppFilter}>
           <SelectTrigger className="w-40" data-testid="filter-copilot-app">
             <SelectValue placeholder="App" />
@@ -1876,17 +1893,25 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
                       <div className="mt-4 pt-4 border-t" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-between mb-3">
                           <h5 className="text-sm font-semibold">Recent Tool Calls</h5>
-                          <Select value={toolCallFilter} onValueChange={setToolCallFilter}>
-                            <SelectTrigger className="w-28 h-7 text-xs" data-testid="filter-mcp-tool-status">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="all">All</SelectItem>
-                              <SelectItem value="success">Success</SelectItem>
-                              <SelectItem value="error">Error</SelectItem>
-                              <SelectItem value="timeout">Timeout</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <div className="flex items-center gap-2">
+                            <SavedViews
+                              pageKey="mcp-tool-calls"
+                              currentFilters={{ toolCallFilter }}
+                              defaultFilters={{ toolCallFilter: "all" }}
+                              onApply={(f) => setToolCallFilter(f.toolCallFilter)}
+                            />
+                            <Select value={toolCallFilter} onValueChange={setToolCallFilter}>
+                              <SelectTrigger className="w-28 h-7 text-xs" data-testid="filter-mcp-tool-status">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="all">All</SelectItem>
+                                <SelectItem value="success">Success</SelectItem>
+                                <SelectItem value="error">Error</SelectItem>
+                                <SelectItem value="timeout">Timeout</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
 
                         {toolCalls.length === 0 ? (
@@ -2007,6 +2032,7 @@ export default function AgentObservability() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [agentSearch, setAgentSearch] = useState("");
+  const [datePreset, setDatePreset] = useState<string>("");
 
   const { data: healthData = [], isLoading: healthLoading } = useQuery<AgentHealthItem[]>({
     queryKey: ["/api/agent-health", activeTenantId],
@@ -2114,11 +2140,19 @@ export default function AgentObservability() {
   });
 
   const filteredTraces = useMemo(() => {
-    if (!agentSearch) return traces;
-    return traces.filter(t =>
-      t.agentName.toLowerCase().includes(agentSearch.toLowerCase())
-    );
-  }, [traces, agentSearch]);
+    let list = traces;
+    if (agentSearch) {
+      list = list.filter(t => t.agentName.toLowerCase().includes(agentSearch.toLowerCase()));
+    }
+    if (datePreset === "today") {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      list = list.filter(t => new Date(t.startedAt).getTime() >= cutoff);
+    } else if (datePreset === "this_week") {
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      list = list.filter(t => new Date(t.startedAt).getTime() >= cutoff);
+    }
+    return list;
+  }, [traces, agentSearch, datePreset]);
 
   const healthyCount = healthData.filter(a => a.status === "healthy").length;
   const degradedCount = healthData.filter(a => a.status === "degraded").length;
@@ -2387,7 +2421,18 @@ export default function AgentObservability() {
               </Card>
             )}
 
-            <div className="flex gap-3 mb-4 flex-wrap">
+            <div className="flex gap-3 mb-4 flex-wrap items-center">
+              <SavedViews
+                pageKey="agent-traces"
+                currentFilters={{ statusFilter, platformFilter, agentSearch, datePreset }}
+                defaultFilters={{ statusFilter: "all", platformFilter: "all", agentSearch: "", datePreset: "" }}
+                onApply={(f) => {
+                  setStatusFilter(f.statusFilter);
+                  setPlatformFilter(f.platformFilter);
+                  setAgentSearch(f.agentSearch);
+                  setDatePreset(f.datePreset || "");
+                }}
+              />
               <Select value={platformFilter} onValueChange={setPlatformFilter}>
                 <SelectTrigger className="w-40" data-testid="filter-platform">
                   <SelectValue placeholder="Platform" />

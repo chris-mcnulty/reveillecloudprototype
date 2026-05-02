@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema } from "@shared/schema";
 import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
@@ -1799,6 +1799,89 @@ export async function registerRoutes(
 
     await logAdminAction(tenantId, "seed_demo", "llmModels", null, { models: createdModels.length, agents: createdAgents.length, calls: totalCalls });
     res.json({ models: createdModels.length, agents: createdAgents.length, calls: totalCalls, message: "Demo LLM models, known agents, and calls seeded" });
+  });
+
+  function getRequestUserId(req: any): string {
+    const headerUser = (req.headers["x-user-id"] as string | undefined)?.trim();
+    const queryUser = (req.query.userId as string | undefined)?.trim();
+    const bodyUser = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
+    return headerUser || queryUser || bodyUser || "default-user";
+  }
+
+  function canAccessSavedView(view: { userId: string; orgId: string; scope: string }, requestOrgId: string, requestUserId: string) {
+    if (view.orgId !== requestOrgId) return false;
+    if (view.scope === "org") return true;
+    return view.userId === requestUserId;
+  }
+
+  function canMutateSavedView(view: { userId: string; orgId: string; scope: string; isSystem: boolean }, requestOrgId: string, requestUserId: string) {
+    if (view.isSystem) return false;
+    if (view.orgId !== requestOrgId) return false;
+    return view.userId === requestUserId;
+  }
+
+  app.get("/api/saved-views", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    const userId = getRequestUserId(req);
+    const pageKey = req.query.pageKey as string | undefined;
+    if (!orgId) return res.status(400).json({ message: "orgId required" });
+    const views = await storage.listSavedViewsForUser(orgId, userId, pageKey);
+    res.json(views);
+  });
+
+  app.get("/api/saved-views/:id", async (req, res) => {
+    const view = await storage.getSavedView(req.params.id);
+    if (!view) return res.status(404).json({ message: "Not found" });
+    const orgId = (req.query.orgId as string | undefined) || view.orgId;
+    const userId = getRequestUserId(req);
+    if (!canAccessSavedView(view, orgId, userId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    res.json(view);
+  });
+
+  app.post("/api/saved-views", async (req, res) => {
+    const userId = getRequestUserId(req);
+    const payload = { ...req.body, userId };
+    const parsed = insertSavedViewSchema.safeParse(payload);
+    if (!parsed.success) return res.status(400).json({ errors: parsed.error.flatten() });
+    if (parsed.data.isSystem) {
+      return res.status(403).json({ message: "Cannot create system views via this endpoint" });
+    }
+    const view = await storage.createSavedView(parsed.data);
+    await logAdminAction(null, "savedView.created", "savedView", view.id, {
+      pageKey: view.pageKey,
+      name: view.name,
+      scope: view.scope,
+    });
+    res.json(view);
+  });
+
+  app.patch("/api/saved-views/:id", async (req, res) => {
+    const existing = await storage.getSavedView(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    if (existing.isSystem) return res.status(403).json({ message: "System views are read-only" });
+    const userId = getRequestUserId(req);
+    if (!canMutateSavedView(existing, existing.orgId, userId)) {
+      return res.status(403).json({ message: "Only the view owner can modify this view" });
+    }
+    const { userId: _ignoreUserId, orgId: _ignoreOrgId, isSystem: _ignoreSystem, ...allowed } = req.body || {};
+    const updated = await storage.updateSavedView(req.params.id, allowed);
+    await logAdminAction(null, "savedView.updated", "savedView", req.params.id, { changes: allowed });
+    res.json(updated);
+  });
+
+  app.delete("/api/saved-views/:id", async (req, res) => {
+    const existing = await storage.getSavedView(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    if (existing.isSystem) return res.status(403).json({ message: "System views cannot be deleted" });
+    const userId = getRequestUserId(req);
+    if (!canMutateSavedView(existing, existing.orgId, userId)) {
+      return res.status(403).json({ message: "Only the view owner can delete this view" });
+    }
+    await storage.deleteSavedView(req.params.id);
+    await logAdminAction(null, "savedView.deleted", "savedView", req.params.id, { name: existing.name });
+    res.status(204).end();
   });
 
   return httpServer;
