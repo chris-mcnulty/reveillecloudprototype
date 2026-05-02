@@ -4,23 +4,25 @@
 Reveille Cloud is a multi-tenant SaaS platform designed to monitor SharePoint Online performance for customer tenants. It offers synthetic transaction testing, passive telemetry collection, alerting, and provides MSP-level visibility. The platform aims to ensure optimal SharePoint performance, detect issues proactively, and offer comprehensive insights into M365 usage and health.
 
 ## User Preferences
-No specific user preferences were provided in the original document.
+I prefer that the agent focuses on completing the current task efficiently. If there are multiple ways to achieve a goal, suggest the most straightforward and maintainable approach first. Provide clear, concise explanations for any significant architectural decisions or code changes. Prioritize the use of existing libraries and patterns over introducing new ones unless there's a clear benefit. I expect the agent to ask for confirmation before making any large-scale changes or introducing new features.
 
 ## System Architecture
 The application uses a modern web stack with **React**, **Vite**, **TailwindCSS**, and **shadcn/ui** for the frontend, and an **Express.js (TypeScript)** backend. **PostgreSQL** is the database, managed with **Drizzle ORM**. Routing is handled by **wouter** on the frontend and **Express** for the API.
 
 Key architectural decisions include:
 - **Multi-tenant Design**: Supports "standard" customer organizations and "msp" organizations with different UI modes and tenant management capabilities.
-- **Data Models**: Centralized schema for organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, and admin audit logs). Anomaly detection adds two tables — `metricBaselines` (hourly rolling-window stats per tenant×stream: mean/stddev/p50/p95/sampleCount/current/zScore) and `anomalyStreamConfigs` (per-tenant×stream sensitivity 1–6, default 3, with enabled flag) — and extends `alerts` with `alertType` (`threshold` default vs `anomaly`), `streamKey`, and a `payload` JSON column carrying anomaly metadata (current/mean/stddev/zScore/sensitivity/state/followupCount).
+- **Data Models**: Centralized schema for organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, admin audit logs, and Azure AI Foundry deployments / usage snapshots). Anomaly detection adds two tables — `metricBaselines` (hourly rolling-window stats per tenant×stream: mean/stddev/p50/p95/sampleCount/current/zScore) and `anomalyStreamConfigs` (per-tenant×stream sensitivity 1–6, default 3, with enabled flag) — and extends `alerts` with `alertType` (`threshold` default vs `anomaly`), `streamKey`, and a `payload` JSON column carrying anomaly metadata (current/mean/stddev/zScore/sensitivity/state/followupCount).
 - **SharePoint Integration**: Utilizes the Microsoft Graph API, enhanced by the Replit SharePoint connector for delegated authentication in synthetic tests and Azure AD multi-tenant app registration with client credentials for server-side collectors.
-- **Automated Scheduler**: An adapted multi-tenant scheduler handles various job types (synthetic tests, service health, audit logs, Graph reports, site structure, Copilot interactions) with independent intervals, staggered execution, and persistence of job runs.
+- **Automated Scheduler**: An adapted multi-tenant scheduler handles various job types (synthetic tests, service health, audit logs, Graph reports, site structure, Copilot interactions, Azure AI Foundry discovery) with independent intervals, staggered execution, and persistence of job runs.
 - **Passive Data Collectors**:
     - **Graph Reports**: Collects 11 types of M365 usage reports (SharePoint, OneDrive, Cross-M365 workloads).
     - **Service Health**: Monitors M365 service health for SharePoint/OneDrive/M365 incidents and generates alerts.
     - **Audit Logs**: Collects audit data from multiple sources including Office 365 Management Activity API, Graph Directory Audits, Graph Sign-Ins, and site analytics with a cascading fallback mechanism.
     - **Site Structure**: Enumerates SharePoint subsites, lists/libraries, drives, M365 Groups, and tenant users.
     - **Copilot Interactions**: Gathers Copilot prompt/response history via Graph API, organizing them into conversation threads and prompt-response pairs.
+    - **Foundry Discovery**: Hourly enumeration of Cognitive Services / OpenAI deployments via Azure Resource Manager and Azure Monitor token metrics into `foundry_deployments` / `foundry_usage_snapshots`. Surfaces an RBAC consent prompt on 401/403.
 - **Azure AD Multi-Tenant App Registration**: Enables server-side collectors to acquire per-tenant tokens using client credentials flow, supporting admin consent and managing required Graph and Office 365 Management API permissions.
+- **Agent Observability**: Features detailed tracing for agent invocations and tool calls, providing insights into the performance and behavior of integrated agents and Copilot interactions.
 - **Admin Audit Logging**: All mutating API operations are logged for administrative oversight.
 - **Branding**: Reveille Cloud branding with custom logo assets.
 
@@ -259,6 +261,8 @@ Re-run `EXPLAIN (ANALYZE, BUFFERS)` against the production DB to validate p95 ta
 
 ## External Dependencies
 - **Microsoft Graph API**: Core for SharePoint integration, M365 reports, service health, audit logs, Copilot interactions, and Entra Sign-ins.
+- **Office 365 Management Activity API**: Used for detailed SharePoint audit events (`ActivityFeed.Read` permission).
+- **Azure Resource Manager + Azure Monitor**: Used by the Foundry discovery collector to enumerate Cognitive Services / OpenAI deployments and pull token usage metrics. Required RBAC for the discovery service principal: Reader on the subscription, Monitoring Reader on each Cognitive Services account.
 - **Replit SharePoint connector**: Used for delegated authentication in synthetic tests.
 - **PostgreSQL**: Primary database for data storage.
 - **Drizzle ORM**: ORM for interacting with PostgreSQL.

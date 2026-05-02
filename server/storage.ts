@@ -37,6 +37,8 @@ import {
   anomalyStreamConfigs, type AnomalyStreamConfig, type InsertAnomalyStreamConfig,
   scheduledDigests, type ScheduledDigest, type InsertScheduledDigest,
   scheduledDigestRuns, type ScheduledDigestRun, type InsertScheduledDigestRun,
+  foundryDeployments, type FoundryDeployment, type InsertFoundryDeployment,
+  foundryUsageSnapshots, type FoundryUsageSnapshot, type InsertFoundryUsageSnapshot,
 } from "@shared/schema";
 import { or } from "drizzle-orm";
 
@@ -272,6 +274,16 @@ export interface IStorage {
   createScheduledDigestRun(data: InsertScheduledDigestRun): Promise<ScheduledDigestRun>;
   updateScheduledDigestRun(id: string, data: Partial<ScheduledDigestRun>): Promise<ScheduledDigestRun | undefined>;
   getScheduledDigestRuns(digestId: string, limit?: number): Promise<ScheduledDigestRun[]>;
+
+  upsertFoundryDeployment(data: InsertFoundryDeployment): Promise<FoundryDeployment>;
+  getFoundryDeployments(tenantId: string): Promise<FoundryDeployment[]>;
+  getFoundryDeployment(id: string): Promise<FoundryDeployment | undefined>;
+  getFoundryDeploymentByLlmModelId(llmModelId: string): Promise<FoundryDeployment | undefined>;
+  setFoundryDeploymentLlmModel(id: string, llmModelId: string | null): Promise<FoundryDeployment | undefined>;
+  upsertFoundryUsageSnapshot(data: InsertFoundryUsageSnapshot): Promise<FoundryUsageSnapshot>;
+  getFoundryUsageSnapshots(tenantId: string, opts?: { deploymentId?: string; since?: Date; limit?: number; windowHours?: number }): Promise<FoundryUsageSnapshot[]>;
+  getLatestFoundryUsageByDeployment(tenantId: string, windowHours?: number): Promise<Record<string, FoundryUsageSnapshot>>;
+  getLatestFoundryUsageByWindow(deploymentId: string): Promise<Record<number, FoundryUsageSnapshot>>;
 }
 
 export type LlmCallWithModel = LlmCall & {
@@ -306,6 +318,40 @@ export interface SlowestLlmHop {
   calledAt: Date;
   traceAgentName: string | null;
   tracePlatform: string | null;
+}
+
+interface FoundrySnapshotRow {
+  id: string;
+  tenant_id: string;
+  deployment_id: string;
+  window_hours: number | string;
+  window_start: string | Date;
+  window_end: string | Date;
+  processed_prompt_tokens: number | string | null;
+  generated_tokens: number | string | null;
+  total_calls: number | string | null;
+  throttled_calls: number | string | null;
+  inferred_cost_cents: number | string | null;
+  raw_metrics: Record<string, unknown> | null;
+  collected_at: string | Date;
+}
+
+function mapFoundrySnapshotRow(r: FoundrySnapshotRow): FoundryUsageSnapshot {
+  return {
+    id: r.id,
+    tenantId: r.tenant_id,
+    deploymentId: r.deployment_id,
+    windowHours: Number(r.window_hours),
+    windowStart: r.window_start instanceof Date ? r.window_start : new Date(r.window_start),
+    windowEnd: r.window_end instanceof Date ? r.window_end : new Date(r.window_end),
+    processedPromptTokens: r.processed_prompt_tokens != null ? Number(r.processed_prompt_tokens) : 0,
+    generatedTokens: r.generated_tokens != null ? Number(r.generated_tokens) : 0,
+    totalCalls: r.total_calls != null ? Number(r.total_calls) : 0,
+    throttledCalls: r.throttled_calls != null ? Number(r.throttled_calls) : 0,
+    inferredCostCents: r.inferred_cost_cents != null ? Number(r.inferred_cost_cents) : null,
+    rawMetrics: r.raw_metrics ?? null,
+    collectedAt: r.collected_at instanceof Date ? r.collected_at : new Date(r.collected_at),
+  };
 }
 
 function sameStringArray(a: string[] | null, b: string[] | null): boolean {
@@ -366,6 +412,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    await db.delete(foundryUsageSnapshots).where(eq(foundryUsageSnapshots.tenantId, id));
+    await db.delete(foundryDeployments).where(eq(foundryDeployments.tenantId, id));
     await db.delete(llmCalls).where(eq(llmCalls.tenantId, id));
     await db.delete(llmModels).where(eq(llmModels.tenantId, id));
     await db.delete(knownAgents).where(eq(knownAgents.tenantId, id));
@@ -2014,6 +2062,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteLlmModel(id: string): Promise<void> {
+    await db.update(foundryDeployments)
+      .set({ llmModelId: null, updatedAt: new Date() })
+      .where(eq(foundryDeployments.llmModelId, id));
     await db.delete(llmCalls).where(eq(llmCalls.modelId, id));
     await db.delete(llmModels).where(eq(llmModels.id, id));
   }
@@ -2333,6 +2384,144 @@ export class DatabaseStorage implements IStorage {
     }
 
     return { scanned: (candidates.rows as any[]).length, matched, updated, ambiguous };
+  }
+
+  async upsertFoundryDeployment(data: InsertFoundryDeployment): Promise<FoundryDeployment> {
+    const now = new Date();
+    const [upserted] = await db.insert(foundryDeployments)
+      .values({ ...data, lastSeenAt: now, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [foundryDeployments.tenantId, foundryDeployments.subscriptionId, foundryDeployments.accountName, foundryDeployments.deploymentName],
+        set: {
+          subscriptionName: data.subscriptionName ?? null,
+          resourceGroup: data.resourceGroup,
+          accountKind: data.accountKind ?? null,
+          accountResourceId: data.accountResourceId,
+          endpoint: data.endpoint ?? null,
+          region: data.region ?? null,
+          modelName: data.modelName ?? null,
+          modelVersion: data.modelVersion ?? null,
+          modelFormat: data.modelFormat ?? null,
+          skuName: data.skuName ?? null,
+          skuCapacity: data.skuCapacity ?? null,
+          provisioningState: data.provisioningState ?? null,
+          raiPolicyName: data.raiPolicyName ?? null,
+          rawProperties: data.rawProperties ?? null,
+          lastSeenAt: now,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getFoundryDeployments(tenantId: string): Promise<FoundryDeployment[]> {
+    return db.select().from(foundryDeployments)
+      .where(eq(foundryDeployments.tenantId, tenantId))
+      .orderBy(desc(foundryDeployments.lastSeenAt));
+  }
+
+  async getFoundryDeployment(id: string): Promise<FoundryDeployment | undefined> {
+    const [row] = await db.select().from(foundryDeployments).where(eq(foundryDeployments.id, id));
+    return row;
+  }
+
+  async getFoundryDeploymentByLlmModelId(llmModelId: string): Promise<FoundryDeployment | undefined> {
+    const [row] = await db.select().from(foundryDeployments).where(eq(foundryDeployments.llmModelId, llmModelId));
+    return row;
+  }
+
+  async setFoundryDeploymentLlmModel(id: string, llmModelId: string | null): Promise<FoundryDeployment | undefined> {
+    const [updated] = await db.update(foundryDeployments)
+      .set({ llmModelId, updatedAt: new Date() })
+      .where(eq(foundryDeployments.id, id))
+      .returning();
+    return updated;
+  }
+
+  async upsertFoundryUsageSnapshot(data: InsertFoundryUsageSnapshot): Promise<FoundryUsageSnapshot> {
+    const [upserted] = await db.insert(foundryUsageSnapshots)
+      .values(data)
+      .onConflictDoUpdate({
+        target: [foundryUsageSnapshots.deploymentId, foundryUsageSnapshots.windowHours, foundryUsageSnapshots.windowEnd],
+        set: {
+          windowStart: data.windowStart,
+          processedPromptTokens: data.processedPromptTokens ?? 0,
+          generatedTokens: data.generatedTokens ?? 0,
+          totalCalls: data.totalCalls ?? 0,
+          throttledCalls: data.throttledCalls ?? 0,
+          inferredCostCents: data.inferredCostCents ?? null,
+          rawMetrics: data.rawMetrics ?? null,
+          collectedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getFoundryUsageSnapshots(tenantId: string, opts?: { deploymentId?: string; since?: Date; limit?: number; windowHours?: number }): Promise<FoundryUsageSnapshot[]> {
+    const conditions: SQL<unknown>[] = [eq(foundryUsageSnapshots.tenantId, tenantId)];
+    if (opts?.deploymentId) conditions.push(eq(foundryUsageSnapshots.deploymentId, opts.deploymentId));
+    if (opts?.since) conditions.push(gte(foundryUsageSnapshots.windowEnd, opts.since));
+    if (opts?.windowHours != null) conditions.push(eq(foundryUsageSnapshots.windowHours, opts.windowHours));
+    return db.select().from(foundryUsageSnapshots)
+      .where(and(...conditions))
+      .orderBy(desc(foundryUsageSnapshots.windowEnd))
+      .limit(opts?.limit ?? 200);
+  }
+
+  async getLatestFoundryUsageByDeployment(tenantId: string, windowHours?: number): Promise<Record<string, FoundryUsageSnapshot>> {
+    const rows = windowHours != null
+      ? await db.execute(sql`
+          SELECT DISTINCT ON (deployment_id) *
+          FROM foundry_usage_snapshots
+          WHERE tenant_id = ${tenantId} AND window_hours = ${windowHours}
+          ORDER BY deployment_id, window_end DESC
+        `)
+      : await db.execute(sql`
+          SELECT DISTINCT ON (deployment_id) *
+          FROM foundry_usage_snapshots
+          WHERE tenant_id = ${tenantId}
+          ORDER BY deployment_id, window_end DESC
+        `);
+    const result: Record<string, FoundryUsageSnapshot> = {};
+    for (const r of rows.rows as unknown as FoundrySnapshotRow[]) {
+      result[r.deployment_id] = mapFoundrySnapshotRow(r);
+    }
+    return result;
+  }
+
+  async getLatestFoundryUsageByWindow(deploymentId: string): Promise<Record<number, FoundryUsageSnapshot>> {
+    const rows = await db.execute(sql`
+      SELECT DISTINCT ON (window_hours) *
+      FROM foundry_usage_snapshots
+      WHERE deployment_id = ${deploymentId}
+      ORDER BY window_hours, window_end DESC
+    `);
+    const result: Record<number, FoundryUsageSnapshot> = {};
+    for (const r of rows.rows as unknown as FoundrySnapshotRow[]) {
+      result[Number(r.window_hours)] = mapFoundrySnapshotRow(r);
+    }
+    return result;
+  }
+
+  async getLatestFoundryUsageByWindow(deploymentId: string): Promise<Record<number, FoundryUsageSnapshot>> {
+    const rows = await db.execute(sql`
+      SELECT DISTINCT ON (window_hours) *
+      FROM foundry_usage_snapshots
+      WHERE deployment_id = ${deploymentId}
+      ORDER BY window_hours, window_end DESC
+    `);
+    const result: Record<number, FoundryUsageSnapshot> = {};
+    for (const r of rows.rows as any[]) {
+      result[Number(r.window_hours)] = mapFoundrySnapshotRow(r);
+    }
+    return result;
+  }
+
+  async getFoundryDeploymentByLlmModelId(llmModelId: string): Promise<FoundryDeployment | undefined> {
+    const [row] = await db.select().from(foundryDeployments).where(eq(foundryDeployments.llmModelId, llmModelId));
+    return row;
   }
 
   async getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }> {

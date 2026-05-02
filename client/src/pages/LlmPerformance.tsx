@@ -30,6 +30,11 @@ import {
   ChevronRight,
   Key,
   KeyRound,
+  Cloud,
+  ShieldAlert,
+  Download,
+  Search,
+  X,
 } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
@@ -99,6 +104,60 @@ interface LlmStats {
 
 interface KnownAgent { id: string; name: string; source: string; platform: string }
 
+interface FoundryDeploymentUsage {
+  windowHours: number;
+  windowEnd: string;
+  processedPromptTokens: number;
+  generatedTokens: number;
+  totalCalls: number;
+  throttledCalls: number;
+  inferredCostCents: number | null;
+}
+
+interface FoundryDeployment {
+  id: string;
+  subscriptionId: string;
+  subscriptionName: string | null;
+  resourceGroup: string;
+  accountName: string;
+  accountKind: string | null;
+  endpoint: string | null;
+  region: string | null;
+  deploymentName: string;
+  modelName: string | null;
+  modelVersion: string | null;
+  skuName: string | null;
+  skuCapacity: number | null;
+  provisioningState: string | null;
+  llmModelId: string | null;
+  lastSeenAt: string;
+  usage24h: FoundryDeploymentUsage | null;
+  usage7d: FoundryDeploymentUsage | null;
+  usage30d: FoundryDeploymentUsage | null;
+}
+
+interface FoundryWindowedUsage {
+  deploymentId: string;
+  window24h: FoundryDeploymentUsage | null;
+  window7d: FoundryDeploymentUsage | null;
+  window30d: FoundryDeploymentUsage | null;
+}
+
+interface ModelDetail extends LlmModel {
+  apiKeyConfigured?: boolean;
+  foundryUsage?: FoundryWindowedUsage | null;
+}
+
+interface FoundryDiscoveryResponse {
+  deploymentsDiscovered: number;
+  accountsScanned: number;
+  subscriptionsScanned: number;
+  metricsCollected: number;
+  needsConsent: boolean;
+  consentReason: string | null;
+  errors: string[];
+}
+
 function formatCost(cents: number): string {
   if (cents === 0) return "$0.00";
   if (cents < 0.01) return "<$0.0001";
@@ -133,6 +192,8 @@ export default function LlmPerformance() {
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
   const [highlightCallId, setHighlightCallId] = useState<string | null>(null);
   const callRowRefs = useRef<Map<string, HTMLTableRowElement | null>>(new Map());
+  const [foundryPanelOpen, setFoundryPanelOpen] = useState(false);
+  const [discoveryResult, setDiscoveryResult] = useState<FoundryDiscoveryResponse | null>(null);
 
   useEffect(() => {
     const search = typeof window !== "undefined" ? window.location.search : "";
@@ -281,6 +342,69 @@ export default function LlmPerformance() {
     },
   });
 
+  const { data: foundryData, refetch: refetchFoundry } = useQuery<{ deployments: FoundryDeployment[] }>({
+    queryKey: ["/api/foundry/deployments", activeTenantId],
+    enabled: !!activeTenantId && foundryPanelOpen,
+    queryFn: async () => {
+      const res = await fetch(`/api/tenants/${activeTenantId}/foundry/deployments`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: foundryPanelOpen ? 30000 : false,
+  });
+
+  const discoverMutation = useMutation({
+    mutationFn: async (): Promise<FoundryDiscoveryResponse> => {
+      const res = await fetch(`/api/tenants/${activeTenantId}/foundry/discover`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setDiscoveryResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/foundry/deployments"] });
+    },
+    onError: (err: any) => {
+      setDiscoveryResult({
+        deploymentsDiscovered: 0,
+        accountsScanned: 0,
+        subscriptionsScanned: 0,
+        metricsCollected: 0,
+        needsConsent: false,
+        consentReason: null,
+        errors: [err?.message || String(err)],
+      });
+    },
+  });
+
+  const importBulkMutation = useMutation({
+    mutationFn: async (deploymentIds: string[]) => {
+      const res = await fetch(`/api/tenants/${activeTenantId}/foundry/deployments/import-bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deploymentIds }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/foundry/deployments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/llm-models"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/llm-models/stats"] });
+      refetchFoundry();
+    },
+  });
+
+  const { data: expandedModelDetail } = useQuery<ModelDetail>({
+    queryKey: ["/api/llm-models/detail", activeTenantId, expandedModelId],
+    enabled: !!activeTenantId && !!expandedModelId,
+    queryFn: async () => {
+      const res = await fetch(`/api/tenants/${activeTenantId}/llm-models/${expandedModelId}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
   const hasData = (models?.length ?? 0) > 0 || (stats?.totalCalls ?? 0) > 0;
 
   if (!activeTenantId) {
@@ -347,6 +471,10 @@ export default function LlmPerformance() {
             <Button variant="outline" size="sm" onClick={() => seedMutation.mutate()} disabled={seedMutation.isPending} data-testid="button-seed-demo">
               {seedMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
               Seed Demo Data
+            </Button>
+            <Button variant="default" size="sm" onClick={() => setFoundryPanelOpen(true)} data-testid="button-discover-foundry">
+              <Cloud className="h-3.5 w-3.5 mr-1.5" />
+              Discover Foundry models
             </Button>
           </div>
         </div>
@@ -467,7 +595,22 @@ export default function LlmPerformance() {
                       {isExpanded && (
                         <TableRow>
                           <TableCell colSpan={11} className="bg-muted/30">
-                            <div className="py-2">
+                            <div className="py-2 space-y-3">
+                              {model.provider === "foundry" && expandedModelDetail?.foundryUsage && (
+                                <div data-testid={`section-foundry-usage-${model.id}`}>
+                                  <div className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">
+                                    Authoritative usage (Azure Monitor)
+                                  </div>
+                                  <div className="grid grid-cols-3 gap-2 max-w-xl">
+                                    <FoundryUsageCell usage={expandedModelDetail.foundryUsage.window24h} label="24h" />
+                                    <FoundryUsageCell usage={expandedModelDetail.foundryUsage.window7d} label="7d" />
+                                    <FoundryUsageCell usage={expandedModelDetail.foundryUsage.window30d} label="30d" />
+                                  </div>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    From Azure Monitor for the linked Foundry deployment — independent of llm_calls instrumentation below.
+                                  </p>
+                                </div>
+                              )}
                               <div className="text-xs font-semibold mb-2 uppercase tracking-wide text-muted-foreground">Recent calls</div>
                               {(windowSince ? recentCalls.filter(c => c.calledAt && new Date(c.calledAt) >= windowSince) : recentCalls).length === 0 ? (
                                 <p className="text-sm text-muted-foreground">No recent calls for this model.</p>
@@ -523,7 +666,213 @@ export default function LlmPerformance() {
           </CardContent>
         </Card>
       </div>
+
+      {foundryPanelOpen && (
+        <FoundryDiscoveryPanel
+          deployments={foundryData?.deployments ?? []}
+          discovering={discoverMutation.isPending}
+          onDiscover={() => discoverMutation.mutate()}
+          discoveryResult={discoveryResult}
+          onClose={() => { setFoundryPanelOpen(false); setDiscoveryResult(null); }}
+          onBulkImport={(ids) => importBulkMutation.mutate(ids)}
+          bulkImporting={importBulkMutation.isPending}
+        />
+      )}
     </Shell>
+  );
+}
+
+function formatTokens(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return Math.round(n).toLocaleString();
+}
+
+function FoundryUsageCell({ usage, label }: { usage: FoundryDeploymentUsage | null; label: string }) {
+  if (!usage) {
+    return (
+      <div className="rounded border bg-muted/30 p-2 text-xs">
+        <div className="font-medium text-muted-foreground">{label}</div>
+        <div className="text-muted-foreground">no data</div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded border bg-muted/30 p-2 text-xs space-y-0.5">
+      <div className="font-medium">{label}</div>
+      <div>prompt: <span className="font-mono">{formatTokens(usage.processedPromptTokens)}</span></div>
+      <div>gen: <span className="font-mono">{formatTokens(usage.generatedTokens)}</span></div>
+      <div>calls: <span className="font-mono">{formatTokens(usage.totalCalls)}</span></div>
+      {usage.throttledCalls > 0 && (
+        <div className="text-amber-600">throttled: <span className="font-mono">{formatTokens(usage.throttledCalls)}</span></div>
+      )}
+      {usage.inferredCostCents != null && (
+        <div className="text-muted-foreground">cost: {formatCost(usage.inferredCostCents)}</div>
+      )}
+    </div>
+  );
+}
+
+function FoundryDiscoveryPanel({
+  deployments,
+  discovering,
+  onDiscover,
+  discoveryResult,
+  onClose,
+  onBulkImport,
+  bulkImporting,
+}: {
+  deployments: FoundryDeployment[];
+  discovering: boolean;
+  onDiscover: () => void;
+  discoveryResult: FoundryDiscoveryResponse | null;
+  onClose: () => void;
+  onBulkImport: (deploymentIds: string[]) => void;
+  bulkImporting: boolean;
+}) {
+  const importedCount = deployments.filter(d => d.llmModelId).length;
+  const importable = deployments.filter(d => !d.llmModelId);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  function toggleOne(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    if (selected.size === importable.length && importable.length > 0) setSelected(new Set());
+    else setSelected(new Set(importable.map(d => d.id)));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex" data-testid="panel-foundry-discovery">
+      <div className="flex-1 bg-black/40" onClick={onClose} />
+      <div className="w-[640px] max-w-full bg-background border-l overflow-y-auto">
+        <div className="sticky top-0 bg-background border-b p-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Cloud className="h-5 w-5" />
+            <h2 className="text-lg font-semibold" data-testid="text-foundry-panel-title">Azure AI Foundry deployments</h2>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose} data-testid="button-close-foundry-panel">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm text-muted-foreground">
+              Enumerate Azure OpenAI / AI Foundry deployments via Azure Resource Manager and Azure Monitor.
+            </p>
+            <Button onClick={onDiscover} disabled={discovering} data-testid="button-run-discovery">
+              {discovering ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Search className="h-4 w-4 mr-1.5" />}
+              {discovering ? "Discovering..." : "Discover now"}
+            </Button>
+          </div>
+
+          {discoveryResult?.needsConsent && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex gap-2" data-testid="alert-needs-consent">
+              <ShieldAlert className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm">
+                <div className="font-semibold text-amber-700">Admin consent required</div>
+                <div className="text-amber-700/90 mt-1">{discoveryResult.consentReason}</div>
+              </div>
+            </div>
+          )}
+
+          {discoveryResult && !discoveryResult.needsConsent && (
+            <div className="rounded-lg border bg-muted/40 p-3 text-sm" data-testid="text-discovery-summary">
+              <div className="font-medium">Discovery complete</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Scanned {discoveryResult.subscriptionsScanned} subscription(s), {discoveryResult.accountsScanned} account(s).
+                Found {discoveryResult.deploymentsDiscovered} deployment(s). Collected {discoveryResult.metricsCollected} metric snapshot(s).
+              </div>
+              {discoveryResult.errors.length > 0 && (
+                <details className="mt-2">
+                  <summary className="text-xs text-amber-600 cursor-pointer">{discoveryResult.errors.length} warning(s)</summary>
+                  <ul className="text-xs text-muted-foreground mt-1 space-y-0.5 list-disc pl-4">
+                    {discoveryResult.errors.slice(0, 6).map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">{deployments.length} known · {importedCount} imported · {importable.length} importable</span>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={importable.length > 0 && selected.size === importable.length}
+                  onChange={toggleAll}
+                  disabled={importable.length === 0}
+                  data-testid="checkbox-select-all"
+                />
+                <span>Select all</span>
+              </label>
+              <Button
+                size="sm"
+                disabled={selected.size === 0 || bulkImporting}
+                onClick={() => { onBulkImport(Array.from(selected)); setSelected(new Set()); }}
+                data-testid="button-import-selected"
+              >
+                {bulkImporting ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
+                Import selected ({selected.size})
+              </Button>
+            </div>
+          </div>
+
+          {deployments.length === 0 ? (
+            <div className="border-2 border-dashed rounded-lg p-8 text-center text-sm text-muted-foreground">
+              No deployments discovered yet. Click "Discover now" to enumerate Azure OpenAI / AI Foundry resources.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {deployments.map(d => {
+                const isImported = !!d.llmModelId;
+                const isSelected = selected.has(d.id);
+                return (
+                  <div key={d.id} className="border rounded-lg p-3" data-testid={`row-deployment-${d.id}`}>
+                    <div className="flex items-start gap-3">
+                      <div className="pt-0.5">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleOne(d.id)}
+                          disabled={isImported}
+                          data-testid={`checkbox-deployment-${d.id}`}
+                        />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium" data-testid={`text-deployment-name-${d.id}`}>{d.deploymentName}</span>
+                          {d.modelName && <Badge variant="outline" className="text-xs">{d.modelName}{d.modelVersion ? ` · ${d.modelVersion}` : ""}</Badge>}
+                          {d.skuName && <Badge variant="secondary" className="text-xs">{d.skuName}{d.skuCapacity ? ` · ${d.skuCapacity}` : ""}</Badge>}
+                          {isImported && <Badge className="text-xs bg-green-500/15 text-green-700 border-green-500/30 border">Imported</Badge>}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1 truncate">
+                          {d.accountName} · {d.region || "?"} · rg: {d.resourceGroup}
+                        </div>
+                        {d.endpoint && <div className="text-xs text-muted-foreground font-mono truncate">{d.endpoint}</div>}
+                        <div className="grid grid-cols-3 gap-2 mt-2" data-testid={`grid-usage-${d.id}`}>
+                          <FoundryUsageCell usage={d.usage24h} label="24h" />
+                          <FoundryUsageCell usage={d.usage7d} label="7d" />
+                          <FoundryUsageCell usage={d.usage30d} label="30d" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

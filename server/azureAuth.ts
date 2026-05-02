@@ -134,9 +134,53 @@ export function clearTokenCache(azureTenantId?: string) {
     tokenCache.delete(`mgmt:${azureTenantId}`);
     tokenCache.delete(`pp:${azureTenantId}`);
     tokenCache.delete(`spo:${azureTenantId}`);
+    tokenCache.delete(`arm:${azureTenantId}`);
   } else {
     tokenCache.clear();
   }
+}
+
+export async function getArmToken(azureTenantId: string): Promise<string> {
+  const cacheKey = `arm:${azureTenantId}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 60_000) {
+    return cached.accessToken;
+  }
+
+  const { clientId, clientSecret } = getAzureAppConfig();
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: "https://management.azure.com/.default",
+    grant_type: "client_credentials",
+  });
+
+  const response = await fetch(
+    `https://login.microsoftonline.com/${azureTenantId}/oauth2/v2.0/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const errorDesc = errorData.error_description || errorData.error || response.statusText;
+    const err: any = new Error(`ARM token failed for tenant ${azureTenantId}: ${errorDesc}`);
+    err.status = response.status;
+    err.azureError = errorData.error;
+    throw err;
+  }
+
+  const data = await response.json();
+  tokenCache.set(cacheKey, {
+    accessToken: data.access_token,
+    expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+  });
+
+  return data.access_token;
 }
 
 export async function getPowerPlatformToken(azureTenantId: string): Promise<string> {

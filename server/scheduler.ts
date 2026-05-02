@@ -9,6 +9,7 @@ import { collectCopilotInteractions } from "./collectors/copilotInteractions";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
 import { runAnomalyDetection } from "./anomalyDetection";
+import { collectFoundryDiscovery } from "./collectors/foundryDiscovery";
 import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -33,6 +34,7 @@ const jobStatus: Record<string, JobStatus> = {
   speData: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   anomalyDetection: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   digests: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  foundryDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -706,6 +708,59 @@ async function runDigestsJob(): Promise<void> {
   }
 }
 
+async function runFoundryDiscoveryJob(): Promise<void> {
+  if (jobStatus.foundryDiscovery.isRunning) {
+    console.log("[Scheduler] Foundry discovery already running, skipping...");
+    return;
+  }
+
+  if (!isAzureAppConfigured()) {
+    console.log("[Scheduler] Azure app not configured, skipping Foundry discovery");
+    return;
+  }
+
+  jobStatus.foundryDiscovery.isRunning = true;
+  console.log("[Scheduler] Starting Foundry deployment discovery...");
+
+  try {
+    const allTenants = await storage.getTenants();
+    const consentedTenants = allTenants.filter(t => t.consentStatus === "Connected");
+
+    for (const tenant of consentedTenants) {
+      if (!tenant.azureTenantId) continue;
+
+      const jobRunId = await trackJobStart("foundryDiscovery", tenant.id, undefined, `Foundry discovery for ${tenant.name}`);
+      jobStatus.foundryDiscovery.activeJobRunId = jobRunId;
+
+      try {
+        const result = await collectFoundryDiscovery(tenant.id);
+        const status = result.needsConsent ? "failed" : "completed";
+        await trackJobComplete(jobRunId, status, {
+          deploymentsDiscovered: result.deploymentsDiscovered,
+          accountsScanned: result.accountsScanned,
+          subscriptionsScanned: result.subscriptionsScanned,
+          metricsCollected: result.metricsCollected,
+          needsConsent: result.needsConsent,
+          consentReason: result.consentReason,
+          errors: result.errors,
+        }, result.errors.length ? result.errors.join("; ") : undefined);
+        console.log(`[Scheduler] Foundry discovery for ${tenant.name}: ${result.deploymentsDiscovered} deployments, ${result.metricsCollected} metric snapshots${result.needsConsent ? " (needs consent)" : ""}`);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] Foundry discovery failed for ${tenant.name}:`, err.message);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    console.error("[Scheduler] Foundry discovery job failed:", error);
+  } finally {
+    jobStatus.foundryDiscovery.isRunning = false;
+    jobStatus.foundryDiscovery.activeJobRunId = null;
+    jobStatus.foundryDiscovery.lastRun = new Date();
+  }
+}
+
 let syntheticTestInterval: NodeJS.Timeout | null = null;
 let graphReportsInterval: NodeJS.Timeout | null = null;
 let serviceHealthInterval: NodeJS.Timeout | null = null;
@@ -718,6 +773,7 @@ let entraSignInsInterval: NodeJS.Timeout | null = null;
 let speDataInterval: NodeJS.Timeout | null = null;
 let anomalyDetectionInterval: NodeJS.Timeout | null = null;
 let digestsInterval: NodeJS.Timeout | null = null;
+let foundryDiscoveryInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 async function runAnomalyDetectionJob(): Promise<void> {
@@ -772,6 +828,7 @@ export function startScheduler(): void {
   if (speDataInterval) clearInterval(speDataInterval);
   if (anomalyDetectionInterval) clearInterval(anomalyDetectionInterval);
   if (digestsInterval) clearInterval(digestsInterval);
+  if (foundryDiscoveryInterval) clearInterval(foundryDiscoveryInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -821,6 +878,10 @@ export function startScheduler(): void {
   digestsInterval = setInterval(() => {
     runDigestsJob();
   }, 5 * 60 * 1000);
+
+  foundryDiscoveryInterval = setInterval(() => {
+    runFoundryDiscoveryJob();
+  }, 60 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -892,6 +953,11 @@ export function startScheduler(): void {
     runDigestsJob();
   }, 100 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial Foundry discovery...");
+    runFoundryDiscoveryJob();
+  }, 105 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -903,7 +969,8 @@ export function startScheduler(): void {
   console.log("  - Copilot enrichment backfill: every 6h (initial in 70s)");
   console.log("  - Entra sign-ins: every 30m (initial in 75s)");
   console.log("  - SPE data: every 30m (initial in 85s)");
-  console.log("  - Digests: every 5m (initial in 95s)");
+  console.log("  - Digests: every 5m (initial in 100s)");
+  console.log("  - Foundry discovery: every 1h (initial in 105s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -920,6 +987,7 @@ export function stopScheduler(): void {
   if (speDataInterval) { clearInterval(speDataInterval); speDataInterval = null; }
   if (anomalyDetectionInterval) { clearInterval(anomalyDetectionInterval); anomalyDetectionInterval = null; }
   if (digestsInterval) { clearInterval(digestsInterval); digestsInterval = null; }
+  if (foundryDiscoveryInterval) { clearInterval(foundryDiscoveryInterval); foundryDiscoveryInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -979,6 +1047,10 @@ export async function triggerSpeDataNow(): Promise<void> {
 
 export async function triggerAnomalyDetectionNow(): Promise<void> {
   runAnomalyDetectionJob();
+}
+
+export async function triggerFoundryDiscoveryNow(): Promise<void> {
+  runFoundryDiscoveryJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

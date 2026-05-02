@@ -801,3 +801,65 @@ export const insertScheduledDigestRunSchema = createInsertSchema(scheduledDigest
 });
 export type InsertScheduledDigestRun = z.infer<typeof insertScheduledDigestRunSchema>;
 export type ScheduledDigestRun = typeof scheduledDigestRuns.$inferSelect;
+
+export const foundryDeployments = pgTable("foundry_deployments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  subscriptionId: text("subscription_id").notNull(),
+  subscriptionName: text("subscription_name"),
+  resourceGroup: text("resource_group").notNull(),
+  accountName: text("account_name").notNull(),
+  accountKind: text("account_kind"),
+  accountResourceId: text("account_resource_id").notNull(),
+  endpoint: text("endpoint"),
+  region: text("region"),
+  deploymentName: text("deployment_name").notNull(),
+  modelName: text("model_name"),
+  modelVersion: text("model_version"),
+  modelFormat: text("model_format"),
+  skuName: text("sku_name"),
+  skuCapacity: integer("sku_capacity"),
+  provisioningState: text("provisioning_state"),
+  raiPolicyName: text("rai_policy_name"),
+  llmModelId: varchar("llm_model_id").references(() => llmModels.id, { onDelete: "set null" }),
+  rawProperties: jsonb("raw_properties").$type<Record<string, unknown>>(),
+  discoveredAt: timestamp("discovered_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("foundry_deployments_unique_idx").on(table.tenantId, table.subscriptionId, table.accountName, table.deploymentName),
+]);
+
+export const insertFoundryDeploymentSchema = createInsertSchema(foundryDeployments).omit({
+  id: true,
+  discoveredAt: true,
+  lastSeenAt: true,
+  updatedAt: true,
+});
+export type InsertFoundryDeployment = z.infer<typeof insertFoundryDeploymentSchema>;
+export type FoundryDeployment = typeof foundryDeployments.$inferSelect;
+
+export const foundryUsageSnapshots = pgTable("foundry_usage_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  deploymentId: varchar("deployment_id").notNull().references(() => foundryDeployments.id),
+  windowHours: integer("window_hours").notNull(),
+  windowStart: timestamp("window_start").notNull(),
+  windowEnd: timestamp("window_end").notNull(),
+  processedPromptTokens: real("processed_prompt_tokens").default(0),
+  generatedTokens: real("generated_tokens").default(0),
+  totalCalls: real("total_calls").default(0),
+  throttledCalls: real("throttled_calls").default(0),
+  inferredCostCents: real("inferred_cost_cents"),
+  rawMetrics: jsonb("raw_metrics").$type<Record<string, unknown>>(),
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("foundry_usage_snapshots_unique_idx").on(table.deploymentId, table.windowHours, table.windowEnd),
+]);
+
+export const insertFoundryUsageSnapshotSchema = createInsertSchema(foundryUsageSnapshots).omit({
+  id: true,
+  collectedAt: true,
+});
+export type InsertFoundryUsageSnapshot = z.infer<typeof insertFoundryUsageSnapshotSchema>;
+export type FoundryUsageSnapshot = typeof foundryUsageSnapshots.$inferSelect;

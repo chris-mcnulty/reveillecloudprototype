@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, insertScheduledDigestSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, insertScheduledDigestSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall, type FoundryUsageSnapshot } from "@shared/schema";
 import { exportAgentTraces, exportEntraSignIns, exportLlmCalls, exportAlerts, exportUsageReports } from "./exports/datasets";
 import { runDigest, computeNextRunAt } from "./digests/runner";
 import { gatherDigestData, renderDigestHtml, renderDigestPdf } from "./digests/render";
@@ -11,10 +11,11 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
+import { collectFoundryDiscovery } from "./collectors/foundryDiscovery";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
 
 function checkBackfillToken(req: Request, res: Response): boolean {
@@ -392,6 +393,9 @@ export async function registerRoutes(
         break;
       case "anomalyDetection":
         await triggerAnomalyDetectionNow();
+        break;
+      case "foundryDiscovery":
+        await triggerFoundryDiscoveryNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -1703,7 +1707,30 @@ export async function registerRoutes(
     const model = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
     if (!model) return res.status(404).json({ error: "Model not found" });
     const health = await storage.getLlmModelHealth(req.params.modelId);
-    res.json({ ...maskLlmModel(model), health, apiKeyConfigured: model.apiKeyEnvVar ? !!process.env[model.apiKeyEnvVar] : false });
+    let foundryUsage: {
+      deploymentId: string;
+      window24h: FoundryUsageSnapshot | null;
+      window7d: FoundryUsageSnapshot | null;
+      window30d: FoundryUsageSnapshot | null;
+    } | null = null;
+    if (model.provider === "foundry") {
+      const linked = await storage.getFoundryDeploymentByLlmModelId(req.params.modelId);
+      if (linked) {
+        const byWindow = await storage.getLatestFoundryUsageByWindow(linked.id);
+        foundryUsage = {
+          deploymentId: linked.id,
+          window24h: byWindow[24] ?? null,
+          window7d: byWindow[168] ?? null,
+          window30d: byWindow[720] ?? null,
+        };
+      }
+    }
+    res.json({
+      ...maskLlmModel(model),
+      health,
+      apiKeyConfigured: model.apiKeyEnvVar ? !!process.env[model.apiKeyEnvVar] : false,
+      foundryUsage,
+    });
   });
 
   app.patch("/api/tenants/:tenantId/llm-models/:modelId", async (req, res) => {
@@ -1778,6 +1805,166 @@ export async function registerRoutes(
     });
     res.set("X-Total-Count", String(total));
     res.json(items);
+  });
+
+  app.get("/api/tenants/:tenantId/foundry/deployments", async (req, res) => {
+    const deployments = await storage.getFoundryDeployments(req.params.tenantId);
+    const usage24h = await storage.getLatestFoundryUsageByDeployment(req.params.tenantId, 24);
+    const usage7d = await storage.getLatestFoundryUsageByDeployment(req.params.tenantId, 168);
+    const usage30d = await storage.getLatestFoundryUsageByDeployment(req.params.tenantId, 720);
+    res.json({
+      deployments: deployments.map(d => ({
+        ...d,
+        usage24h: usage24h[d.id] || null,
+        usage7d: usage7d[d.id] || null,
+        usage30d: usage30d[d.id] || null,
+      })),
+    });
+  });
+
+  app.post("/api/tenants/:tenantId/foundry/discover", async (req, res) => {
+    try {
+      const result = await collectFoundryDiscovery(req.params.tenantId);
+      await logAdminAction(req.params.tenantId, "foundry.discover", "foundryDeployment", null, {
+        deploymentsDiscovered: result.deploymentsDiscovered,
+        accountsScanned: result.accountsScanned,
+        subscriptionsScanned: result.subscriptionsScanned,
+        metricsCollected: result.metricsCollected,
+      });
+      res.status(200).json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || String(err), needsConsent: false });
+    }
+  });
+
+  app.get("/api/tenants/:tenantId/foundry/usage", async (req, res) => {
+    const { deploymentId, since, limit } = req.query as any;
+    const snapshots = await storage.getFoundryUsageSnapshots(req.params.tenantId, {
+      deploymentId,
+      since: since ? new Date(since) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
+    });
+    res.json(snapshots);
+  });
+
+  app.post("/api/tenants/:tenantId/foundry/deployments/:deploymentId/import", async (req, res) => {
+    const deployment = await storage.getFoundryDeployment(req.params.deploymentId);
+    if (!deployment || deployment.tenantId !== req.params.tenantId) {
+      return res.status(404).json({ error: "Deployment not found" });
+    }
+
+    if (deployment.llmModelId) {
+      const existing = await storage.getLlmModel(deployment.llmModelId);
+      if (existing) {
+        return res.json({ alreadyImported: true, llmModel: maskLlmModel(existing), deployment });
+      }
+    }
+
+    const safeAccountKey = deployment.accountName.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+    const apiKeyEnvVar = `AZURE_OPENAI_KEY_${safeAccountKey}`;
+    const endpointEnvVar = `AZURE_OPENAI_ENDPOINT_${safeAccountKey}`;
+
+    const overrides = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const llmModel = await storage.createLlmModel({
+      tenantId: deployment.tenantId,
+      provider: "foundry",
+      modelName: overrides.modelName || deployment.modelName || deployment.deploymentName,
+      displayName: overrides.displayName || `${deployment.deploymentName} (${deployment.accountName})`,
+      deploymentName: deployment.deploymentName,
+      endpoint: deployment.endpoint || null,
+      apiVersion: overrides.apiVersion || "2024-10-21",
+      apiKeyEnvVar: overrides.apiKeyEnvVar || apiKeyEnvVar,
+      endpointEnvVar: overrides.endpointEnvVar || endpointEnvVar,
+      inputCostPerMtok: overrides.inputCostPerMtok ?? null,
+      outputCostPerMtok: overrides.outputCostPerMtok ?? null,
+      maxContextTokens: overrides.maxContextTokens ?? null,
+      status: "unknown",
+      capabilities: {
+        importedFromFoundry: true,
+        subscriptionId: deployment.subscriptionId,
+        resourceGroup: deployment.resourceGroup,
+        accountName: deployment.accountName,
+        accountResourceId: deployment.accountResourceId,
+        modelVersion: deployment.modelVersion,
+        skuName: deployment.skuName,
+        skuCapacity: deployment.skuCapacity,
+        region: deployment.region,
+      },
+    });
+
+    const updated = await storage.setFoundryDeploymentLlmModel(deployment.id, llmModel.id);
+
+    await logAdminAction(req.params.tenantId, "foundry.import", "llmModel", llmModel.id, {
+      deploymentId: deployment.id,
+      deploymentName: deployment.deploymentName,
+      accountName: deployment.accountName,
+    });
+
+    res.status(201).json({ llmModel: maskLlmModel(llmModel), deployment: updated });
+  });
+
+  app.post("/api/tenants/:tenantId/foundry/deployments/import-bulk", async (req, res) => {
+    const { deploymentIds, overrides } = req.body || {};
+    if (!Array.isArray(deploymentIds) || deploymentIds.length === 0) {
+      return res.status(400).json({ error: "deploymentIds array is required" });
+    }
+    const results: { deploymentId: string; status: "imported" | "alreadyImported" | "notFound" | "error"; llmModelId?: string; error?: string }[] = [];
+
+    for (const deploymentId of deploymentIds) {
+      const deployment = await storage.getFoundryDeployment(deploymentId);
+      if (!deployment || deployment.tenantId !== req.params.tenantId) {
+        results.push({ deploymentId, status: "notFound" });
+        continue;
+      }
+      if (deployment.llmModelId) {
+        results.push({ deploymentId, status: "alreadyImported", llmModelId: deployment.llmModelId });
+        continue;
+      }
+      try {
+        const safeAccountKey = deployment.accountName.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+        const o = (overrides && typeof overrides === "object") ? overrides : {};
+        const llmModel = await storage.createLlmModel({
+          tenantId: deployment.tenantId,
+          provider: "foundry",
+          modelName: deployment.modelName || deployment.deploymentName,
+          displayName: `${deployment.deploymentName} (${deployment.accountName})`,
+          deploymentName: deployment.deploymentName,
+          endpoint: deployment.endpoint || null,
+          apiVersion: o.apiVersion || "2024-10-21",
+          apiKeyEnvVar: `AZURE_OPENAI_KEY_${safeAccountKey}`,
+          endpointEnvVar: `AZURE_OPENAI_ENDPOINT_${safeAccountKey}`,
+          inputCostPerMtok: o.inputCostPerMtok ?? null,
+          outputCostPerMtok: o.outputCostPerMtok ?? null,
+          maxContextTokens: o.maxContextTokens ?? null,
+          status: "unknown",
+          capabilities: {
+            importedFromFoundry: true,
+            subscriptionId: deployment.subscriptionId,
+            resourceGroup: deployment.resourceGroup,
+            accountName: deployment.accountName,
+            accountResourceId: deployment.accountResourceId,
+            modelVersion: deployment.modelVersion,
+            skuName: deployment.skuName,
+            skuCapacity: deployment.skuCapacity,
+            region: deployment.region,
+          },
+        });
+        await storage.setFoundryDeploymentLlmModel(deployment.id, llmModel.id);
+        await logAdminAction(req.params.tenantId, "foundry.import", "llmModel", llmModel.id, {
+          deploymentId: deployment.id,
+          deploymentName: deployment.deploymentName,
+          accountName: deployment.accountName,
+          bulk: true,
+        });
+        results.push({ deploymentId, status: "imported", llmModelId: llmModel.id });
+      } catch (err: any) {
+        results.push({ deploymentId, status: "error", error: err.message || String(err) });
+      }
+    }
+
+    const importedCount = results.filter(r => r.status === "imported").length;
+    res.status(201).json({ importedCount, results });
   });
 
   app.get("/api/tenants/:tenantId/known-agents", async (req, res) => {
