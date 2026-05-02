@@ -6,7 +6,7 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerEntraSignInsNow, triggerSpeDataNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
@@ -305,6 +305,9 @@ export async function registerRoutes(
         break;
       case "copilotInteractions":
         await triggerCopilotInteractionsNow();
+        break;
+      case "copilotEnrichmentBackfill":
+        await triggerCopilotEnrichmentBackfillNow();
         break;
       case "entraSignIns":
         await triggerEntraSignInsNow();
@@ -831,11 +834,13 @@ export async function registerRoutes(
 
   app.get("/api/tenants/:tenantId/copilot-interactions", async (req, res) => {
     const { tenantId } = req.params;
-    const { userId, appClass, sessionId, limit, offset } = req.query;
+    const { userId, appClass, sessionId, modelName, attributedSurface, limit, offset } = req.query;
     const { items, total } = await storage.getCopilotInteractions(tenantId, {
       userId: userId as string | undefined,
       appClass: appClass as string | undefined,
       sessionId: sessionId as string | undefined,
+      modelName: modelName as string | undefined,
+      attributedSurface: attributedSurface as string | undefined,
       limit: limit ? parseInt(limit as string, 10) : 50,
       offset: offset ? parseInt(offset as string, 10) : 0,
     });
@@ -850,19 +855,56 @@ export async function registerRoutes(
 
   app.get("/api/tenants/:tenantId/copilot-interactions/session-list", async (req, res) => {
     const { tenantId } = req.params;
-    const { appClass, userId, status, dateFrom, dateTo, offset, limit, sortBy, sortOrder } = req.query;
+    const { appClass, userId, status, dateFrom, dateTo, modelName, attributedSurface, offset, limit, sortBy, sortOrder } = req.query;
     const result = await storage.getCopilotSessions(tenantId, {
       appClass: appClass as string | undefined,
       userId: userId as string | undefined,
       status: status as string | undefined,
       dateFrom: dateFrom as string | undefined,
       dateTo: dateTo as string | undefined,
+      modelName: modelName as string | undefined,
+      attributedSurface: attributedSurface as string | undefined,
       offset: offset ? parseInt(offset as string, 10) : 0,
       limit: limit ? parseInt(limit as string, 10) : 25,
       sortBy: sortBy as string | undefined,
       sortOrder: sortOrder as string | undefined,
     });
     res.json(result);
+  });
+
+  app.get("/api/tenants/:tenantId/copilot-models/stats", async (req, res) => {
+    const { tenantId } = req.params;
+    const sinceParam = req.query.since as string | undefined;
+    let since: Date | undefined;
+    if (sinceParam) {
+      const parsed = new Date(sinceParam);
+      if (!isNaN(parsed.getTime())) since = parsed;
+    }
+    const stats = await storage.getCopilotModelStats(tenantId, since);
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/copilot-models/:modelLabel/latency", async (req, res) => {
+    const { tenantId, modelLabel } = req.params;
+    const sinceParam = req.query.since as string | undefined;
+    let since: Date | undefined;
+    if (sinceParam) {
+      const parsed = new Date(sinceParam);
+      if (!isNaN(parsed.getTime())) since = parsed;
+    }
+    const distribution = await storage.getCopilotModelLatencyDistribution(tenantId, decodeURIComponent(modelLabel), since);
+    res.json(distribution);
+  });
+
+  app.post("/api/admin/copilot-models/backfill", async (req, res) => {
+    const tenantId = (req.body?.tenantId || req.query?.tenantId) as string | undefined;
+    try {
+      const result = await storage.backfillCopilotEnrichment(tenantId);
+      await logAdminAction(tenantId || null, "copilotModels.backfill", "copilotInteraction", null, { tenantScope: tenantId || "all", ...result });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Backfill failed" });
+    }
   });
 
   app.get("/api/tenants/:tenantId/copilot-interactions/sessions/:sessionId", async (req, res) => {

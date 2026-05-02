@@ -1,6 +1,7 @@
 import { db } from "./db";
-import { eq, desc, and, gte, sql } from "drizzle-orm";
+import { eq, desc, and, gte, gt, asc, sql } from "drizzle-orm";
 import { liveEvents } from "./events";
+import { extractCopilotEnrichment } from "./collectors/copilotEnrichment";
 import {
   organizations, type Organization, type InsertOrganization,
   tenants, type Tenant, type InsertTenant,
@@ -122,13 +123,28 @@ export interface IStorage {
   deleteAgentTrace(id: string): Promise<void>;
 
   createCopilotInteraction(data: InsertCopilotInteraction): Promise<CopilotInteraction>;
-  getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number; offset?: number }): Promise<{ items: CopilotInteraction[]; total: number }>;
+  getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; modelName?: string; attributedSurface?: string; limit?: number; offset?: number }): Promise<{ items: CopilotInteraction[]; total: number }>;
   getCopilotInteractionsByRequestId(tenantId: string, requestId: string): Promise<CopilotInteraction[]>;
   getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
   getLatestCopilotInteractionDate(tenantId: string): Promise<Date | null>;
   getLatestCopilotInteractionDateForUser(tenantId: string, userId: string): Promise<Date | null>;
-  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number; sortBy?: string; sortOrder?: string }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
+  getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; modelName?: string; attributedSurface?: string; offset?: number; limit?: number; sortBy?: string; sortOrder?: string }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }>;
+  getCopilotModelStats(tenantId: string, since?: Date): Promise<{
+    totalInteractions: number;
+    totalResponses: number;
+    avgLatencyMs: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+    emptyResponseRate: number;
+    byModel: { modelLabel: string; modelName: string | null; calls: number; responseCalls: number; avgLatencyMs: number; p50LatencyMs: number; p95LatencyMs: number; p99LatencyMs: number; emptyResponseRate: number; uniqueUsers: number; surfaceBreakdown: Record<string, number>; capabilityBreakdown: Record<string, number> }[];
+    bySurface: { surface: string; calls: number; avgLatencyMs: number; emptyResponseRate: number }[];
+    byCapability: { capability: string; calls: number }[];
+  }>;
+  getCopilotModelLatencyDistribution(tenantId: string, modelLabel: string, since?: Date): Promise<{ bucket: string; count: number }[]>;
+  linkCopilotPairLatency(tenantId: string, requestId: string): Promise<number>;
+  backfillCopilotEnrichment(tenantId?: string): Promise<{ scanned: number; updated: number; latencyComputed: number; tenantsTouched: number }>;
 
   createMcpServer(data: InsertMcpServer): Promise<McpServer>;
   updateMcpServer(id: string, data: Partial<InsertMcpServer>): Promise<McpServer | undefined>;
@@ -216,6 +232,14 @@ export interface IStorage {
   deleteSavedView(id: string): Promise<void>;
   getSavedView(id: string): Promise<SavedView | undefined>;
   listSavedViewsForUser(orgId: string, userId: string, pageKey?: string): Promise<SavedView[]>;
+}
+
+function sameStringArray(a: string[] | null, b: string[] | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -819,11 +843,13 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number; offset?: number }): Promise<{ items: CopilotInteraction[]; total: number }> {
+  async getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; modelName?: string; attributedSurface?: string; limit?: number; offset?: number }): Promise<{ items: CopilotInteraction[]; total: number }> {
     const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
     if (options?.userId) conditions.push(eq(copilotInteractions.userId, options.userId));
     if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
     if (options?.sessionId) conditions.push(eq(copilotInteractions.sessionId, options.sessionId));
+    if (options?.modelName) conditions.push(eq(copilotInteractions.modelName, options.modelName));
+    if (options?.attributedSurface) conditions.push(eq(copilotInteractions.attributedSurface, options.attributedSurface));
     const offset = options?.offset ?? 0;
     const rows = await db.select({
       row: copilotInteractions,
@@ -914,12 +940,14 @@ export class DatabaseStorage implements IStorage {
     return result?.maxDate || null;
   }
 
-  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; offset?: number; limit?: number; sortBy?: string; sortOrder?: string }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }> {
+  async getCopilotSessions(tenantId: string, options?: { appClass?: string; userId?: string; status?: string; dateFrom?: string; dateTo?: string; modelName?: string; attributedSurface?: string; offset?: number; limit?: number; sortBy?: string; sortOrder?: string }): Promise<{ sessions: { sessionId: string; userId: string; userName: string | null; appClass: string | null; turns: number; latestTime: string; firstPrompt: string | null; promptCount: number; responseCount: number; status: string }[]; total: number }> {
     const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
     if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
     if (options?.userId) conditions.push(sql`(${copilotInteractions.userId} ILIKE ${'%' + options.userId + '%'} OR ${copilotInteractions.userName} ILIKE ${'%' + options.userId + '%'})`);
     if (options?.dateFrom) conditions.push(sql`${copilotInteractions.createdAt} >= ${options.dateFrom}::timestamp`);
     if (options?.dateTo) conditions.push(sql`${copilotInteractions.createdAt} < (${options.dateTo}::date + interval '1 day')`);
+    if (options?.modelName) conditions.push(sql`${copilotInteractions.sessionId} IN (SELECT DISTINCT session_id FROM copilot_interactions WHERE tenant_id = ${tenantId} AND model_name = ${options.modelName})`);
+    if (options?.attributedSurface) conditions.push(sql`${copilotInteractions.sessionId} IN (SELECT DISTINCT session_id FROM copilot_interactions WHERE tenant_id = ${tenantId} AND attributed_surface = ${options.attributedSurface})`);
 
     const statusFilter = options?.status;
     const havingClause = statusFilter === "success"
@@ -982,6 +1010,315 @@ export class DatabaseStorage implements IStorage {
     });
 
     return { sessions, total };
+  }
+
+  async getCopilotModelStats(tenantId: string, since?: Date): Promise<{
+    totalInteractions: number;
+    totalResponses: number;
+    avgLatencyMs: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+    emptyResponseRate: number;
+    byModel: { modelLabel: string; modelName: string | null; calls: number; responseCalls: number; avgLatencyMs: number; p50LatencyMs: number; p95LatencyMs: number; p99LatencyMs: number; emptyResponseRate: number; uniqueUsers: number; surfaceBreakdown: Record<string, number>; capabilityBreakdown: Record<string, number> }[];
+    bySurface: { surface: string; calls: number; avgLatencyMs: number; emptyResponseRate: number }[];
+    byCapability: { capability: string; calls: number }[];
+  }> {
+    const sinceCondition = since ? sql`AND created_at >= ${since.toISOString()}::timestamp` : sql``;
+
+    const modelLabelExpr = sql`COALESCE(model_name, attributed_surface, 'Unknown')`;
+
+    const overall = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS total_interactions,
+        COUNT(*) FILTER (WHERE interaction_type = 'aiResponse')::int AS total_responses,
+        COALESCE(AVG(response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS avg_latency,
+        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p50,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p95,
+        COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p99,
+        CASE
+          WHEN COUNT(*) FILTER (WHERE interaction_type = 'aiResponse') = 0 THEN 0
+          ELSE COUNT(*) FILTER (WHERE interaction_type = 'aiResponse' AND (body_content IS NULL OR length(trim(body_content)) = 0))::real
+            / COUNT(*) FILTER (WHERE interaction_type = 'aiResponse')::real
+        END AS empty_rate
+      FROM copilot_interactions
+      WHERE tenant_id = ${tenantId} ${sinceCondition}
+    `);
+    const o = (overall.rows as any[])[0] || {};
+
+    const byModelRows = await db.execute(sql`
+      SELECT
+        ${modelLabelExpr} AS model_label,
+        MAX(model_name) AS model_name,
+        COUNT(*)::int AS calls,
+        COUNT(*) FILTER (WHERE interaction_type = 'aiResponse')::int AS response_calls,
+        COALESCE(AVG(response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS avg_latency,
+        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p50,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p95,
+        COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p99,
+        CASE
+          WHEN COUNT(*) FILTER (WHERE interaction_type = 'aiResponse') = 0 THEN 0
+          ELSE COUNT(*) FILTER (WHERE interaction_type = 'aiResponse' AND (body_content IS NULL OR length(trim(body_content)) = 0))::real
+            / COUNT(*) FILTER (WHERE interaction_type = 'aiResponse')::real
+        END AS empty_rate,
+        COUNT(DISTINCT user_id)::int AS unique_users
+      FROM copilot_interactions
+      WHERE tenant_id = ${tenantId} ${sinceCondition}
+      GROUP BY model_label
+      ORDER BY calls DESC
+    `);
+
+    const surfaceBreakdownRows = await db.execute(sql`
+      SELECT
+        ${modelLabelExpr} AS model_label,
+        COALESCE(attributed_surface, 'Unknown') AS surface,
+        COUNT(*)::int AS calls
+      FROM copilot_interactions
+      WHERE tenant_id = ${tenantId} ${sinceCondition}
+      GROUP BY model_label, surface
+    `);
+    const surfaceBreakdownByModel: Record<string, Record<string, number>> = {};
+    for (const r of surfaceBreakdownRows.rows as any[]) {
+      const m = r.model_label || "Unknown";
+      surfaceBreakdownByModel[m] = surfaceBreakdownByModel[m] || {};
+      surfaceBreakdownByModel[m][r.surface] = Number(r.calls) || 0;
+    }
+
+    const capRows = await db.execute(sql`
+      SELECT
+        ${modelLabelExpr} AS model_label,
+        cap AS capability,
+        COUNT(*)::int AS calls
+      FROM copilot_interactions
+      LEFT JOIN LATERAL unnest(coalesce(capabilities, ARRAY[]::text[])) AS cap ON true
+      WHERE tenant_id = ${tenantId} ${sinceCondition}
+        AND cap IS NOT NULL
+      GROUP BY model_label, cap
+    `);
+    const capByModel: Record<string, Record<string, number>> = {};
+    for (const r of capRows.rows as any[]) {
+      const m = r.model_label || "Unknown";
+      capByModel[m] = capByModel[m] || {};
+      capByModel[m][r.capability] = Number(r.calls) || 0;
+    }
+
+    const byModel = (byModelRows.rows as any[]).map(r => ({
+      modelLabel: r.model_label || "Unknown",
+      modelName: r.model_name || null,
+      calls: Number(r.calls) || 0,
+      responseCalls: Number(r.response_calls) || 0,
+      avgLatencyMs: Math.round(Number(r.avg_latency) || 0),
+      p50LatencyMs: Math.round(Number(r.p50) || 0),
+      p95LatencyMs: Math.round(Number(r.p95) || 0),
+      p99LatencyMs: Math.round(Number(r.p99) || 0),
+      emptyResponseRate: Number(r.empty_rate) || 0,
+      uniqueUsers: Number(r.unique_users) || 0,
+      surfaceBreakdown: surfaceBreakdownByModel[r.model_label] || {},
+      capabilityBreakdown: capByModel[r.model_label] || {},
+    }));
+
+    const bySurfaceRows = await db.execute(sql`
+      SELECT
+        COALESCE(attributed_surface, 'Unknown') AS surface,
+        COUNT(*)::int AS calls,
+        COALESCE(AVG(response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS avg_latency,
+        CASE
+          WHEN COUNT(*) FILTER (WHERE interaction_type = 'aiResponse') = 0 THEN 0
+          ELSE COUNT(*) FILTER (WHERE interaction_type = 'aiResponse' AND (body_content IS NULL OR length(trim(body_content)) = 0))::real
+            / COUNT(*) FILTER (WHERE interaction_type = 'aiResponse')::real
+        END AS empty_rate
+      FROM copilot_interactions
+      WHERE tenant_id = ${tenantId} ${sinceCondition}
+      GROUP BY surface
+      ORDER BY calls DESC
+    `);
+    const bySurface = (bySurfaceRows.rows as any[]).map(r => ({
+      surface: r.surface,
+      calls: Number(r.calls) || 0,
+      avgLatencyMs: Math.round(Number(r.avg_latency) || 0),
+      emptyResponseRate: Number(r.empty_rate) || 0,
+    }));
+
+    const byCapRows = await db.execute(sql`
+      SELECT cap AS capability, COUNT(*)::int AS calls
+      FROM copilot_interactions
+      LEFT JOIN LATERAL unnest(coalesce(capabilities, ARRAY[]::text[])) AS cap ON true
+      WHERE tenant_id = ${tenantId} ${sinceCondition} AND cap IS NOT NULL
+      GROUP BY cap
+      ORDER BY calls DESC
+    `);
+    const byCapability = (byCapRows.rows as any[]).map(r => ({
+      capability: r.capability,
+      calls: Number(r.calls) || 0,
+    }));
+
+    return {
+      totalInteractions: Number(o.total_interactions) || 0,
+      totalResponses: Number(o.total_responses) || 0,
+      avgLatencyMs: Math.round(Number(o.avg_latency) || 0),
+      p50LatencyMs: Math.round(Number(o.p50) || 0),
+      p95LatencyMs: Math.round(Number(o.p95) || 0),
+      p99LatencyMs: Math.round(Number(o.p99) || 0),
+      emptyResponseRate: Number(o.empty_rate) || 0,
+      byModel,
+      bySurface,
+      byCapability,
+    };
+  }
+
+  async getCopilotModelLatencyDistribution(tenantId: string, modelLabel: string, since?: Date): Promise<{ bucket: string; count: number }[]> {
+    const sinceCondition = since ? sql`AND created_at >= ${since.toISOString()}::timestamp` : sql``;
+    const modelLabelExpr = sql`COALESCE(model_name, attributed_surface, 'Unknown')`;
+    const rows = await db.execute(sql`
+      WITH buckets AS (
+        SELECT
+          CASE
+            WHEN response_latency_ms < 500 THEN '<500ms'
+            WHEN response_latency_ms < 1000 THEN '500ms-1s'
+            WHEN response_latency_ms < 2000 THEN '1-2s'
+            WHEN response_latency_ms < 5000 THEN '2-5s'
+            WHEN response_latency_ms < 10000 THEN '5-10s'
+            WHEN response_latency_ms < 30000 THEN '10-30s'
+            ELSE '30s+'
+          END AS bucket,
+          CASE
+            WHEN response_latency_ms < 500 THEN 1
+            WHEN response_latency_ms < 1000 THEN 2
+            WHEN response_latency_ms < 2000 THEN 3
+            WHEN response_latency_ms < 5000 THEN 4
+            WHEN response_latency_ms < 10000 THEN 5
+            WHEN response_latency_ms < 30000 THEN 6
+            ELSE 7
+          END AS sort_order
+        FROM copilot_interactions
+        WHERE tenant_id = ${tenantId}
+          ${sinceCondition}
+          AND response_latency_ms IS NOT NULL
+          AND ${modelLabelExpr} = ${modelLabel}
+      )
+      SELECT bucket, COUNT(*)::int AS count, MIN(sort_order) AS sort_order
+      FROM buckets
+      GROUP BY bucket
+      ORDER BY sort_order
+    `);
+    return (rows.rows as any[]).map(r => ({ bucket: r.bucket, count: Number(r.count) || 0 }));
+  }
+
+  async linkCopilotPairLatency(tenantId: string, requestId: string): Promise<number> {
+    // Compute response_latency_ms for any aiResponse rows in this requestId
+    // pair that don't yet have one. Works regardless of the order in which the
+    // prompt and response rows were inserted: if the prompt arrives first, the
+    // response insert resolves the latency; if the response arrives first, the
+    // subsequent prompt insert resolves the latency.
+    const result = await db.execute(sql`
+      UPDATE copilot_interactions ci SET response_latency_ms = src.latency_ms
+      FROM (
+        SELECT r.id,
+          (EXTRACT(EPOCH FROM (r.created_at - p.created_at)) * 1000)::int AS latency_ms
+        FROM copilot_interactions r
+        JOIN copilot_interactions p
+          ON p.tenant_id = r.tenant_id
+         AND p.request_id = r.request_id
+         AND p.interaction_type = 'userPrompt'
+        WHERE r.tenant_id = ${tenantId}
+          AND r.request_id = ${requestId}
+          AND r.interaction_type = 'aiResponse'
+          AND r.response_latency_ms IS NULL
+          AND EXTRACT(EPOCH FROM (r.created_at - p.created_at)) BETWEEN 0 AND 1800
+      ) src
+      WHERE ci.id = src.id
+    `);
+    return (result as any).rowCount || 0;
+  }
+
+  async backfillCopilotEnrichment(tenantId?: string): Promise<{ scanned: number; updated: number; latencyComputed: number; tenantsTouched: number }> {
+    // Page through rows and re-run the shared extractor so any new
+    // MODEL_NAME_PATHS / surface / capability rules are applied uniformly to
+    // historical data — instead of re-implementing the parser in SQL.
+    const baseCondition = tenantId ? eq(copilotInteractions.tenantId, tenantId) : undefined;
+
+    const scannedRow = await db.select({ n: sql<number>`COUNT(*)::int` })
+      .from(copilotInteractions)
+      .where(baseCondition);
+    const scanned = Number(scannedRow[0]?.n) || 0;
+
+    const PAGE = 500;
+    let lastId: string | null = null;
+    let updated = 0;
+    while (true) {
+      const conds: any[] = [];
+      if (baseCondition) conds.push(baseCondition);
+      if (lastId) conds.push(gt(copilotInteractions.id, lastId));
+      const rows = await db.select().from(copilotInteractions)
+        .where(conds.length === 1 ? conds[0] : conds.length > 1 ? and(...conds) : undefined)
+        .orderBy(asc(copilotInteractions.id))
+        .limit(PAGE);
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        const enrichment = extractCopilotEnrichment(row.rawData ?? {});
+        const newModel = enrichment.modelName;
+        const newSurface = enrichment.attributedSurface;
+        const newCaps = enrichment.capabilities;
+
+        const modelChanged = (row.modelName ?? null) !== (newModel ?? null);
+        const surfaceChanged = (row.attributedSurface ?? null) !== (newSurface ?? null);
+        const capsChanged = !sameStringArray(row.capabilities ?? null, newCaps ?? null);
+
+        if (modelChanged || surfaceChanged || capsChanged) {
+          await db.update(copilotInteractions).set({
+            modelName: newModel,
+            attributedSurface: newSurface,
+            capabilities: newCaps,
+          }).where(eq(copilotInteractions.id, row.id));
+          updated++;
+        }
+      }
+
+      lastId = rows[rows.length - 1].id;
+      if (rows.length < PAGE) break;
+    }
+
+    // Latency pass — single SQL JOIN that handles every order: a response is
+    // matched to its prompt by (tenant, requestId), and any row missing a
+    // latency gets one. This is order-independent because we re-run it after
+    // every backfill / collection pass.
+    const tenantFilterPlain = tenantId ? sql`tenant_id = ${tenantId}` : sql`TRUE`;
+    const latencyTenantClause = tenantId ? sql`AND r.tenant_id = ${tenantId}` : sql``;
+    const latencyUpdate = await db.execute(sql`
+      UPDATE copilot_interactions ci SET response_latency_ms = src.latency_ms
+      FROM (
+        SELECT r.id,
+          (EXTRACT(EPOCH FROM (r.created_at - p.created_at)) * 1000)::int AS latency_ms
+        FROM copilot_interactions r
+        JOIN copilot_interactions p
+          ON p.tenant_id = r.tenant_id
+         AND p.request_id = r.request_id
+         AND p.interaction_type = 'userPrompt'
+        WHERE r.interaction_type = 'aiResponse'
+          AND r.request_id IS NOT NULL
+          AND r.response_latency_ms IS NULL
+          ${latencyTenantClause}
+          AND EXTRACT(EPOCH FROM (r.created_at - p.created_at)) BETWEEN 0 AND 1800
+      ) src
+      WHERE ci.id = src.id
+    `);
+    const latencyCount = (latencyUpdate as any).rowCount || 0;
+
+    const tenantsRow = await db.execute(sql`
+      SELECT COUNT(DISTINCT tenant_id)::int AS n
+      FROM copilot_interactions
+      WHERE ${tenantFilterPlain}
+        AND (attributed_surface IS NOT NULL OR capabilities IS NOT NULL OR response_latency_ms IS NOT NULL)
+    `);
+    const tenantsTouched = Number((tenantsRow.rows as any[])[0]?.n) || 0;
+
+    return {
+      scanned,
+      updated: updated + latencyCount,
+      latencyComputed: latencyCount,
+      tenantsTouched,
+    };
   }
 
   async createMcpServer(data: InsertMcpServer): Promise<McpServer> {

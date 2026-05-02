@@ -708,7 +708,7 @@ interface SessionSummary {
   status: string;
 }
 
-function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
+function CopilotInteractionsTab({ tenantId, surfaceFilter, onClearSurfaceFilter }: { tenantId: string | null; surfaceFilter: string | null; onClearSurfaceFilter: () => void }) {
   const [appFilter, setAppFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [userSearch, setUserSearch] = useState("");
@@ -743,19 +743,24 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
     refetchInterval: 30000,
   });
 
+  useEffect(() => {
+    setPage(0);
+  }, [surfaceFilter]);
+
   const sessionParams = new URLSearchParams();
   if (appFilter !== "all") sessionParams.set("appClass", appFilter);
   if (statusFilter !== "all") sessionParams.set("status", statusFilter);
   if (debouncedUserSearch) sessionParams.set("userId", debouncedUserSearch);
   if (dateFrom) sessionParams.set("dateFrom", dateFrom);
   if (dateTo) sessionParams.set("dateTo", dateTo);
+  if (surfaceFilter) sessionParams.set("attributedSurface", surfaceFilter);
   sessionParams.set("offset", String(page * pageSize));
   sessionParams.set("limit", String(pageSize));
   sessionParams.set("sortBy", sessionSortBy);
   sessionParams.set("sortOrder", sessionSortOrder);
 
   const { data: sessionData, isLoading } = useQuery<{ sessions: SessionSummary[]; total: number }>({
-    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo, page, sessionSortBy, sessionSortOrder],
+    queryKey: ["/api/copilot-interactions/session-list", tenantId, appFilter, statusFilter, debouncedUserSearch, dateFrom, dateTo, surfaceFilter, page, sessionSortBy, sessionSortOrder],
     queryFn: async () => {
       if (!tenantId) return { sessions: [], total: 0 };
       const res = await fetch(`/api/tenants/${tenantId}/copilot-interactions/session-list?${sessionParams.toString()}`);
@@ -972,18 +977,37 @@ function CopilotInteractionsTab({ tenantId }: { tenantId: string | null }) {
             data-testid="input-copilot-date-to"
           />
         </div>
-        {(appFilter !== "all" || statusFilter !== "all" || userSearch || dateFrom || dateTo) && (
+        {(appFilter !== "all" || statusFilter !== "all" || userSearch || dateFrom || dateTo || surfaceFilter) && (
           <Button
             variant="ghost"
             size="sm"
             className="text-xs"
-            onClick={() => { setAppFilter("all"); setStatusFilter("all"); setUserSearch(""); setDateFrom(""); setDateTo(""); }}
+            onClick={() => { setAppFilter("all"); setStatusFilter("all"); setUserSearch(""); setDateFrom(""); setDateTo(""); onClearSurfaceFilter(); }}
             data-testid="button-copilot-clear-filters"
           >
             Clear filters
           </Button>
         )}
       </div>
+
+      {surfaceFilter && (
+        <div className="flex items-center gap-2" data-testid="filter-pill-surface">
+          <Badge variant="outline" className="bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/40 gap-1.5">
+            <Sparkles className="h-3 w-3" />
+            <span className="text-xs">Filtered by Copilot surface:</span>
+            <span className="text-xs font-semibold" data-testid="text-filter-surface">{surfaceFilter}</span>
+            <button
+              type="button"
+              className="ml-1 hover:bg-blue-500/20 rounded-full p-0.5"
+              onClick={onClearSurfaceFilter}
+              data-testid="button-clear-surface-filter"
+              aria-label="Clear surface filter"
+            >
+              <XCircle className="h-3 w-3" />
+            </button>
+          </Badge>
+        </div>
+      )}
 
       {expandedSession ? (
         <div className="space-y-4">
@@ -1311,6 +1335,456 @@ function formatRelativeTime(dateStr: string | null): string {
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
   return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+interface CopilotModelStats {
+  totalInteractions: number;
+  totalResponses: number;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  p99LatencyMs: number;
+  emptyResponseRate: number;
+  byModel: {
+    modelLabel: string;
+    modelName: string | null;
+    calls: number;
+    responseCalls: number;
+    avgLatencyMs: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+    emptyResponseRate: number;
+    uniqueUsers: number;
+    surfaceBreakdown: Record<string, number>;
+    capabilityBreakdown: Record<string, number>;
+  }[];
+  bySurface: { surface: string; calls: number; avgLatencyMs: number; emptyResponseRate: number }[];
+  byCapability: { capability: string; calls: number }[];
+}
+
+function formatLatencyMs(ms: number | null | undefined): string {
+  if (ms == null || isNaN(ms)) return "—";
+  if (ms === 0) return "0 ms";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${(ms / 60000).toFixed(1)} min`;
+}
+
+function CopilotModelsTab({ tenantId, onDrillDown }: { tenantId: string | null; onDrillDown: (surface: string) => void }) {
+  const queryClient = useQueryClient();
+  const [windowSel, setWindowSel] = useState<"24h" | "7d" | "30d" | "all">("30d");
+  const [sortBy, setSortBy] = useState<"calls" | "p50" | "p95" | "p99" | "empty">("calls");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
+
+  const sinceParam = useMemo(() => {
+    if (windowSel === "all") return null;
+    const now = Date.now();
+    const ms = windowSel === "24h" ? 24 * 3600 * 1000 : windowSel === "7d" ? 7 * 86400 * 1000 : 30 * 86400 * 1000;
+    return new Date(now - ms).toISOString();
+  }, [windowSel]);
+
+  const { data: stats, isLoading, refetch } = useQuery<CopilotModelStats>({
+    queryKey: ["/api/copilot-models/stats", tenantId, sinceParam],
+    enabled: !!tenantId,
+    queryFn: async () => {
+      const qs = sinceParam ? `?since=${encodeURIComponent(sinceParam)}` : "";
+      const res = await fetch(`/api/tenants/${tenantId}/copilot-models/stats${qs}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 60000,
+  });
+
+  const { data: latencyDist = [] } = useQuery<{ bucket: string; count: number }[]>({
+    queryKey: ["/api/copilot-models/latency", tenantId, expandedModel, sinceParam],
+    enabled: !!tenantId && !!expandedModel,
+    queryFn: async () => {
+      const qs = sinceParam ? `?since=${encodeURIComponent(sinceParam)}` : "";
+      const res = await fetch(`/api/tenants/${tenantId}/copilot-models/${encodeURIComponent(expandedModel!)}/latency${qs}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+  });
+
+  const sortedModels = useMemo(() => {
+    if (!stats?.byModel) return [];
+    const arr = [...stats.byModel];
+    arr.sort((a, b) => {
+      const av = sortBy === "calls" ? a.calls
+        : sortBy === "p50" ? a.p50LatencyMs
+        : sortBy === "p95" ? a.p95LatencyMs
+        : sortBy === "p99" ? a.p99LatencyMs
+        : a.emptyResponseRate;
+      const bv = sortBy === "calls" ? b.calls
+        : sortBy === "p50" ? b.p50LatencyMs
+        : sortBy === "p95" ? b.p95LatencyMs
+        : sortBy === "p99" ? b.p99LatencyMs
+        : b.emptyResponseRate;
+      return sortOrder === "asc" ? av - bv : bv - av;
+    });
+    return arr;
+  }, [stats, sortBy, sortOrder]);
+
+  const handleSort = (col: "calls" | "p50" | "p95" | "p99" | "empty") => {
+    if (sortBy === col) setSortOrder(o => o === "asc" ? "desc" : "asc");
+    else { setSortBy(col); setSortOrder("desc"); }
+  };
+
+  const sortIcon = (col: string) => {
+    if (sortBy !== col) return <ChevronsUpDown className="h-3 w-3 inline ml-1 opacity-40" />;
+    return sortOrder === "asc"
+      ? <ArrowUp className="h-3 w-3 inline ml-1" />
+      : <ArrowDown className="h-3 w-3 inline ml-1" />;
+  };
+
+  const runBackfill = async () => {
+    if (!tenantId) return;
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const res = await fetch(`/api/admin/copilot-models/backfill`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Backfill failed");
+      setBackfillResult(`Backfilled: ${data.updated} updated · ${data.latencyComputed} latencies computed`);
+      queryClient.invalidateQueries({ queryKey: ["/api/copilot-models/stats"] });
+      refetch();
+    } catch (err: any) {
+      setBackfillResult(`Error: ${err.message || "Backfill failed"}`);
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
+  if (!tenantId) {
+    return <p className="text-muted-foreground p-6">Select a tenant to view Copilot model performance.</p>;
+  }
+
+  if (isLoading) {
+    return <div className="p-12 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
+  }
+
+  const hasData = (stats?.totalInteractions ?? 0) > 0;
+  const hasLatency = (stats?.totalResponses ?? 0) > 0 && (stats?.p50LatencyMs ?? 0) > 0;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5" />
+          <h2 className="text-lg font-semibold" data-testid="text-copilot-models-title">M365 Copilot Model Performance</h2>
+          {hasData && (
+            <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/30 text-xs font-medium">
+              <Activity className="h-3 w-3 mr-1" />
+              {stats!.totalInteractions.toLocaleString()} interactions
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={windowSel} onValueChange={v => setWindowSel(v as "24h" | "7d" | "30d" | "all")}>
+            <SelectTrigger className="w-[120px]" data-testid="select-copilot-models-window">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="24h">Last 24h</SelectItem>
+              <SelectItem value="7d">Last 7 days</SelectItem>
+              <SelectItem value="30d">Last 30 days</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="button-refresh-copilot-models">
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Refresh
+          </Button>
+          <Button variant="outline" size="sm" onClick={runBackfill} disabled={backfilling} data-testid="button-copilot-models-backfill">
+            {backfilling ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
+            Run backfill
+          </Button>
+        </div>
+      </div>
+
+      {backfillResult && (
+        <div className="text-xs text-muted-foreground" data-testid="text-backfill-result">{backfillResult}</div>
+      )}
+
+      {!hasData && (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <Sparkles className="h-10 w-10 text-muted-foreground mb-3" />
+            <h3 className="text-base font-semibold mb-1">No Copilot interactions yet</h3>
+            <p className="text-sm text-muted-foreground max-w-md">
+              Once the Copilot interactions collector runs against this tenant, model performance metrics will appear here.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {hasData && (
+        <>
+          <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+            <Card data-testid="card-copilot-models-total">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Total Interactions</CardTitle>
+                <Activity className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-copilot-models-total">{stats!.totalInteractions.toLocaleString()}</div>
+                <p className="text-xs text-muted-foreground">{stats!.totalResponses.toLocaleString()} AI responses</p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-copilot-models-p50">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">P50 latency</CardTitle>
+                <Clock className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-copilot-models-p50">{hasLatency ? formatLatencyMs(stats!.p50LatencyMs) : "—"}</div>
+                <p className="text-xs text-muted-foreground">median</p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-copilot-models-p95">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">P95 latency</CardTitle>
+                <Zap className="h-4 w-4 text-amber-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-copilot-models-p95">{hasLatency ? formatLatencyMs(stats!.p95LatencyMs) : "—"}</div>
+                <p className="text-xs text-muted-foreground">95th percentile</p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-copilot-models-p99">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">P99 latency</CardTitle>
+                <Zap className="h-4 w-4 text-red-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-copilot-models-p99">{hasLatency ? formatLatencyMs(stats!.p99LatencyMs) : "—"}</div>
+                <p className="text-xs text-muted-foreground">99th percentile</p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-copilot-models-empty">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Empty / error rate</CardTitle>
+                <XCircle className={`h-4 w-4 ${stats!.emptyResponseRate > 0.05 ? "text-red-500" : "text-muted-foreground"}`} />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-copilot-models-empty">{(stats!.emptyResponseRate * 100).toFixed(1)}%</div>
+                <p className="text-xs text-muted-foreground">empty AI responses</p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-copilot-models-surfaces">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Surfaces</CardTitle>
+                <Hash className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold" data-testid="text-copilot-models-surface-count">{stats!.bySurface.length}</div>
+                <p className="text-xs text-muted-foreground">distinct attributed surfaces</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-3">
+            <Card className="md:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-base">Surface breakdown</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={stats!.bySurface.slice(0, 15)}>
+                      <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                      <XAxis dataKey="surface" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" height={70} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }} />
+                      <Bar dataKey="calls" fill="#3b82f6" name="Interactions" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Capabilities used</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {stats!.byCapability.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No capabilities detected.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {stats!.byCapability.slice(0, 10).map(c => {
+                      const max = stats!.byCapability[0].calls;
+                      const pct = max > 0 ? Math.round((c.calls / max) * 100) : 0;
+                      return (
+                        <div key={c.capability} className="space-y-1" data-testid={`row-capability-${c.capability}`}>
+                          <div className="flex justify-between text-xs">
+                            <span className="font-medium">{c.capability}</span>
+                            <span className="text-muted-foreground">{c.calls.toLocaleString()}</span>
+                          </div>
+                          <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                            <div className="h-full bg-blue-500" style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Model leaderboard</span>
+                <span className="text-xs font-normal text-muted-foreground">
+                  Click a row to drill into latency distribution &amp; surfaces
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="border rounded-md">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-8"></TableHead>
+                      <TableHead>Model / surface</TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => handleSort("calls")} data-testid="header-sort-calls">
+                        Calls{sortIcon("calls")}
+                      </TableHead>
+                      <TableHead>Users</TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => handleSort("p50")} data-testid="header-sort-p50">
+                        P50{sortIcon("p50")}
+                      </TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => handleSort("p95")} data-testid="header-sort-p95">
+                        P95{sortIcon("p95")}
+                      </TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => handleSort("p99")} data-testid="header-sort-p99">
+                        P99{sortIcon("p99")}
+                      </TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => handleSort("empty")} data-testid="header-sort-empty">
+                        Empty %{sortIcon("empty")}
+                      </TableHead>
+                      <TableHead className="w-32"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedModels.map(m => {
+                      const expanded = expandedModel === m.modelLabel;
+                      return (
+                        <Fragment key={m.modelLabel}>
+                          <TableRow
+                            className="cursor-pointer hover:bg-muted/50"
+                            onClick={() => setExpandedModel(expanded ? null : m.modelLabel)}
+                            data-testid={`row-copilot-model-${m.modelLabel}`}
+                          >
+                            <TableCell>{expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</TableCell>
+                            <TableCell className="font-medium">
+                              <div className="flex flex-col">
+                                <span data-testid={`text-model-label-${m.modelLabel}`}>{m.modelLabel}</span>
+                                {m.modelName ? (
+                                  <span className="text-[11px] text-muted-foreground">model: {m.modelName}</span>
+                                ) : (
+                                  <span className="text-[11px] text-muted-foreground italic">model name not yet exposed by Graph</span>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell data-testid={`text-model-calls-${m.modelLabel}`}>{m.calls.toLocaleString()}</TableCell>
+                            <TableCell>{m.uniqueUsers}</TableCell>
+                            <TableCell>{formatLatencyMs(m.p50LatencyMs)}</TableCell>
+                            <TableCell>{formatLatencyMs(m.p95LatencyMs)}</TableCell>
+                            <TableCell>{formatLatencyMs(m.p99LatencyMs)}</TableCell>
+                            <TableCell className={m.emptyResponseRate > 0.05 ? "text-red-500" : ""}>
+                              {(m.emptyResponseRate * 100).toFixed(1)}%
+                            </TableCell>
+                            <TableCell onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => onDrillDown(m.modelLabel)}
+                                data-testid={`button-drill-interactions-${m.modelLabel}`}
+                              >
+                                <MessageSquare className="h-3 w-3 mr-1" />
+                                View interactions
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                          {expanded && (
+                            <TableRow>
+                              <TableCell colSpan={9} className="bg-muted/30 p-4">
+                                <div className="grid gap-4 md:grid-cols-3">
+                                  <div className="md:col-span-2">
+                                    <div className="text-xs font-medium mb-2">Latency distribution</div>
+                                    {latencyDist.length === 0 ? (
+                                      <p className="text-xs text-muted-foreground">No paired prompt/response latency samples for this model in this window.</p>
+                                    ) : (
+                                      <div className="h-44">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                          <BarChart data={latencyDist}>
+                                            <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                                            <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
+                                            <YAxis tick={{ fontSize: 11 }} />
+                                            <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }} />
+                                            <Bar dataKey="count" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                          </BarChart>
+                                        </ResponsiveContainer>
+                                      </div>
+                                    )}
+                                    <div className="text-[11px] text-muted-foreground mt-2">
+                                      Avg: {formatLatencyMs(m.avgLatencyMs)} · Responses: {m.responseCalls.toLocaleString()}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-xs font-medium mb-2">Surface breakdown</div>
+                                    {Object.entries(m.surfaceBreakdown).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([s, c]) => (
+                                      <button
+                                        type="button"
+                                        key={s}
+                                        onClick={() => onDrillDown(s)}
+                                        className="w-full flex justify-between text-xs py-0.5 hover:underline text-left"
+                                        data-testid={`text-model-surface-${m.modelLabel}-${s}`}
+                                      >
+                                        <span>{s}</span>
+                                        <span className="text-muted-foreground">{c.toLocaleString()}</span>
+                                      </button>
+                                    ))}
+                                    <div className="text-xs font-medium mt-3 mb-2">Capabilities</div>
+                                    {Object.entries(m.capabilityBreakdown).length === 0 ? (
+                                      <p className="text-[11px] text-muted-foreground">None detected</p>
+                                    ) : (
+                                      Object.entries(m.capabilityBreakdown).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => (
+                                        <div key={k} className="flex justify-between text-xs py-0.5">
+                                          <span>{k}</span>
+                                          <span className="text-muted-foreground">{v.toLocaleString()}</span>
+                                        </div>
+                                      ))
+                                    )}
+                                  </div>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
 }
 
 function McpServersTab({ tenantId }: { tenantId: string | null }) {
@@ -2033,6 +2507,8 @@ export default function AgentObservability() {
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [agentSearch, setAgentSearch] = useState("");
   const [datePreset, setDatePreset] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<string>("traces");
+  const [copilotSurfaceFilter, setCopilotSurfaceFilter] = useState<string | null>(null);
 
   const { data: healthData = [], isLoading: healthLoading } = useQuery<AgentHealthItem[]>({
     queryKey: ["/api/agent-health", activeTenantId],
@@ -2238,7 +2714,7 @@ export default function AgentObservability() {
 
       <LlmSummaryWidget tenantId={activeTenantId} />
 
-      <Tabs defaultValue="traces" className="w-full">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList data-testid="tabs-agent-observability">
           <TabsTrigger value="traces" data-testid="tab-agent-traces">
             <Bot className="h-3.5 w-3.5 mr-1.5" />
@@ -2248,6 +2724,10 @@ export default function AgentObservability() {
             <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
             Copilot Interactions
           </TabsTrigger>
+          <TabsTrigger value="copilot-models" data-testid="tab-copilot-models">
+            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+            Copilot Models
+          </TabsTrigger>
           <TabsTrigger value="mcp" data-testid="tab-mcp-servers">
             <Cpu className="h-3.5 w-3.5 mr-1.5" />
             MCP Servers
@@ -2255,7 +2735,21 @@ export default function AgentObservability() {
         </TabsList>
 
         <TabsContent value="copilot">
-          <CopilotInteractionsTab tenantId={activeTenantId} />
+          <CopilotInteractionsTab
+            tenantId={activeTenantId}
+            surfaceFilter={copilotSurfaceFilter}
+            onClearSurfaceFilter={() => setCopilotSurfaceFilter(null)}
+          />
+        </TabsContent>
+
+        <TabsContent value="copilot-models">
+          <CopilotModelsTab
+            tenantId={activeTenantId}
+            onDrillDown={(surface) => {
+              setCopilotSurfaceFilter(surface);
+              setActiveTab("copilot");
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="mcp">

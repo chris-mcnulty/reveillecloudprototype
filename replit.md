@@ -24,6 +24,27 @@ Key architectural decisions include:
 - **Admin Audit Logging**: All mutating API operations are logged for administrative oversight.
 - **Branding**: Reveille Cloud branding with custom logo assets.
 
+## Key Data Models
+- **organizations**: Top-level entities (mode: "standard" for customers, "msp" for managed service providers). Controls UI mode.
+- **tenants**: Customer tenants with Azure AD consent status, linked to an organization via `organizationId`
+- **monitoredSystems**: Services per tenant (M365, Google Workspace, OpenText)
+- **syntheticTests**: Configured test profiles (page load, file upload, search, auth)
+- **alertRules**: Threshold-based alert configurations with notification channels
+- **metrics**: Time-series performance measurements
+- **alerts**: Generated incident records
+- **testRuns**: Synthetic test execution history with timing breakdowns
+- **scheduledJobRuns**: Scheduler job run tracking (status, results, errors, timing)
+- **usageReports**: Graph API usage report snapshots (site usage, storage, file counts, active users)
+- **serviceHealthIncidents**: M365 Service Health incidents/advisories (global, not per-tenant)
+- **auditLogEntries**: SharePoint audit log events (per-tenant)
+- **adminAuditLog**: Internal Reveille admin actions (tracks all mutating API operations)
+- **agentTraces**: End-to-end agent invocation traces (Copilot, GPT, Agentforce) with status, duration, error summary
+- **agentTraceSpans**: Individual spans within an agent trace (auth, content, mcp, license, api, inference)
+- **copilotInteractions**: Microsoft 365 Copilot interaction history (prompts/responses) collected via Graph API. Unique on interactionId, grouped by requestId (prompt↔response pair) and sessionId (conversation thread). Enriched columns: `modelName` (reserved — not yet exposed by Graph beta), `attributedSurface` (friendly product name from `from.application.displayName` + `appClass` heuristic, e.g. "M365 Chat", "Outlook", "Word", "Web Chat"), `responseLatencyMs` (aiResponse.createdAt − userPrompt.createdAt within same requestId, capped at 30min), `capabilities[]` (parsed signals: `file-ref`, `file-context`, `link-ref`, `mention`, `summarize`, `drafting`, `search`, `table-gen`, `code-ref`, `image-ref`, `adaptive-card`).
+- **entraSignIns**: Microsoft Entra ID sign-in records (per-tenant). Structured columns for user, app, location (geo), status, risk level, conditional access, MFA, device info. Collected from Graph API `/auditLogs/signIns`.
+- **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
+- **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
+
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
 - **Synozur** (msp): MSP org managing multiple client tenants (Acme, Globex, Initech, Soylent). Full multi-tenant features, tenant selector active.
@@ -59,10 +80,13 @@ All prefixed with `/api`:
 - `GET /all-tests` (all tests across tenants)
 - `GET /scheduler/status` (in-memory scheduler state for all 4 job types)
 - `POST /scheduler/trigger?jobType=` (trigger any job: syntheticTests, graphReports, serviceHealth, auditLogs, siteStructure, copilotInteractions)
-- `GET /tenants/:tenantId/copilot-interactions` (list interactions, query: userId, appClass, sessionId, limit)
+- `GET /tenants/:tenantId/copilot-interactions` (list interactions, query: userId, appClass, sessionId, modelName, attributedSurface, limit)
 - `GET /tenants/:tenantId/copilot-interactions/stats` (interaction stats: total, users, sessions, app breakdown)
 - `GET /tenants/:tenantId/copilot-interactions/sessions/:sessionId` (full conversation thread)
 - `GET /tenants/:tenantId/copilot-interactions/pairs/:requestId` (prompt↔response pair)
+- `GET /tenants/:tenantId/copilot-models/stats?window=24h|7d|30d|all` (per-model leaderboard: calls, p50/p95/p99 latency, error/empty rate, surface & capability breakdown)
+- `GET /tenants/:tenantId/copilot-models/:modelLabel/latency?window=` (latency histogram buckets: <500ms, 500ms-1s, 1-2s, 2-5s, 5-10s, 10-30s, 30s+)
+- `POST /api/admin/copilot-models/backfill` (re-extract enrichment + recompute latencies across existing rows; body: `{tenantId?}` to scope; returns `{scanned, updated, latencyComputed, tenantsTouched}`)
 - `GET /tenants/:tenantId/entra-signins` (list sign-in records with filters: userId, appName, status, riskLevel, since, limit)
 - `GET /tenants/:tenantId/entra-signins/stats` (aggregate stats: totals, MFA rate, risk, top apps, top locations, hourly trend)
 - `GET /tenants/:tenantId/entra-signins/users` (per-user breakdown: login count, failures, risk events)
@@ -100,7 +124,7 @@ All prefixed with `/api`:
 - `/service-health` - M365 Service Health incidents & advisories (global)
 - `/usage-reports` - SharePoint usage reports per tenant (5 Graph usage types + 5 site structure types with charts/tables)
 - `/audit-log` - SharePoint audit trail + internal admin activity (tabbed)
-- `/agent-observability` - Agent Observability (tabbed: Agent Traces + Copilot Interactions with stats, session drill-down, chat-style pair rendering)
+- `/agent-observability` - Agent Observability (tabbed: Agent Traces + Copilot Interactions + **Copilot Models** + MCP Servers). Copilot Models tab mirrors the LLM Performance leaderboard for M365 Copilot: 6-card metric grid (total interactions, p50/p95/p99 latency, empty-response rate, surface count), surface bar chart, capability list, sortable per-model leaderboard with drill-down (latency distribution histogram + per-model surface/capability breakdown), 24h/7d/30d/all window selector, and a per-tenant Backfill button.
 - `/alerts` - Alerts & incidents list
 - `/reports` - Report generation & scheduling
 - `/onboarding` - New tenant onboarding wizard
@@ -138,7 +162,7 @@ All prefixed with `/api`:
   3. Graph `/auditLogs/signIns` — SharePoint Online sign-in events with risk/MFA/location data. Requires `AuditLog.Read.All`.
   4. Site fallback — Site analytics, list modifications, drive recent items via `Sites.Read.All`.
 - **Site Structure** (`server/collectors/siteStructure.ts`): Enumerates subsites, lists/libraries, drive structure (files/folders/quota), M365 Groups, and tenant users. Requires `Sites.Read.All`, `Group.Read.All`, `User.Read.All` permissions.
-- **Copilot Interactions** (`server/collectors/copilotInteractions.ts`): Collects Copilot prompt/response history per-user via `/copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions`. Groups by requestId (prompt↔response pairs) and sessionId (conversations). Incremental collection with unique constraint dedup. Requires `AiEnterpriseInteraction.Read.All` permission.
+- **Copilot Interactions** (`server/collectors/copilotInteractions.ts`): Collects Copilot prompt/response history per-user via `/copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions`. Groups by requestId (prompt↔response pairs) and sessionId (conversations). Incremental collection with unique constraint dedup. Requires `AiEnterpriseInteraction.Read.All` permission. On insert, runs `extractCopilotEnrichment(rawData)` (`server/collectors/copilotEnrichment.ts`) to parse `attributedSurface` (from `from.application.displayName` / `appClass` — `IPM.SkypeTeams.Message.Copilot.<surface>` strip + BizChat→"M365 Chat" / WebChat→"Web Chat" normalization) and `capabilities[]` (from `contexts`, `attachments`, `links`, `mentions`, `appClass`, body content). For aiResponse rows, computes `responseLatencyMs` = createdAt − matching userPrompt createdAt (same `tenantId`+`requestId`), capped at 1800s. `modelName` is reserved — Graph beta `interactionHistory` does not yet expose a model identifier; the enricher checks a future-proof list of candidate paths (`MODEL_NAME_PATHS`) and will populate automatically when Microsoft adds the field. Backfill is non-destructive: only fills NULL columns and only computes latency when both prompt and response exist for the same requestId.
 - All collectors handle 403 permission errors gracefully with warning logs (no crashes).
 
 ## Azure AD Multi-Tenant App Registration

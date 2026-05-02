@@ -1,5 +1,6 @@
 import { getClientCredentialsToken } from "../azureAuth";
 import { storage } from "../storage";
+import { extractCopilotEnrichment } from "./copilotEnrichment";
 
 interface CollectionResult {
   usersProcessed: number;
@@ -138,6 +139,8 @@ export async function collectCopilotInteractions(tenantId: string): Promise<Coll
           if (!interactionId) continue;
 
           try {
+            const enrichment = extractCopilotEnrichment(x);
+            const createdAt = x.createdDateTime ? new Date(x.createdDateTime) : new Date();
             await storage.createCopilotInteraction({
               tenantId,
               interactionId,
@@ -153,9 +156,18 @@ export async function collectCopilotInteractions(tenantId: string): Promise<Coll
               attachments: x.attachments || null,
               links: x.links || null,
               mentions: x.mentions || null,
+              modelName: enrichment.modelName,
+              attributedSurface: enrichment.attributedSurface,
+              responseLatencyMs: null,
+              capabilities: enrichment.capabilities,
               rawData: x,
-              createdAt: x.createdDateTime ? new Date(x.createdDateTime) : new Date(),
+              createdAt,
             });
+            // Compute latency for this requestId pair regardless of arrival order.
+            // Works whether the response or the prompt was inserted first.
+            if (x.requestId) {
+              await storage.linkCopilotPairLatency(tenantId, x.requestId);
+            }
             interactionsCollected++;
             userInteractions++;
           } catch (err: any) {

@@ -27,6 +27,7 @@ const jobStatus: Record<string, JobStatus> = {
   siteStructure: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   powerPlatform: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   copilotInteractions: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  copilotEnrichmentBackfill: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   entraSignIns: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   speData: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
@@ -551,6 +552,31 @@ async function runCopilotInteractionsJob(): Promise<void> {
   }
 }
 
+async function runCopilotEnrichmentBackfillJob(): Promise<void> {
+  if (jobStatus.copilotEnrichmentBackfill.isRunning) {
+    console.log("[Scheduler] Copilot enrichment backfill already running, skipping...");
+    return;
+  }
+  jobStatus.copilotEnrichmentBackfill.isRunning = true;
+  console.log("[Scheduler] Starting Copilot enrichment backfill (all tenants)...");
+
+  const jobRunId = await trackJobStart("copilotEnrichmentBackfill", undefined, undefined, "Copilot enrichment backfill (all tenants)");
+  jobStatus.copilotEnrichmentBackfill.activeJobRunId = jobRunId;
+
+  try {
+    const result = await storage.backfillCopilotEnrichment();
+    await trackJobComplete(jobRunId, "completed", result);
+    console.log(`[Scheduler] Copilot enrichment backfill: scanned ${result.scanned}, updated ${result.updated}, latency computed ${result.latencyComputed}, tenants touched ${result.tenantsTouched}`);
+  } catch (err: any) {
+    await trackJobComplete(jobRunId, "failed", undefined, err.message);
+    console.error("[Scheduler] Copilot enrichment backfill failed:", err.message);
+  } finally {
+    jobStatus.copilotEnrichmentBackfill.isRunning = false;
+    jobStatus.copilotEnrichmentBackfill.activeJobRunId = null;
+    jobStatus.copilotEnrichmentBackfill.lastRun = new Date();
+  }
+}
+
 async function runEntraSignInsJob(): Promise<void> {
   if (jobStatus.entraSignIns.isRunning) {
     console.log("[Scheduler] Entra sign-ins already running, skipping...");
@@ -657,6 +683,7 @@ let auditLogsInterval: NodeJS.Timeout | null = null;
 let siteStructureInterval: NodeJS.Timeout | null = null;
 let powerPlatformInterval: NodeJS.Timeout | null = null;
 let copilotInteractionsInterval: NodeJS.Timeout | null = null;
+let copilotEnrichmentBackfillInterval: NodeJS.Timeout | null = null;
 let entraSignInsInterval: NodeJS.Timeout | null = null;
 let speDataInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
@@ -671,6 +698,7 @@ export function startScheduler(): void {
   if (siteStructureInterval) clearInterval(siteStructureInterval);
   if (powerPlatformInterval) clearInterval(powerPlatformInterval);
   if (copilotInteractionsInterval) clearInterval(copilotInteractionsInterval);
+  if (copilotEnrichmentBackfillInterval) clearInterval(copilotEnrichmentBackfillInterval);
   if (entraSignInsInterval) clearInterval(entraSignInsInterval);
   if (speDataInterval) clearInterval(speDataInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
@@ -702,6 +730,10 @@ export function startScheduler(): void {
   copilotInteractionsInterval = setInterval(() => {
     runCopilotInteractionsJob();
   }, 60 * 60 * 1000);
+
+  copilotEnrichmentBackfillInterval = setInterval(() => {
+    runCopilotEnrichmentBackfillJob();
+  }, 6 * 60 * 60 * 1000);
 
   entraSignInsInterval = setInterval(() => {
     runEntraSignInsJob();
@@ -757,6 +789,11 @@ export function startScheduler(): void {
   }, 65 * 1000);
 
   setTimeout(() => {
+    console.log("[Scheduler] Running initial Copilot enrichment backfill...");
+    runCopilotEnrichmentBackfillJob();
+  }, 70 * 1000);
+
+  setTimeout(() => {
     console.log("[Scheduler] Running initial Entra sign-ins collection...");
     runEntraSignInsJob();
   }, 75 * 1000);
@@ -774,6 +811,7 @@ export function startScheduler(): void {
   console.log("  - Site structure: every 1h (initial in 45s)");
   console.log("  - Power Platform: every 30m (initial in 55s)");
   console.log("  - Copilot interactions: every 1h (initial in 65s)");
+  console.log("  - Copilot enrichment backfill: every 6h (initial in 70s)");
   console.log("  - Entra sign-ins: every 30m (initial in 75s)");
   console.log("  - SPE data: every 30m (initial in 85s)");
   console.log("  - Stuck job cleanup: every 15m");
@@ -787,6 +825,7 @@ export function stopScheduler(): void {
   if (siteStructureInterval) { clearInterval(siteStructureInterval); siteStructureInterval = null; }
   if (powerPlatformInterval) { clearInterval(powerPlatformInterval); powerPlatformInterval = null; }
   if (copilotInteractionsInterval) { clearInterval(copilotInteractionsInterval); copilotInteractionsInterval = null; }
+  if (copilotEnrichmentBackfillInterval) { clearInterval(copilotEnrichmentBackfillInterval); copilotEnrichmentBackfillInterval = null; }
   if (entraSignInsInterval) { clearInterval(entraSignInsInterval); entraSignInsInterval = null; }
   if (speDataInterval) { clearInterval(speDataInterval); speDataInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
@@ -832,6 +871,10 @@ export async function triggerPowerPlatformNow(): Promise<void> {
 
 export async function triggerCopilotInteractionsNow(): Promise<void> {
   runCopilotInteractionsJob();
+}
+
+export async function triggerCopilotEnrichmentBackfillNow(): Promise<void> {
+  runCopilotEnrichmentBackfillJob();
 }
 
 export async function triggerEntraSignInsNow(): Promise<void> {
