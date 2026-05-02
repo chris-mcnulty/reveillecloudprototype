@@ -1,6 +1,7 @@
 import { db } from "./db";
-import { organizations, tenants, monitoredSystems, syntheticTests, alertRules, alerts, savedViews, type Organization } from "@shared/schema";
+import { organizations, tenants, monitoredSystems, syntheticTests, alertRules, alerts, savedViews, scheduledDigests, type Organization } from "@shared/schema";
 import { sql, and, eq } from "drizzle-orm";
+import { computeNextRunAt } from "./digests/runner";
 
 const DEFAULT_VIEWS: Array<{ pageKey: string; name: string; filtersJson: Record<string, any> }> = [
   {
@@ -149,6 +150,30 @@ export async function seedDatabase() {
 
   await seedDefaultViewsForOrg(cascadiaOrg);
   await seedDefaultViewsForOrg(synozurOrg);
+
+  const weeklyDigestNextRun = computeNextRunAt({
+    cadence: "weekly",
+    hourOfDay: 8,
+    dayOfWeek: 1,
+    dayOfMonth: 1,
+    timezone: "America/Los_Angeles",
+  });
+
+  await db.insert(scheduledDigests).values({
+    organizationId: synozurOrg.id,
+    tenantId: null,
+    name: "MSP Weekly Snapshot",
+    description: "Weekly cross-tenant digest for the Synozur MSP team covering performance, alerts, LLM spend, Copilot usage, and sign-ins.",
+    cadence: "weekly",
+    hourOfDay: 8,
+    dayOfWeek: 1,
+    timezone: "America/Los_Angeles",
+    sections: ["performance", "alerts", "llm", "copilot", "signins"],
+    deliveryEmails: ["chris.mcnulty@synozur.com"],
+    teamsWebhookUrl: null,
+    enabled: true,
+    nextRunAt: weeklyDigestNextRun,
+  });
 
   console.log("Database seeded successfully.");
 }

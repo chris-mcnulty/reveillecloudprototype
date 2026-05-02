@@ -1,7 +1,12 @@
 import type { Express, Request, Response, NextFunction, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, insertScheduledDigestSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall } from "@shared/schema";
+import { exportAgentTraces, exportEntraSignIns, exportLlmCalls, exportAlerts, exportUsageReports } from "./exports/datasets";
+import { runDigest, computeNextRunAt } from "./digests/runner";
+import { gatherDigestData, renderDigestHtml, renderDigestPdf } from "./digests/render";
+import type { DigestSection } from "./digests/render";
+import { validateTeamsWebhookUrl } from "./digests/delivery";
 import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
@@ -2115,6 +2120,142 @@ export async function registerRoutes(
     await storage.deleteSavedView(req.params.id);
     await logAdminAction(null, "savedView.deleted", "savedView", req.params.id, { name: existing.name });
     res.status(204).end();
+  });
+
+  app.get("/api/exports/agent-traces", (req, res) => {
+    exportAgentTraces(req, res).catch(err => {
+      console.error("[Exports] agent-traces failed:", err);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
+    });
+  });
+
+  app.get("/api/exports/alerts", (req, res) => {
+    exportAlerts(req, res).catch(err => {
+      console.error("[Exports] alerts failed:", err);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
+    });
+  });
+
+  app.get("/api/tenants/:tenantId/exports/entra-signins", (req, res) => {
+    exportEntraSignIns(req, res).catch(err => {
+      console.error("[Exports] entra-signins failed:", err);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
+    });
+  });
+
+  app.get("/api/tenants/:tenantId/exports/llm-calls", (req, res) => {
+    exportLlmCalls(req, res).catch(err => {
+      console.error("[Exports] llm-calls failed:", err);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
+    });
+  });
+
+  app.get("/api/tenants/:tenantId/exports/usage-reports", (req, res) => {
+    exportUsageReports(req, res).catch(err => {
+      console.error("[Exports] usage-reports failed:", err);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
+    });
+  });
+
+  app.get("/api/scheduled-digests", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    const digests = await storage.getScheduledDigests(orgId);
+    res.json(digests);
+  });
+
+  app.get("/api/scheduled-digests/:id", async (req, res) => {
+    const digest = await storage.getScheduledDigest(req.params.id);
+    if (!digest) return res.status(404).json({ message: "Digest not found" });
+    res.json(digest);
+  });
+
+  app.post("/api/scheduled-digests", async (req, res) => {
+    const parsed = insertScheduledDigestSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid digest", errors: parsed.error.errors });
+    const teamsCheck = validateTeamsWebhookUrl(parsed.data.teamsWebhookUrl ?? null);
+    if (!teamsCheck.ok) return res.status(400).json({ message: teamsCheck.error });
+    const nextRunAt = computeNextRunAt(parsed.data);
+    const created = await storage.createScheduledDigest(parsed.data);
+    const updated = await storage.updateScheduledDigest(created.id, { nextRunAt });
+    await logAdminAction(parsed.data.tenantId || null, "create", "scheduledDigest", created.id, { name: parsed.data.name });
+    res.status(201).json(updated || created);
+  });
+
+  app.patch("/api/scheduled-digests/:id", async (req, res) => {
+    const existing = await storage.getScheduledDigest(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Digest not found" });
+    const patchSchema = insertScheduledDigestSchema.partial();
+    const parsed = patchSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid digest", errors: parsed.error.errors });
+
+    if (parsed.data.teamsWebhookUrl !== undefined) {
+      const teamsCheck = validateTeamsWebhookUrl(parsed.data.teamsWebhookUrl);
+      if (!teamsCheck.ok) return res.status(400).json({ message: teamsCheck.error });
+    }
+
+    const merged = { ...existing, ...parsed.data };
+    const nextRunAt = computeNextRunAt(merged);
+    const updated = await storage.updateScheduledDigest(req.params.id, { ...parsed.data, nextRunAt });
+    await logAdminAction(merged.tenantId || null, "update", "scheduledDigest", req.params.id, parsed.data);
+    res.json(updated);
+  });
+
+  app.delete("/api/scheduled-digests/:id", async (req, res) => {
+    const existing = await storage.getScheduledDigest(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Digest not found" });
+    await storage.deleteScheduledDigest(req.params.id);
+    await logAdminAction(existing.tenantId || null, "delete", "scheduledDigest", req.params.id, { name: existing.name });
+    res.json({ ok: true });
+  });
+
+  app.post("/api/scheduled-digests/:id/run-now", async (req, res) => {
+    const existing = await storage.getScheduledDigest(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Digest not found" });
+    try {
+      const result = await runDigest(req.params.id);
+      await logAdminAction(existing.tenantId || null, "run_now", "scheduledDigest", req.params.id, { status: result.status });
+      res.json(result);
+    } catch (err) {
+      console.error("[Digests] run-now failed:", err);
+      const message = err instanceof Error ? err.message : "Run failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  app.get("/api/scheduled-digests/:id/runs", async (req, res) => {
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 25;
+    const runs = await storage.getScheduledDigestRuns(req.params.id, limit);
+    res.json(runs);
+  });
+
+  app.get("/api/scheduled-digests/:id/preview", async (req, res) => {
+    const digest = await storage.getScheduledDigest(req.params.id);
+    if (!digest) return res.status(404).json({ message: "Digest not found" });
+    const org = await storage.getOrganization(digest.organizationId);
+    if (!org) return res.status(404).json({ message: "Organization not found" });
+
+    const data = await gatherDigestData({
+      digestName: digest.name,
+      organizationId: digest.organizationId,
+      organizationName: org.name,
+      tenantId: digest.tenantId,
+      sections: (digest.sections || []) as DigestSection[],
+    });
+
+    const format = String(req.query.format || "html").toLowerCase();
+    if (format === "pdf") {
+      const buffer = await renderDigestPdf(data);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${digest.name.replace(/\s+/g, "_")}.pdf"`);
+      res.send(buffer);
+      return;
+    }
+    if (format === "json") {
+      res.json(data);
+      return;
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(renderDigestHtml(data));
   });
 
   return httpServer;

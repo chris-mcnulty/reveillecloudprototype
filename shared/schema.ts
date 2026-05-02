@@ -750,3 +750,54 @@ export const insertSavedViewSchema = createInsertSchema(savedViews).omit({
 });
 export type InsertSavedView = z.infer<typeof insertSavedViewSchema>;
 export type SavedView = typeof savedViews.$inferSelect;
+
+export const scheduledDigests = pgTable("scheduled_digests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id),
+  tenantId: varchar("tenant_id").references(() => tenants.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  cadence: text("cadence").notNull().default("weekly"),
+  hourOfDay: integer("hour_of_day").notNull().default(8),
+  dayOfWeek: integer("day_of_week").default(1),
+  dayOfMonth: integer("day_of_month").default(1),
+  timezone: text("timezone").notNull().default("America/Los_Angeles"),
+  sections: text("sections").array().notNull().default(sql`ARRAY[]::text[]`),
+  deliveryEmails: text("delivery_emails").array().notNull().default(sql`ARRAY[]::text[]`),
+  teamsWebhookUrl: text("teams_webhook_url"),
+  enabled: boolean("enabled").notNull().default(true),
+  lastRunAt: timestamp("last_run_at"),
+  nextRunAt: timestamp("next_run_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertScheduledDigestSchema = createInsertSchema(scheduledDigests).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastRunAt: true,
+  nextRunAt: true,
+});
+export type InsertScheduledDigest = z.infer<typeof insertScheduledDigestSchema>;
+export type ScheduledDigest = typeof scheduledDigests.$inferSelect;
+
+export const scheduledDigestRuns = pgTable("scheduled_digest_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  digestId: varchar("digest_id").notNull().references(() => scheduledDigests.id),
+  status: text("status").notNull().default("running"),
+  emailRecipientCount: integer("email_recipient_count").default(0),
+  teamsDelivered: boolean("teams_delivered").default(false),
+  durationMs: integer("duration_ms"),
+  sectionsRendered: jsonb("sections_rendered").$type<Record<string, any>>(),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+});
+
+export const insertScheduledDigestRunSchema = createInsertSchema(scheduledDigestRuns).omit({
+  id: true,
+  startedAt: true,
+});
+export type InsertScheduledDigestRun = z.infer<typeof insertScheduledDigestRunSchema>;
+export type ScheduledDigestRun = typeof scheduledDigestRuns.$inferSelect;

@@ -8,6 +8,7 @@ export function SettingsNav() {
     { href: "/settings/tests", label: "Synthetic Tests" },
     { href: "/settings/alerts", label: "Alert Rules" },
     { href: "/settings/scheduler", label: "Scheduler" },
+    { href: "/settings/digests", label: "Scheduled Reports" },
   ];
 
   return (

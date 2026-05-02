@@ -70,6 +70,7 @@ import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
 import { useUrlWindow } from "@/lib/use-url-window";
 import { WindowFilterBadge } from "@/components/WindowFilterBadge";
+import { ExportMenu } from "@/components/ExportMenu";
 import {
   BarChart,
   Bar,
@@ -3066,6 +3067,16 @@ export default function AgentObservability() {
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
             Refresh
           </Button>
+          <ExportMenu
+            testIdPrefix="export-agent-traces"
+            baseUrl="/api/exports/agent-traces"
+            query={{
+              tenantId: activeTenantId || undefined,
+              platform: platformFilter !== "all" ? platformFilter : undefined,
+              status: statusFilter !== "all" ? statusFilter : undefined,
+              search: agentSearch || undefined,
+            }}
+          />
           <Button
             variant="default"
             size="sm"

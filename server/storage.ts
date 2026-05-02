@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, gte, gt, asc, sql, type SQL } from "drizzle-orm";
+import { eq, desc, and, gte, gt, asc, sql, ilike, type SQL } from "drizzle-orm";
 import { liveEvents } from "./events";
 import { extractCopilotEnrichment } from "./collectors/copilotEnrichment";
 import {
@@ -35,6 +35,8 @@ import {
   savedViews, type SavedView, type InsertSavedView,
   metricBaselines, type MetricBaseline, type InsertMetricBaseline,
   anomalyStreamConfigs, type AnomalyStreamConfig, type InsertAnomalyStreamConfig,
+  scheduledDigests, type ScheduledDigest, type InsertScheduledDigest,
+  scheduledDigestRuns, type ScheduledDigestRun, type InsertScheduledDigestRun,
 } from "@shared/schema";
 import { or } from "drizzle-orm";
 
@@ -260,6 +262,16 @@ export interface IStorage {
 
   getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number }): Promise<SlowestLlmHop[]>;
   backfillLlmCallTraceLinks(opts?: { tenantId?: string; toleranceMs?: number; dryRun?: boolean }): Promise<{ scanned: number; matched: number; updated: number; ambiguous: number }>;
+
+  createScheduledDigest(data: InsertScheduledDigest): Promise<ScheduledDigest>;
+  updateScheduledDigest(id: string, data: Partial<ScheduledDigest>): Promise<ScheduledDigest | undefined>;
+  deleteScheduledDigest(id: string): Promise<void>;
+  getScheduledDigests(orgId?: string): Promise<ScheduledDigest[]>;
+  getScheduledDigest(id: string): Promise<ScheduledDigest | undefined>;
+  getScheduledDigestsDue(now: Date): Promise<ScheduledDigest[]>;
+  createScheduledDigestRun(data: InsertScheduledDigestRun): Promise<ScheduledDigestRun>;
+  updateScheduledDigestRun(id: string, data: Partial<ScheduledDigestRun>): Promise<ScheduledDigestRun | undefined>;
+  getScheduledDigestRuns(digestId: string, limit?: number): Promise<ScheduledDigestRun[]>;
 }
 
 export type LlmCallWithModel = LlmCall & {
@@ -2659,6 +2671,170 @@ export class DatabaseStorage implements IStorage {
       metricWindows,
       tenants: Array.from(result.values()),
     };
+  }
+
+  async createScheduledDigest(data: InsertScheduledDigest): Promise<ScheduledDigest> {
+    const [created] = await db.insert(scheduledDigests).values(data).returning();
+    return created;
+  }
+
+  async updateScheduledDigest(id: string, data: Partial<ScheduledDigest>): Promise<ScheduledDigest | undefined> {
+    const { id: _ignore, createdAt: _c, ...patch } = data;
+    const [updated] = await db.update(scheduledDigests)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(scheduledDigests.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteScheduledDigest(id: string): Promise<void> {
+    await db.delete(scheduledDigestRuns).where(eq(scheduledDigestRuns.digestId, id));
+    await db.delete(scheduledDigests).where(eq(scheduledDigests.id, id));
+  }
+
+  async getScheduledDigests(orgId?: string): Promise<ScheduledDigest[]> {
+    if (orgId) {
+      return db.select().from(scheduledDigests).where(eq(scheduledDigests.organizationId, orgId)).orderBy(desc(scheduledDigests.createdAt));
+    }
+    return db.select().from(scheduledDigests).orderBy(desc(scheduledDigests.createdAt));
+  }
+
+  async getScheduledDigest(id: string): Promise<ScheduledDigest | undefined> {
+    const [d] = await db.select().from(scheduledDigests).where(eq(scheduledDigests.id, id));
+    return d;
+  }
+
+  async getScheduledDigestsDue(now: Date): Promise<ScheduledDigest[]> {
+    return db.select().from(scheduledDigests)
+      .where(and(eq(scheduledDigests.enabled, true), sql`${scheduledDigests.nextRunAt} IS NOT NULL AND ${scheduledDigests.nextRunAt} <= ${now}`));
+  }
+
+  async createScheduledDigestRun(data: InsertScheduledDigestRun): Promise<ScheduledDigestRun> {
+    const [created] = await db.insert(scheduledDigestRuns).values(data).returning();
+    return created;
+  }
+
+  async updateScheduledDigestRun(id: string, data: Partial<ScheduledDigestRun>): Promise<ScheduledDigestRun | undefined> {
+    const { id: _ignore, ...patch } = data;
+    const [updated] = await db.update(scheduledDigestRuns)
+      .set(patch)
+      .where(eq(scheduledDigestRuns.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getScheduledDigestRuns(digestId: string, limit = 25): Promise<ScheduledDigestRun[]> {
+    return db.select().from(scheduledDigestRuns)
+      .where(eq(scheduledDigestRuns.digestId, digestId))
+      .orderBy(desc(scheduledDigestRuns.startedAt))
+      .limit(limit);
+  }
+
+  async getAgentTracesPaged(opts: {
+    tenantId?: string;
+    platform?: string;
+    status?: string;
+    search?: string;
+    offset: number;
+    limit: number;
+  }): Promise<AgentTrace[]> {
+    const conditions: SQL[] = [];
+    if (opts.tenantId) conditions.push(eq(agentTraces.tenantId, opts.tenantId));
+    if (opts.platform) conditions.push(eq(agentTraces.platform, opts.platform));
+    if (opts.status) conditions.push(eq(agentTraces.status, opts.status));
+    if (opts.search) conditions.push(ilike(agentTraces.agentName, `%${opts.search}%`));
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    return db.select().from(agentTraces)
+      .where(where)
+      .orderBy(desc(agentTraces.startedAt))
+      .limit(opts.limit)
+      .offset(opts.offset);
+  }
+
+  async getEntraSignInsPaged(tenantId: string, opts: {
+    userId?: string;
+    appName?: string;
+    status?: string;
+    riskLevel?: string;
+    since?: string;
+    offset: number;
+    limit: number;
+  }): Promise<EntraSignIn[]> {
+    const conditions: SQL[] = [eq(entraSignIns.tenantId, tenantId)];
+    if (opts.userId) conditions.push(eq(entraSignIns.userId, opts.userId));
+    if (opts.appName) conditions.push(eq(entraSignIns.appDisplayName, opts.appName));
+    if (opts.status) conditions.push(eq(entraSignIns.status, opts.status));
+    if (opts.riskLevel) conditions.push(eq(entraSignIns.riskLevel, opts.riskLevel));
+    if (opts.since) conditions.push(gte(entraSignIns.signInAt, new Date(opts.since)));
+    return db.select().from(entraSignIns)
+      .where(and(...conditions))
+      .orderBy(desc(entraSignIns.signInAt))
+      .limit(opts.limit)
+      .offset(opts.offset);
+  }
+
+  async getLlmCallsPaged(tenantId: string, opts: {
+    modelId?: string;
+    agentId?: string;
+    status?: string;
+    errorClass?: string;
+    since?: string;
+    offset: number;
+    limit: number;
+  }): Promise<LlmCall[]> {
+    const conditions: SQL[] = [eq(llmCalls.tenantId, tenantId)];
+    if (opts.modelId) conditions.push(eq(llmCalls.modelId, opts.modelId));
+    if (opts.agentId) conditions.push(eq(llmCalls.agentId, opts.agentId));
+    if (opts.status) conditions.push(eq(llmCalls.status, opts.status));
+    if (opts.errorClass) conditions.push(eq(llmCalls.errorClass, opts.errorClass));
+    if (opts.since) conditions.push(gte(llmCalls.calledAt, new Date(opts.since)));
+    return db.select().from(llmCalls)
+      .where(and(...conditions))
+      .orderBy(desc(llmCalls.calledAt))
+      .limit(opts.limit)
+      .offset(opts.offset);
+  }
+
+  async getAlertsPaged(opts: {
+    tenantId?: string;
+    severity?: string;
+    acknowledged?: boolean;
+    search?: string;
+    offset: number;
+    limit: number;
+  }): Promise<Alert[]> {
+    const conditions: SQL[] = [];
+    if (opts.tenantId) conditions.push(eq(alerts.tenantId, opts.tenantId));
+    if (opts.severity) conditions.push(eq(alerts.severity, opts.severity));
+    if (opts.acknowledged !== undefined) conditions.push(eq(alerts.acknowledged, opts.acknowledged));
+    if (opts.search) {
+      const titleMatch = ilike(alerts.title, `%${opts.search}%`);
+      const messageMatch = ilike(alerts.message, `%${opts.search}%`);
+      const orExpr = or(titleMatch, messageMatch);
+      if (orExpr) conditions.push(orExpr);
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    return db.select().from(alerts)
+      .where(where)
+      .orderBy(desc(alerts.timestamp))
+      .limit(opts.limit)
+      .offset(opts.offset);
+  }
+
+  async getUsageReportsPaged(tenantId: string, opts: {
+    reportType?: string;
+    since?: Date;
+    offset: number;
+    limit: number;
+  }): Promise<UsageReport[]> {
+    const conditions: SQL[] = [eq(usageReports.tenantId, tenantId)];
+    if (opts.reportType) conditions.push(eq(usageReports.reportType, opts.reportType));
+    if (opts.since) conditions.push(gte(usageReports.collectedAt, opts.since));
+    return db.select().from(usageReports)
+      .where(and(...conditions))
+      .orderBy(desc(usageReports.collectedAt))
+      .limit(opts.limit)
+      .offset(opts.offset);
   }
 }
 

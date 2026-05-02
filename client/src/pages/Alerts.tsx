@@ -12,6 +12,7 @@ import { useActiveTenant } from "@/lib/tenant-context";
 import { Link } from "wouter";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceLine } from "recharts";
 import { isAnomalyAlertPayload, type Alert, type Alert as AlertType, type AnomalyAlertPayload } from "@shared/schema";
+import { ExportMenu } from "@/components/ExportMenu";
 
 type AlertFilter = "all" | "anomaly" | "threshold";
 
@@ -47,6 +48,11 @@ export default function Alerts() {
   }, [queryClient, activeTenantId, filterParams?.alertType]);
   useLiveStream(orgId, [activeTenantId], ["alert.created"], handleLive);
 
+  const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const severityParam = params.get("severity") || undefined;
+  const ackParam = params.get("acknowledged") || undefined;
+  const searchParam = params.get("search") || undefined;
+
   if (isLoading) {
     return (
       <Shell>
@@ -71,6 +77,12 @@ export default function Alerts() {
           </p>
         </div>
         <div className="flex items-center space-x-2">
+          <ExportMenu
+            testIdPrefix="export-alerts"
+            baseUrl="/api/exports/alerts"
+            query={{ tenantId: activeTenantId || undefined, severity: severityParam, acknowledged: ackParam, search: searchParam }}
+            size="default"
+          />
           <Link href="/settings/alerts">
             <Button variant="outline" data-testid="button-configure-rules">Configure Rules</Button>
           </Link>

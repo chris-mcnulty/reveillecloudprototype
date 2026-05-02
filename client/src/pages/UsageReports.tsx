@@ -4,6 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { useUsageReports, useLatestUsageReport } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { ExportMenu } from "@/components/ExportMenu";
 import { Loader2, HardDrive, Users, FileText, BarChart3, TrendingUp, Database, FolderTree, List, Network, UserCheck, CloudCog, MessageSquare, Mail, AppWindow, Sparkles, Bot, BrainCircuit } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend, AreaChart, Area } from "recharts";
 import { useState } from "react";
@@ -717,11 +718,21 @@ export default function UsageReports() {
 
   return (
     <Shell>
-      <div className="mb-6">
-        <h2 data-testid="text-page-title" className="text-2xl font-bold tracking-tight">Usage Reports</h2>
-        <p className="text-muted-foreground">
-          M365 usage data across SharePoint, OneDrive, Copilot, Teams, Exchange, and site structure for {tenant?.name || "this tenant"}.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h2 data-testid="text-page-title" className="text-2xl font-bold tracking-tight">Usage Reports</h2>
+          <p className="text-muted-foreground">
+            M365 usage data across SharePoint, OneDrive, Copilot, Teams, Exchange, and site structure for {tenant?.name || "this tenant"}.
+          </p>
+        </div>
+        {activeTenantId && (
+          <ExportMenu
+            testIdPrefix="export-usage-reports"
+            baseUrl={`/api/tenants/${activeTenantId}/exports/usage-reports`}
+            query={{ reportType: activeTab !== "all" ? activeTab : undefined }}
+            size="default"
+          />
+        )}
       </div>
 
       <div className="space-y-3 mb-6">

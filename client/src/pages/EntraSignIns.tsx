@@ -20,6 +20,7 @@ import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
 import { useUrlWindow } from "@/lib/use-url-window";
 import { WindowFilterBadge } from "@/components/WindowFilterBadge";
+import { ExportMenu } from "@/components/ExportMenu";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell,
@@ -207,6 +208,18 @@ export default function EntraSignIns() {
           >
             <RefreshCw className="h-4 w-4" />
           </Button>
+          {activeTenantId && (
+            <ExportMenu
+              testIdPrefix="export-entra-signins"
+              baseUrl={`/api/tenants/${activeTenantId}/exports/entra-signins`}
+              query={{
+                status: statusFilter !== "all" ? statusFilter : undefined,
+                riskLevel: riskFilter !== "all" ? riskFilter : undefined,
+                appName: appFilter !== "all" ? appFilter : undefined,
+                userId: selectedUser || undefined,
+              }}
+            />
+          )}
         </div>
       </div>
 

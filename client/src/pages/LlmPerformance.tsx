@@ -35,6 +35,7 @@ import { useActiveTenant } from "@/lib/tenant-context";
 import { SavedViews } from "@/components/SavedViews";
 import { useUrlWindow } from "@/lib/use-url-window";
 import { WindowFilterBadge } from "@/components/WindowFilterBadge";
+import { ExportMenu } from "@/components/ExportMenu";
 import {
   LineChart,
   Line,
@@ -333,6 +334,16 @@ export default function LlmPerformance() {
               <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
               Refresh
             </Button>
+            {activeTenantId && (
+              <ExportMenu
+                testIdPrefix="export-llm-calls"
+                baseUrl={`/api/tenants/${activeTenantId}/exports/llm-calls`}
+                query={{
+                  agentId: agentFilter !== "all" ? agentFilter : undefined,
+                  since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+                }}
+              />
+            )}
             <Button variant="outline" size="sm" onClick={() => seedMutation.mutate()} disabled={seedMutation.isPending} data-testid="button-seed-demo">
               {seedMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Database className="h-3.5 w-3.5 mr-1.5" />}
               Seed Demo Data

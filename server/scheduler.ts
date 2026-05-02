@@ -32,6 +32,7 @@ const jobStatus: Record<string, JobStatus> = {
   entraSignIns: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   speData: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   anomalyDetection: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  digests: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -678,6 +679,33 @@ async function runSpeDataJob(): Promise<void> {
   }
 }
 
+async function runDigestsJob(): Promise<void> {
+  if (jobStatus.digests.isRunning) {
+    return;
+  }
+  jobStatus.digests.isRunning = true;
+  try {
+    const due = await storage.getScheduledDigestsDue(new Date());
+    if (due.length > 0) {
+      console.log(`[Scheduler] Processing ${due.length} due digest(s)...`);
+      const { runDigest } = await import("./digests/runner");
+      for (const digest of due) {
+        try {
+          const result = await runDigest(digest.id);
+          console.log(`[Scheduler] Digest ${digest.name}: ${result.status} (email=${result.emailRecipientCount}, teams=${result.teamsDelivered})`);
+        } catch (err: any) {
+          console.error(`[Scheduler] Digest ${digest.name} failed:`, err.message);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error("[Scheduler] runDigestsJob error:", err.message || err);
+  } finally {
+    jobStatus.digests.isRunning = false;
+    jobStatus.digests.lastRun = new Date();
+  }
+}
+
 let syntheticTestInterval: NodeJS.Timeout | null = null;
 let graphReportsInterval: NodeJS.Timeout | null = null;
 let serviceHealthInterval: NodeJS.Timeout | null = null;
@@ -689,6 +717,7 @@ let copilotEnrichmentBackfillInterval: NodeJS.Timeout | null = null;
 let entraSignInsInterval: NodeJS.Timeout | null = null;
 let speDataInterval: NodeJS.Timeout | null = null;
 let anomalyDetectionInterval: NodeJS.Timeout | null = null;
+let digestsInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
 
 async function runAnomalyDetectionJob(): Promise<void> {
@@ -742,6 +771,7 @@ export function startScheduler(): void {
   if (entraSignInsInterval) clearInterval(entraSignInsInterval);
   if (speDataInterval) clearInterval(speDataInterval);
   if (anomalyDetectionInterval) clearInterval(anomalyDetectionInterval);
+  if (digestsInterval) clearInterval(digestsInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -787,6 +817,10 @@ export function startScheduler(): void {
   anomalyDetectionInterval = setInterval(() => {
     runAnomalyDetectionJob();
   }, 60 * 60 * 1000);
+
+  digestsInterval = setInterval(() => {
+    runDigestsJob();
+  }, 5 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -853,6 +887,11 @@ export function startScheduler(): void {
     runAnomalyDetectionJob();
   }, 95 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial digest sweep...");
+    runDigestsJob();
+  }, 100 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -864,6 +903,7 @@ export function startScheduler(): void {
   console.log("  - Copilot enrichment backfill: every 6h (initial in 70s)");
   console.log("  - Entra sign-ins: every 30m (initial in 75s)");
   console.log("  - SPE data: every 30m (initial in 85s)");
+  console.log("  - Digests: every 5m (initial in 95s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -879,6 +919,7 @@ export function stopScheduler(): void {
   if (entraSignInsInterval) { clearInterval(entraSignInsInterval); entraSignInsInterval = null; }
   if (speDataInterval) { clearInterval(speDataInterval); speDataInterval = null; }
   if (anomalyDetectionInterval) { clearInterval(anomalyDetectionInterval); anomalyDetectionInterval = null; }
+  if (digestsInterval) { clearInterval(digestsInterval); digestsInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }

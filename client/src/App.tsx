@@ -17,6 +17,7 @@ import AlertsConfig from "@/pages/settings/Alerts";
 import TenantConfig from "@/pages/settings/Tenant";
 import Onboarding from "@/pages/Onboarding";
 import SchedulerConfig from "@/pages/settings/Scheduler";
+import DigestsConfig from "@/pages/settings/Digests";
 import ServiceHealth from "@/pages/ServiceHealth";
 import UsageReports from "@/pages/UsageReports";
 import AuditLog from "@/pages/AuditLog";
@@ -54,6 +55,7 @@ function Router() {
       <Route path="/settings/tests" component={TestsConfig} />
       <Route path="/settings/alerts" component={AlertsConfig} />
       <Route path="/settings/scheduler" component={SchedulerConfig} />
+      <Route path="/settings/digests" component={DigestsConfig} />
       <Route path="/settings/tenant" component={TenantConfig} />
       <Route component={NotFound} />
     </Switch>
