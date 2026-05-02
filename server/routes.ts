@@ -385,7 +385,8 @@ export async function registerRoutes(
     const since = req.query.since ? new Date(req.query.since as string) : undefined;
     const operation = req.query.operation as string | undefined;
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 200;
-    const entries = await storage.getAuditLogEntries(req.params.tenantId, since, operation, limit);
+    const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
+    const entries = await storage.getAuditLogEntries(req.params.tenantId, since, operation, limit, offset);
     res.json(entries);
   });
 
@@ -661,8 +662,10 @@ export async function registerRoutes(
     const platform = req.query.platform as string | undefined;
     const status = req.query.status as string | undefined;
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
-    const traces = await storage.getAgentTraces(tenantId, platform, status, limit);
-    res.json(traces);
+    const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
+    const { items, total } = await storage.getAgentTraces(tenantId, platform, status, limit, offset);
+    res.set("X-Total-Count", String(total));
+    res.json(items);
   });
 
   app.post("/api/agent-traces/seed-demo", async (req, res) => {
@@ -828,14 +831,16 @@ export async function registerRoutes(
 
   app.get("/api/tenants/:tenantId/copilot-interactions", async (req, res) => {
     const { tenantId } = req.params;
-    const { userId, appClass, sessionId, limit } = req.query;
-    const interactions = await storage.getCopilotInteractions(tenantId, {
+    const { userId, appClass, sessionId, limit, offset } = req.query;
+    const { items, total } = await storage.getCopilotInteractions(tenantId, {
       userId: userId as string | undefined,
       appClass: appClass as string | undefined,
       sessionId: sessionId as string | undefined,
       limit: limit ? parseInt(limit as string, 10) : 50,
+      offset: offset ? parseInt(offset as string, 10) : 0,
     });
-    res.json(interactions);
+    res.set("X-Total-Count", String(total));
+    res.json(items);
   });
 
   app.get("/api/tenants/:tenantId/copilot-interactions/stats", async (req, res) => {
@@ -929,12 +934,14 @@ export async function registerRoutes(
   });
 
   app.get("/api/tenants/:tenantId/mcp-servers/:serverId/tool-calls", async (req, res) => {
-    const { limit, method, status, sessionId } = req.query as any;
-    const calls = await storage.getMcpToolCalls(req.params.serverId, {
+    const { limit, offset, method, status, sessionId } = req.query as any;
+    const { items, total } = await storage.getMcpToolCalls(req.params.serverId, {
       limit: limit ? parseInt(limit) : undefined,
+      offset: offset ? parseInt(offset) : 0,
       method, status, sessionId,
     });
-    res.json(calls);
+    res.set("X-Total-Count", String(total));
+    res.json(items);
   });
 
   app.post("/api/tenants/:tenantId/mcp-servers/:serverId/heartbeat", async (req, res) => {
@@ -1221,12 +1228,14 @@ export async function registerRoutes(
   });
 
   app.get("/api/tenants/:tenantId/entra-signins", async (req, res) => {
-    const { limit, userId, appName, status, riskLevel, since } = req.query as any;
-    const signIns = await storage.getEntraSignIns(req.params.tenantId, {
+    const { limit, offset, userId, appName, status, riskLevel, since } = req.query as any;
+    const { items, total } = await storage.getEntraSignIns(req.params.tenantId, {
       limit: limit ? parseInt(limit) : undefined,
+      offset: offset ? parseInt(offset) : 0,
       userId, appName, status, riskLevel, since,
     });
-    res.json(signIns);
+    res.set("X-Total-Count", String(total));
+    res.json(items);
   });
 
   app.get("/api/tenants/:tenantId/entra-signins/stats", async (req, res) => {
@@ -1478,15 +1487,17 @@ export async function registerRoutes(
   app.get("/api/tenants/:tenantId/llm-models/:modelId/calls", async (req, res) => {
     const model = await getLlmModelForTenant(req.params.modelId, req.params.tenantId);
     if (!model) return res.status(404).json({ error: "Model not found" });
-    const { limit, status, errorClass, agentId } = req.query as any;
-    const calls = await storage.getLlmCalls(req.params.tenantId, {
+    const { limit, offset, status, errorClass, agentId } = req.query as any;
+    const { items, total } = await storage.getLlmCalls(req.params.tenantId, {
       modelId: req.params.modelId,
       status,
       errorClass,
       agentId,
       limit: limit ? parseInt(limit) : undefined,
+      offset: offset ? parseInt(offset) : 0,
     });
-    res.json(calls);
+    res.set("X-Total-Count", String(total));
+    res.json(items);
   });
 
   app.post("/api/tenants/:tenantId/llm-models/:modelId/chat", async (req, res) => {
@@ -1521,12 +1532,14 @@ export async function registerRoutes(
   });
 
   app.get("/api/tenants/:tenantId/llm-calls", async (req, res) => {
-    const { modelId, agentId, status, errorClass, limit } = req.query as any;
-    const calls = await storage.getLlmCalls(req.params.tenantId, {
+    const { modelId, agentId, status, errorClass, limit, offset } = req.query as any;
+    const { items, total } = await storage.getLlmCalls(req.params.tenantId, {
       modelId, agentId, status, errorClass,
       limit: limit ? parseInt(limit) : undefined,
+      offset: offset ? parseInt(offset) : 0,
     });
-    res.json(calls);
+    res.set("X-Total-Count", String(total));
+    res.json(items);
   });
 
   app.get("/api/tenants/:tenantId/known-agents", async (req, res) => {

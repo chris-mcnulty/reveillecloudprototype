@@ -201,6 +201,55 @@ All mutating API routes log to `adminAuditLog` table via `logAdminAction()` help
 ## Branding
 Reveille Cloud with custom logo assets in attached_assets/
 
+## Query Performance & Indexes
+Database index strategy targeting p95 < 200ms on hot list endpoints. Indexes are declared as the third argument of each `pgTable(...)` in `shared/schema.ts` and applied via `npm run db:push`.
+
+### Covering indexes (all DESC on time column for `ORDER BY ... LIMIT`)
+- `metrics_tenant_timestamp_idx (tenant_id, timestamp DESC)` — `/metrics` lists.
+- `alerts_tenant_timestamp_idx (tenant_id, timestamp DESC)` — `/alerts` lists.
+- `test_runs_tenant_started_idx`, `test_runs_test_started_idx` — tenant + per-test run history.
+- `scheduled_job_runs_*` — created_at, plus tenant/jobType/test variants for `/scheduler/job-runs` filters.
+- `usage_reports_tenant_type_collected_idx (tenant_id, report_type, collected_at DESC)` — `/usage-reports` lists and `latest`.
+- `service_health_incidents_external_idx`, `service_health_incidents_tenant_collected_idx` — incident upserts and lists.
+- `audit_log_entries_tenant_timestamp_idx (tenant_id, timestamp DESC)` — `/audit-log`.
+- `admin_audit_log_tenant_timestamp_idx (tenant_id, timestamp DESC)` — `/admin-audit`.
+- `power_platform_resources_tenant_collected_idx`, `..._tenant_type_idx` — Power Platform inventory.
+- `agent_traces_tenant_started_status_idx (tenant_id, started_at DESC, status)`, `agent_traces_tenant_agent_started_idx (tenant_id, agent_name, platform, started_at DESC)` — `/agent-traces` and `/agent-health`.
+- `agent_trace_spans_trace_sort_idx (trace_id, sort_order)` — span detail lookups.
+- `copilot_interactions_*` — created_at for sessions list, plus session_id, request_id, user_id index for drill-downs (`/copilot-interactions/...`).
+- `mcp_tool_calls_tenant_server_called_idx`, `mcp_tool_calls_server_called_idx`, `mcp_tool_calls_tenant_called_idx` — `/mcp-servers/.../tool-calls` and stats.
+- `entra_sign_ins_tenant_signin_at_idx (tenant_id, sign_in_at DESC)`, `entra_sign_ins_tenant_user_signin_idx (tenant_id, user_id, sign_in_at DESC)` — list + per-user breakdown. The existing unique `(tenant_id, sign_in_id)` index is retained for upserts.
+- `spe_access_events_tenant_timestamp_idx`, `spe_access_events_tenant_container_timestamp_idx`, `spe_security_events_tenant_timestamp_idx` — SPE event lists.
+- `spe_containers_tenant_container_idx` — unique upsert key.
+- `known_agents_tenant_discovered_idx`, unique `known_agents_tenant_external_idx` — agent registry.
+- `llm_calls_tenant_called_idx`, `llm_calls_model_called_idx`, `llm_calls_tenant_agent_called_idx` — LLM call lists and per-model/agent stats.
+
+### Aggregation rewrites
+- `getAgentHealthSummary` (`server/storage.ts`) replaced its per-row in-memory grouping with a single SQL CTE: `DISTINCT ON (agent_name, platform)` for the latest trace and a `GROUP BY` with `FILTER (WHERE started_at >= NOW() - INTERVAL '24 hours')` for success rate and avg latency. Avoids streaming all traces into Node.
+- `getLlmStats`, `getMcpServerStats`, `getEntraSignInStats`, `getCopilotInteractionStats` already use single SQL aggregations (kept as-is).
+
+### Pagination
+- `COUNT(*) OVER()` window-based pagination is used by 5 of the 6 hot list helpers — `getCopilotSessions`, `getAgentTraces`, `getCopilotInteractions`, `getMcpToolCalls`, `getEntraSignIns`, `getLlmCalls` — eliminating the second `SELECT COUNT(*)` round trip on the common case. Each returns `{ items, total }` and accepts an `offset`; routes surface the total via the `X-Total-Count` response header so existing JSON-array consumers are unaffected. When the page is empty AND `offset > 0` (overshoot), a one-off `SELECT COUNT(*)` with the same WHERE clause is run so the caller still gets a correct total instead of a misleading `0`.
+- `getAuditLogEntries` deliberately does NOT use `COUNT(*) OVER()`. With 100K+ rows per tenant the windowed count would force a full index walk and break the <200 ms p95 budget. The helper returns a plain array via a top-N `Index Scan using audit_log_entries_tenant_timestamp_idx`. Callers needing aggregate counts can use `/audit-log/stats` (already grouped per operation).
+- `siteStructure.ts` — removed the `drives.slice(0, 10)` and `folders.slice(0, 20)` caps in `collectDriveStructure`. The collector now uses an `iterateGraphPages` async generator that follows `@odata.nextLink` for both `/sites/root/drives` and each `/drives/{id}/root/children`, yielding one item at a time. Per-drive aggregates (file/folder counts, estimated total files, top-50 sample) are computed with rolling counters during iteration, so memory stays bounded regardless of drive count or per-drive item count. Result is written as a single `usage_reports` row keyed by `reportType: "driveStructure"`, preserving the existing read contract. The 300 ms throttle between drives is preserved.
+
+### EXPLAIN ANALYZE baselines (real Synozur data, captured post-`db:push`)
+- **Copilot sessions list** (97 interactions across 8 sessions, tenantId filter):
+  - Plan: `Index Only Scan using copilot_interactions_tenant_session_created_idx` → `GroupAggregate` → `Sort top-N` → `Limit`.
+  - `Heap Fetches: 0`, **execution 4.98 ms** (down from a Seq Scan + sort + grouping path).
+  - The new `(tenant_id, session_id, created_at DESC)` composite is what enables the index-only scan; the old `(tenant_id, session_id)` did not cover `max(created_at)`.
+- **Audit log list** (102,559 rows for tenant, no window count):
+  - Plan: `Limit 200` → `Gather Merge` → parallel `Sort top-N heapsort` over `audit_log_entries` filtered by `tenant_id`.
+  - **execution ~100 ms in DB, ~70–90 ms warm end-to-end** — well under the 200 ms p95 budget. Removing the `COUNT(*) OVER()` window cut wall time by ~10×.
+- **MCP tool calls** (3 rows): `Index Scan using mcp_tool_calls_server_called_idx`, **17 ms** end-to-end.
+- **Entra sign-ins** (94 rows for tenant): `Index Scan using entra_sign_ins_tenant_signin_at_idx`, ~60 ms end-to-end.
+- **Agent traces** (24 rows): `Index Scan using agent_traces_tenant_started_status_idx`, sub-100 ms.
+- **LLM calls** (0 rows for tenant): `Index Scan using llm_calls_tenant_called_idx`, sub-20 ms.
+- **Agent health summary** (4 agents, real data): single CTE, **3–25 ms** (verified at runtime via `/api/agent-health`).
+- Agent traces list → seq scan on the empty dev table (1 row); will use `agent_traces_tenant_started_status_idx` once populated.
+
+Re-run `EXPLAIN (ANALYZE, BUFFERS)` against the production DB to validate p95 targets after schema deploy.
+
 ## External References
 - **Zenith** (M365 reporting & governance app): https://github.com/chris-mcnulty/synozur-zenith — Chris's app for reporting on and governing M365
 - Synozur Orbit (competitive intelligence): https://github.com/chris-mcnulty/synozur-orbit — has multi-tenant task scheduler pattern used as basis for Reveille scheduler

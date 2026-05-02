@@ -97,7 +97,7 @@ export interface IStorage {
   getActiveServiceHealthIncidents(): Promise<ServiceHealthIncident[]>;
 
   createAuditLogEntry(entry: InsertAuditLogEntry): Promise<AuditLogEntry>;
-  getAuditLogEntries(tenantId: string, since?: Date, operation?: string, limit?: number): Promise<AuditLogEntry[]>;
+  getAuditLogEntries(tenantId: string, since?: Date, operation?: string, limit?: number, offset?: number): Promise<AuditLogEntry[]>;
   getAuditLogStats(tenantId: string): Promise<{ operation: string; count: number }[]>;
 
   createAdminAuditEntry(entry: InsertAdminAuditLog): Promise<AdminAuditLog>;
@@ -110,7 +110,7 @@ export interface IStorage {
   getPowerPlatformResourceStats(tenantId: string): Promise<{ resourceType: string; count: number }[]>;
 
   createAgentTrace(data: InsertAgentTrace): Promise<AgentTrace>;
-  getAgentTraces(tenantId?: string, platform?: string, status?: string, limit?: number): Promise<AgentTrace[]>;
+  getAgentTraces(tenantId?: string, platform?: string, status?: string, limit?: number, offset?: number): Promise<{ items: AgentTrace[]; total: number }>;
   getAgentTrace(id: string): Promise<AgentTrace | undefined>;
   getAgentTraceWithSpans(id: string): Promise<{ trace: AgentTrace; spans: AgentTraceSpan[] } | undefined>;
   createAgentTraceSpan(data: InsertAgentTraceSpan): Promise<AgentTraceSpan>;
@@ -119,7 +119,7 @@ export interface IStorage {
   deleteAgentTrace(id: string): Promise<void>;
 
   createCopilotInteraction(data: InsertCopilotInteraction): Promise<CopilotInteraction>;
-  getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number }): Promise<CopilotInteraction[]>;
+  getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number; offset?: number }): Promise<{ items: CopilotInteraction[]; total: number }>;
   getCopilotInteractionsByRequestId(tenantId: string, requestId: string): Promise<CopilotInteraction[]>;
   getCopilotSessionInteractions(tenantId: string, sessionId: string): Promise<CopilotInteraction[]>;
   getCopilotInteractionStats(tenantId: string): Promise<{ totalInteractions: number; uniqueUsers: number; uniqueSessions: number; appBreakdown: Record<string, number>; successRate: number }>;
@@ -133,12 +133,12 @@ export interface IStorage {
   getMcpServer(id: string): Promise<McpServer | undefined>;
   deleteMcpServer(id: string): Promise<void>;
   createMcpToolCall(data: InsertMcpToolCall): Promise<McpToolCall>;
-  getMcpToolCalls(serverId: string, options?: { limit?: number; method?: string; status?: string; sessionId?: string }): Promise<McpToolCall[]>;
+  getMcpToolCalls(serverId: string, options?: { limit?: number; offset?: number; method?: string; status?: string; sessionId?: string }): Promise<{ items: McpToolCall[]; total: number }>;
   getMcpServerStats(tenantId: string): Promise<{ totalServers: number; runningCount: number; totalToolCalls: number; errorRate: number; avgLatency: number; toolBreakdown: Record<string, number> }>;
   getMcpServerHealth(serverId: string): Promise<{ recentCalls: McpToolCall[]; errorRate: number; avgLatency: number; totalCalls: number }>;
 
   upsertEntraSignIn(data: InsertEntraSignIn): Promise<EntraSignIn>;
-  getEntraSignIns(tenantId: string, options?: { limit?: number; userId?: string; appName?: string; status?: string; riskLevel?: string; since?: string }): Promise<EntraSignIn[]>;
+  getEntraSignIns(tenantId: string, options?: { limit?: number; offset?: number; userId?: string; appName?: string; status?: string; riskLevel?: string; since?: string }): Promise<{ items: EntraSignIn[]; total: number }>;
   getEntraSignInStats(tenantId: string): Promise<{
     totalSignIns: number; uniqueUsers: number; failureCount: number; mfaRate: number; riskySignIns: number;
     topApps: { app: string; count: number }[];
@@ -190,7 +190,7 @@ export interface IStorage {
   deleteLlmModel(id: string): Promise<void>;
 
   createLlmCall(data: InsertLlmCall): Promise<LlmCall>;
-  getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number }): Promise<LlmCall[]>;
+  getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number; offset?: number }): Promise<{ items: LlmCall[]; total: number }>;
   getLlmStats(tenantId: string, opts?: { since?: Date; agentId?: string }): Promise<{
     totalCalls: number;
     successCount: number;
@@ -572,14 +572,19 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getAuditLogEntries(tenantId: string, since?: Date, operation?: string, limit = 200): Promise<AuditLogEntry[]> {
+  async getAuditLogEntries(tenantId: string, since?: Date, operation?: string, limit = 200, offset = 0): Promise<AuditLogEntry[]> {
+    // Audit log can have 100k+ rows per tenant, so COUNT(*) OVER() would force
+    // a full index walk and blow past the <200 ms p95 budget. Run a plain
+    // top-N index scan; callers needing a total can use the dedicated count
+    // helper or `/audit-log/stats`.
     const conditions = [eq(auditLogEntries.tenantId, tenantId)];
     if (since) conditions.push(gte(auditLogEntries.timestamp, since));
     if (operation) conditions.push(eq(auditLogEntries.operation, operation));
     return db.select().from(auditLogEntries)
       .where(and(...conditions))
       .orderBy(desc(auditLogEntries.timestamp))
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
   }
 
   async getAuditLogStats(tenantId: string): Promise<{ operation: string; count: number }[]> {
@@ -677,15 +682,28 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getAgentTraces(tenantId?: string, platform?: string, status?: string, limit = 50): Promise<AgentTrace[]> {
+  async getAgentTraces(tenantId?: string, platform?: string, status?: string, limit = 50, offset = 0): Promise<{ items: AgentTrace[]; total: number }> {
     const conditions: any[] = [];
     if (tenantId) conditions.push(eq(agentTraces.tenantId, tenantId));
     if (platform) conditions.push(eq(agentTraces.platform, platform));
     if (status) conditions.push(eq(agentTraces.status, status));
-    return db.select().from(agentTraces)
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const rows = await db.select({
+      row: agentTraces,
+      total: sql<number>`count(*) over()`.as("total"),
+    }).from(agentTraces)
+      .where(whereClause)
       .orderBy(desc(agentTraces.startedAt))
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
+    if (rows.length > 0) {
+      return { items: rows.map(r => r.row), total: Number(rows[0].total) };
+    }
+    if (offset > 0) {
+      const [c] = await db.select({ total: sql<number>`count(*)` }).from(agentTraces).where(whereClause);
+      return { items: [], total: Number(c?.total ?? 0) };
+    }
+    return { items: [], total: 0 };
   }
 
   async getAgentTrace(id: string): Promise<AgentTrace | undefined> {
@@ -714,49 +732,61 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAgentHealthSummary(tenantId?: string): Promise<{ agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[]> {
-    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const conditions: any[] = [];
-    if (tenantId) conditions.push(eq(agentTraces.tenantId, tenantId));
+    const tenantFilter = tenantId ? sql`WHERE tenant_id = ${tenantId}` : sql``;
+    const rows = await db.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (agent_name, platform)
+          agent_name, platform, status AS latest_status, started_at AS latest_started_at
+        FROM agent_traces
+        ${tenantFilter}
+        ORDER BY agent_name, platform, started_at DESC
+      ),
+      agg AS (
+        SELECT
+          agent_name,
+          platform,
+          COUNT(*) FILTER (WHERE started_at >= NOW() - INTERVAL '24 hours')::int AS recent_count,
+          COUNT(*) FILTER (WHERE started_at >= NOW() - INTERVAL '24 hours' AND status = 'success')::int AS recent_success,
+          COALESCE(
+            AVG(total_duration_ms) FILTER (WHERE started_at >= NOW() - INTERVAL '24 hours' AND total_duration_ms IS NOT NULL),
+            0
+          )::real AS avg_latency
+        FROM agent_traces
+        ${tenantFilter}
+        GROUP BY agent_name, platform
+      )
+      SELECT
+        agg.agent_name,
+        agg.platform,
+        agg.recent_count,
+        agg.recent_success,
+        agg.avg_latency,
+        latest.latest_status,
+        latest.latest_started_at
+      FROM agg
+      LEFT JOIN latest ON latest.agent_name = agg.agent_name AND latest.platform = agg.platform
+    `);
 
-    const allTraces = await db.select().from(agentTraces)
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(desc(agentTraces.startedAt));
-
-    const agentMap = new Map<string, { agentName: string; platform: string; traces: AgentTrace[] }>();
-    for (const trace of allTraces) {
-      const key = `${trace.agentName}::${trace.platform}`;
-      if (!agentMap.has(key)) {
-        agentMap.set(key, { agentName: trace.agentName, platform: trace.platform, traces: [] });
-      }
-      agentMap.get(key)!.traces.push(trace);
-    }
-
-    const results: { agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[] = [];
-
-    for (const [, agent] of agentMap) {
-      const latest = agent.traces[0];
-      const recent24h = agent.traces.filter(t => t.startedAt && new Date(t.startedAt) >= since24h);
-      const successes = recent24h.filter(t => t.status === "success").length;
-      const successRate = recent24h.length > 0 ? Math.round((successes / recent24h.length) * 100) : 0;
-      const durations = recent24h.filter(t => t.totalDurationMs != null).map(t => t.totalDurationMs!);
-      const avgLatency = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+    return (rows.rows as any[]).map(r => {
+      const recentCount = Number(r.recent_count) || 0;
+      const recentSuccess = Number(r.recent_success) || 0;
+      const successRate = recentCount > 0 ? Math.round((recentSuccess / recentCount) * 100) : 0;
+      const latestStatus = r.latest_status as string | null;
 
       let status = "healthy";
-      if (latest?.status === "failed") status = "failed";
-      else if (latest?.status === "degraded" || latest?.status === "running") status = latest.status;
-      else if (successRate < 80 && recent24h.length > 0) status = "degraded";
+      if (latestStatus === "failed") status = "failed";
+      else if (latestStatus === "degraded" || latestStatus === "running") status = latestStatus;
+      else if (successRate < 80 && recentCount > 0) status = "degraded";
 
-      results.push({
-        agentName: agent.agentName,
-        platform: agent.platform,
+      return {
+        agentName: r.agent_name,
+        platform: r.platform,
         status,
-        lastInvocation: latest?.startedAt || null,
+        lastInvocation: r.latest_started_at ? new Date(r.latest_started_at) : null,
         successRate24h: successRate,
-        avgLatency,
-      });
-    }
-
-    return results;
+        avgLatency: Math.round(Number(r.avg_latency) || 0),
+      };
+    });
   }
 
   async deleteAgentTrace(id: string): Promise<void> {
@@ -769,15 +799,28 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number }): Promise<CopilotInteraction[]> {
+  async getCopilotInteractions(tenantId: string, options?: { userId?: string; appClass?: string; sessionId?: string; limit?: number; offset?: number }): Promise<{ items: CopilotInteraction[]; total: number }> {
     const conditions: any[] = [eq(copilotInteractions.tenantId, tenantId)];
     if (options?.userId) conditions.push(eq(copilotInteractions.userId, options.userId));
     if (options?.appClass) conditions.push(eq(copilotInteractions.appClass, options.appClass));
     if (options?.sessionId) conditions.push(eq(copilotInteractions.sessionId, options.sessionId));
-    return db.select().from(copilotInteractions)
+    const offset = options?.offset ?? 0;
+    const rows = await db.select({
+      row: copilotInteractions,
+      total: sql<number>`count(*) over()`.as("total"),
+    }).from(copilotInteractions)
       .where(and(...conditions))
       .orderBy(desc(copilotInteractions.createdAt))
-      .limit(options?.limit ?? 50);
+      .limit(options?.limit ?? 50)
+      .offset(offset);
+    if (rows.length > 0) {
+      return { items: rows.map(r => r.row), total: Number(rows[0].total) };
+    }
+    if (offset > 0) {
+      const [c] = await db.select({ total: sql<number>`count(*)` }).from(copilotInteractions).where(and(...conditions));
+      return { items: [], total: Number(c?.total ?? 0) };
+    }
+    return { items: [], total: 0 };
   }
 
   async getCopilotInteractionsByRequestId(tenantId: string, requestId: string): Promise<CopilotInteraction[]> {
@@ -950,12 +993,28 @@ export class DatabaseStorage implements IStorage {
     return call;
   }
 
-  async getMcpToolCalls(serverId: string, options?: { limit?: number; method?: string; status?: string; sessionId?: string }): Promise<McpToolCall[]> {
+  async getMcpToolCalls(serverId: string, options?: { limit?: number; offset?: number; method?: string; status?: string; sessionId?: string }): Promise<{ items: McpToolCall[]; total: number }> {
     const conditions = [eq(mcpToolCalls.serverId, serverId)];
     if (options?.method) conditions.push(eq(mcpToolCalls.method, options.method));
     if (options?.status) conditions.push(eq(mcpToolCalls.status, options.status));
     if (options?.sessionId) conditions.push(eq(mcpToolCalls.sessionId, options.sessionId));
-    return db.select().from(mcpToolCalls).where(and(...conditions)).orderBy(desc(mcpToolCalls.calledAt)).limit(options?.limit ?? 50);
+    const offset = options?.offset ?? 0;
+    const rows = await db.select({
+      row: mcpToolCalls,
+      total: sql<number>`count(*) over()`.as("total"),
+    }).from(mcpToolCalls)
+      .where(and(...conditions))
+      .orderBy(desc(mcpToolCalls.calledAt))
+      .limit(options?.limit ?? 50)
+      .offset(offset);
+    if (rows.length > 0) {
+      return { items: rows.map(r => r.row), total: Number(rows[0].total) };
+    }
+    if (offset > 0) {
+      const [c] = await db.select({ total: sql<number>`count(*)` }).from(mcpToolCalls).where(and(...conditions));
+      return { items: [], total: Number(c?.total ?? 0) };
+    }
+    return { items: [], total: 0 };
   }
 
   async getMcpServerStats(tenantId: string): Promise<{ totalServers: number; runningCount: number; totalToolCalls: number; errorRate: number; avgLatency: number; toolBreakdown: Record<string, number> }> {
@@ -1001,7 +1060,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getMcpServerHealth(serverId: string): Promise<{ recentCalls: McpToolCall[]; errorRate: number; avgLatency: number; totalCalls: number }> {
-    const recentCalls = await this.getMcpToolCalls(serverId, { limit: 20 });
+    const { items: recentCalls } = await this.getMcpToolCalls(serverId, { limit: 20 });
 
     const statsRows = await db.execute(sql`
       SELECT
@@ -1042,17 +1101,30 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async getEntraSignIns(tenantId: string, options?: { limit?: number; userId?: string; appName?: string; status?: string; riskLevel?: string; since?: string }): Promise<EntraSignIn[]> {
+  async getEntraSignIns(tenantId: string, options?: { limit?: number; offset?: number; userId?: string; appName?: string; status?: string; riskLevel?: string; since?: string }): Promise<{ items: EntraSignIn[]; total: number }> {
     const conditions = [eq(entraSignIns.tenantId, tenantId)];
     if (options?.userId) conditions.push(eq(entraSignIns.userId, options.userId));
     if (options?.appName) conditions.push(eq(entraSignIns.appDisplayName, options.appName));
     if (options?.status) conditions.push(eq(entraSignIns.status, options.status));
     if (options?.riskLevel) conditions.push(eq(entraSignIns.riskLevel, options.riskLevel));
     if (options?.since) conditions.push(gte(entraSignIns.signInAt, new Date(options.since)));
-    return db.select().from(entraSignIns)
+    const offset = options?.offset ?? 0;
+    const rows = await db.select({
+      row: entraSignIns,
+      total: sql<number>`count(*) over()`.as("total"),
+    }).from(entraSignIns)
       .where(and(...conditions))
       .orderBy(desc(entraSignIns.signInAt))
-      .limit(options?.limit || 200);
+      .limit(options?.limit || 200)
+      .offset(offset);
+    if (rows.length > 0) {
+      return { items: rows.map(r => r.row), total: Number(rows[0].total) };
+    }
+    if (offset > 0) {
+      const [c] = await db.select({ total: sql<number>`count(*)` }).from(entraSignIns).where(and(...conditions));
+      return { items: [], total: Number(c?.total ?? 0) };
+    }
+    return { items: [], total: 0 };
   }
 
   async getEntraSignInStats(tenantId: string): Promise<{
@@ -1386,13 +1458,29 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number }): Promise<LlmCall[]> {
+  async getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number; offset?: number }): Promise<{ items: LlmCall[]; total: number }> {
     const conditions = [eq(llmCalls.tenantId, tenantId)];
     if (opts?.modelId) conditions.push(eq(llmCalls.modelId, opts.modelId));
     if (opts?.agentId) conditions.push(eq(llmCalls.agentId, opts.agentId));
     if (opts?.status) conditions.push(eq(llmCalls.status, opts.status));
     if (opts?.errorClass) conditions.push(eq(llmCalls.errorClass, opts.errorClass));
-    return db.select().from(llmCalls).where(and(...conditions)).orderBy(desc(llmCalls.calledAt)).limit(opts?.limit ?? 50);
+    const offset = opts?.offset ?? 0;
+    const rows = await db.select({
+      row: llmCalls,
+      total: sql<number>`count(*) over()`.as("total"),
+    }).from(llmCalls)
+      .where(and(...conditions))
+      .orderBy(desc(llmCalls.calledAt))
+      .limit(opts?.limit ?? 50)
+      .offset(offset);
+    if (rows.length > 0) {
+      return { items: rows.map(r => r.row), total: Number(rows[0].total) };
+    }
+    if (offset > 0) {
+      const [c] = await db.select({ total: sql<number>`count(*)` }).from(llmCalls).where(and(...conditions));
+      return { items: [], total: Number(c?.total ?? 0) };
+    }
+    return { items: [], total: 0 };
   }
 
   async getLlmStats(tenantId: string, opts?: { since?: Date; agentId?: string }): Promise<{

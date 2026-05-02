@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, real, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, real, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -90,7 +90,9 @@ export const metrics = pgTable("metrics", {
   site: text("site"),
   status: text("status").default("Success"),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
-});
+}, (table) => [
+  index("metrics_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
+]);
 
 export const insertMetricSchema = createInsertSchema(metrics).omit({ id: true });
 export type InsertMetric = z.infer<typeof insertMetricSchema>;
@@ -105,7 +107,9 @@ export const alerts = pgTable("alerts", {
   message: text("message"),
   acknowledged: boolean("acknowledged").notNull().default(false),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
-});
+}, (table) => [
+  index("alerts_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
+]);
 
 export const insertAlertSchema = createInsertSchema(alerts).omit({ id: true });
 export type InsertAlert = z.infer<typeof insertAlertSchema>;
@@ -121,7 +125,10 @@ export const testRuns = pgTable("test_runs", {
   durationMs: real("duration_ms"),
   results: jsonb("results").$type<Record<string, any>>(),
   error: text("error"),
-});
+}, (table) => [
+  index("test_runs_tenant_started_idx").on(table.tenantId, table.startedAt.desc()),
+  index("test_runs_test_started_idx").on(table.testId, table.startedAt.desc()),
+]);
 
 export const insertTestRunSchema = createInsertSchema(testRuns).omit({ id: true });
 export type InsertTestRun = z.infer<typeof insertTestRunSchema>;
@@ -139,7 +146,12 @@ export const scheduledJobRuns = pgTable("scheduled_job_runs", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("scheduled_job_runs_created_idx").on(table.createdAt.desc()),
+  index("scheduled_job_runs_tenant_created_idx").on(table.tenantId, table.createdAt.desc()),
+  index("scheduled_job_runs_job_type_created_idx").on(table.jobType, table.createdAt.desc()),
+  index("scheduled_job_runs_test_created_idx").on(table.testId, table.createdAt.desc()),
+]);
 
 export const insertScheduledJobRunSchema = createInsertSchema(scheduledJobRuns).omit({
   id: true,
@@ -155,7 +167,9 @@ export const usageReports = pgTable("usage_reports", {
   reportDate: text("report_date"),
   data: jsonb("data").$type<Record<string, any>>().notNull(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("usage_reports_tenant_type_collected_idx").on(table.tenantId, table.reportType, table.collectedAt.desc()),
+]);
 
 export const insertUsageReportSchema = createInsertSchema(usageReports).omit({ id: true });
 export type InsertUsageReport = z.infer<typeof insertUsageReportSchema>;
@@ -174,7 +188,10 @@ export const serviceHealthIncidents = pgTable("service_health_incidents", {
   lastUpdatedAt: timestamp("last_updated_at"),
   details: jsonb("details").$type<Record<string, any>>(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("service_health_incidents_external_idx").on(table.externalId),
+  index("service_health_incidents_tenant_collected_idx").on(table.tenantId, table.collectedAt.desc()),
+]);
 
 export const insertServiceHealthIncidentSchema = createInsertSchema(serviceHealthIncidents).omit({ id: true });
 export type InsertServiceHealthIncident = z.infer<typeof insertServiceHealthIncidentSchema>;
@@ -193,7 +210,9 @@ export const auditLogEntries = pgTable("audit_log_entries", {
   clientIp: text("client_ip"),
   details: jsonb("details").$type<Record<string, any>>(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("audit_log_entries_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
+]);
 
 export const insertAuditLogEntrySchema = createInsertSchema(auditLogEntries).omit({ id: true });
 export type InsertAuditLogEntry = z.infer<typeof insertAuditLogEntrySchema>;
@@ -208,7 +227,9 @@ export const adminAuditLog = pgTable("admin_audit_log", {
   targetId: text("target_id"),
   details: jsonb("details").$type<Record<string, any>>(),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
-});
+}, (table) => [
+  index("admin_audit_log_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
+]);
 
 export const insertAdminAuditLogSchema = createInsertSchema(adminAuditLog).omit({ id: true });
 export type InsertAdminAuditLog = z.infer<typeof insertAdminAuditLogSchema>;
@@ -243,7 +264,10 @@ export const powerPlatformResources = pgTable("power_platform_resources", {
   lastRunDate: text("last_run_date"),
   details: jsonb("details").$type<Record<string, any>>(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("power_platform_resources_tenant_collected_idx").on(table.tenantId, table.collectedAt.desc()),
+  index("power_platform_resources_tenant_type_idx").on(table.tenantId, table.resourceType),
+]);
 
 export const insertPowerPlatformResourceSchema = createInsertSchema(powerPlatformResources).omit({ id: true });
 export type InsertPowerPlatformResource = z.infer<typeof insertPowerPlatformResourceSchema>;
@@ -260,7 +284,10 @@ export const agentTraces = pgTable("agent_traces", {
   startedAt: timestamp("started_at").notNull().defaultNow(),
   completedAt: timestamp("completed_at"),
   metadata: jsonb("metadata").$type<Record<string, any>>(),
-});
+}, (table) => [
+  index("agent_traces_tenant_started_status_idx").on(table.tenantId, table.startedAt.desc(), table.status),
+  index("agent_traces_tenant_agent_started_idx").on(table.tenantId, table.agentName, table.platform, table.startedAt.desc()),
+]);
 
 export const insertAgentTraceSchema = createInsertSchema(agentTraces).omit({ id: true });
 export type InsertAgentTrace = z.infer<typeof insertAgentTraceSchema>;
@@ -280,7 +307,9 @@ export const agentTraceSpans = pgTable("agent_trace_spans", {
   startOffset: real("start_offset").notNull().default(0),
   sortOrder: integer("sort_order").notNull().default(0),
   metadata: jsonb("metadata").$type<Record<string, any>>(),
-});
+}, (table) => [
+  index("agent_trace_spans_trace_sort_idx").on(table.traceId, table.sortOrder),
+]);
 
 export const insertAgentTraceSpanSchema = createInsertSchema(agentTraceSpans).omit({ id: true });
 export type InsertAgentTraceSpan = z.infer<typeof insertAgentTraceSpanSchema>;
@@ -305,7 +334,12 @@ export const copilotInteractions = pgTable("copilot_interactions", {
   rawData: jsonb("raw_data").$type<Record<string, any>>(),
   createdAt: timestamp("created_at").notNull(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("copilot_interactions_tenant_created_idx").on(table.tenantId, table.createdAt.desc()),
+  index("copilot_interactions_tenant_session_created_idx").on(table.tenantId, table.sessionId, table.createdAt.desc()),
+  index("copilot_interactions_tenant_request_idx").on(table.tenantId, table.requestId),
+  index("copilot_interactions_tenant_user_idx").on(table.tenantId, table.userId),
+]);
 
 export const insertCopilotInteractionSchema = createInsertSchema(copilotInteractions).omit({ id: true, collectedAt: true });
 export type InsertCopilotInteraction = z.infer<typeof insertCopilotInteractionSchema>;
@@ -353,7 +387,11 @@ export const mcpToolCalls = pgTable("mcp_tool_calls", {
   durationMs: real("duration_ms"),
   status: text("status").notNull().default("success"),
   calledAt: timestamp("called_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("mcp_tool_calls_tenant_server_called_idx").on(table.tenantId, table.serverId, table.calledAt.desc()),
+  index("mcp_tool_calls_server_called_idx").on(table.serverId, table.calledAt.desc()),
+  index("mcp_tool_calls_tenant_called_idx").on(table.tenantId, table.calledAt.desc()),
+]);
 
 export const insertMcpToolCallSchema = createInsertSchema(mcpToolCalls).omit({ id: true });
 export type InsertMcpToolCall = z.infer<typeof insertMcpToolCallSchema>;
@@ -394,6 +432,8 @@ export const entraSignIns = pgTable("entra_sign_ins", {
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("entra_sign_ins_tenant_signin_idx").on(table.tenantId, table.signInId),
+  index("entra_sign_ins_tenant_signin_at_idx").on(table.tenantId, table.signInAt.desc()),
+  index("entra_sign_ins_tenant_user_signin_idx").on(table.tenantId, table.userId, table.signInAt.desc()),
 ]);
 
 export const insertEntraSignInSchema = createInsertSchema(entraSignIns).omit({ id: true, collectedAt: true });
@@ -419,7 +459,9 @@ export const speContainers = pgTable("spe_containers", {
   status: text("status").default("active"),
   createdAt: timestamp("created_at"),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("spe_containers_tenant_container_idx").on(table.tenantId, table.containerId),
+]);
 
 export const insertSpeContainerSchema = createInsertSchema(speContainers).omit({ id: true });
 export type InsertSpeContainer = z.infer<typeof insertSpeContainerSchema>;
@@ -449,7 +491,10 @@ export const speAccessEvents = pgTable("spe_access_events", {
   timestamp: timestamp("timestamp").notNull(),
   details: jsonb("details").$type<Record<string, any>>(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("spe_access_events_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
+  index("spe_access_events_tenant_container_timestamp_idx").on(table.tenantId, table.containerId, table.timestamp.desc()),
+]);
 
 export const insertSpeAccessEventSchema = createInsertSchema(speAccessEvents).omit({ id: true });
 export type InsertSpeAccessEvent = z.infer<typeof insertSpeAccessEventSchema>;
@@ -471,7 +516,9 @@ export const speSecurityEvents = pgTable("spe_security_events", {
   details: jsonb("details").$type<Record<string, any>>(),
   timestamp: timestamp("timestamp").notNull(),
   collectedAt: timestamp("collected_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("spe_security_events_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
+]);
 
 export const insertSpeSecurityEventSchema = createInsertSchema(speSecurityEvents).omit({ id: true });
 export type InsertSpeSecurityEvent = z.infer<typeof insertSpeSecurityEventSchema>;
@@ -512,7 +559,10 @@ export const knownAgents = pgTable("known_agents", {
   discoveredAt: timestamp("discovered_at").notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("known_agents_tenant_discovered_idx").on(table.tenantId, table.discoveredAt.desc()),
+  uniqueIndex("known_agents_tenant_external_idx").on(table.tenantId, table.externalId),
+]);
 
 export const insertKnownAgentSchema = createInsertSchema(knownAgents).omit({
   id: true,
@@ -599,7 +649,11 @@ export const llmCalls = pgTable("llm_calls", {
   requestId: text("request_id"),
   metadata: jsonb("metadata").$type<Record<string, any>>(),
   calledAt: timestamp("called_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("llm_calls_tenant_called_idx").on(table.tenantId, table.calledAt.desc()),
+  index("llm_calls_model_called_idx").on(table.modelId, table.calledAt.desc()),
+  index("llm_calls_tenant_agent_called_idx").on(table.tenantId, table.agentId, table.calledAt.desc()),
+]);
 
 export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
 export type InsertLlmCall = z.infer<typeof insertLlmCallSchema>;

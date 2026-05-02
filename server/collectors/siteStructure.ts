@@ -135,36 +135,72 @@ async function collectLists(client: any, tenantId: string): Promise<StructureRes
   }
 }
 
+const PERMISSION_DENIED = "PERMISSION_DENIED_ON_FIRST_PAGE";
+
+async function* iterateGraphPages(
+  client: any,
+  initialUrl: string,
+  scope: string,
+): AsyncGenerator<any, void, unknown> {
+  let nextLink: string | null = initialUrl;
+  let firstPageOk = false;
+  while (nextLink) {
+    const resp: any = await safeGraphCall(client, nextLink, scope);
+    if (!resp) {
+      if (!firstPageOk) throw new Error(PERMISSION_DENIED);
+      return;
+    }
+    firstPageOk = true;
+    for (const item of resp.value || []) yield item;
+    nextLink = resp["@odata.nextLink"] || null;
+  }
+}
+
 async function collectDriveStructure(client: any, tenantId: string): Promise<StructureResult> {
+  const driveDetails: any[] = [];
+  let driveCount = 0;
+  let totalStorageUsed = 0;
+  let totalStorageQuota = 0;
+
   try {
-    const drivesResp = await safeGraphCall(
+    for await (const drive of iterateGraphPages(
       client,
-      "/sites/root/drives?$select=id,name,driveType,quota,webUrl,createdDateTime,lastModifiedDateTime",
-      "Sites.Read.All"
-    );
-    if (!drivesResp) return { reportType: "driveStructure", recordsCollected: 0, error: "Permission denied" };
+      "/sites/root/drives?$top=200&$select=id,name,driveType,quota,webUrl,createdDateTime,lastModifiedDateTime",
+      "Sites.Read.All",
+    )) {
+      driveCount++;
+      const quotaUsed = drive.quota?.used || 0;
+      const quotaTotal = drive.quota?.total || 0;
+      totalStorageUsed += quotaUsed;
+      totalStorageQuota += quotaTotal;
 
-    const drives = drivesResp.value || [];
-    const driveDetails: any[] = [];
-
-    for (const drive of drives.slice(0, 10)) {
       try {
-        const rootItems = await safeGraphCall(
+        let rootFileCount = 0;
+        let rootFolderCount = 0;
+        let estimatedTotalFiles = 0;
+        const topLevelItems: any[] = [];
+
+        for await (const item of iterateGraphPages(
           client,
           `/drives/${drive.id}/root/children?$top=200&$select=id,name,size,file,folder,webUrl,createdDateTime,lastModifiedDateTime`,
-          "Sites.Read.All"
-        );
-
-        const items = rootItems?.value || [];
-        const files = items.filter((i: any) => i.file);
-        const folders = items.filter((i: any) => i.folder);
-
-        let totalFileCount = files.length;
-        let totalFolderCount = folders.length;
-
-        for (const folder of folders.slice(0, 20)) {
-          if (folder.folder?.childCount > 0) {
-            totalFileCount += folder.folder.childCount;
+          "Sites.Read.All",
+        )) {
+          if (item.file) {
+            rootFileCount++;
+            estimatedTotalFiles++;
+          } else if (item.folder) {
+            rootFolderCount++;
+            const childCount = item.folder?.childCount || 0;
+            if (childCount > 0) estimatedTotalFiles += childCount;
+          }
+          if (topLevelItems.length < 50) {
+            topLevelItems.push({
+              name: item.name,
+              type: item.file ? "file" : "folder",
+              size: item.size || 0,
+              childCount: item.folder?.childCount || 0,
+              lastModifiedDateTime: item.lastModifiedDateTime,
+            });
           }
         }
 
@@ -175,21 +211,15 @@ async function collectDriveStructure(client: any, tenantId: string): Promise<Str
           webUrl: drive.webUrl,
           createdDateTime: drive.createdDateTime,
           lastModifiedDateTime: drive.lastModifiedDateTime,
-          quotaTotal: drive.quota?.total || 0,
-          quotaUsed: drive.quota?.used || 0,
+          quotaTotal,
+          quotaUsed,
           quotaRemaining: drive.quota?.remaining || 0,
           quotaState: drive.quota?.state || "unknown",
-          rootFileCount: files.length,
-          rootFolderCount: folders.length,
-          estimatedTotalFiles: totalFileCount,
-          estimatedTotalFolders: totalFolderCount,
-          topLevelItems: items.slice(0, 50).map((i: any) => ({
-            name: i.name,
-            type: i.file ? "file" : "folder",
-            size: i.size || 0,
-            childCount: i.folder?.childCount || 0,
-            lastModifiedDateTime: i.lastModifiedDateTime,
-          })),
+          rootFileCount,
+          rootFolderCount,
+          estimatedTotalFiles,
+          estimatedTotalFolders: rootFolderCount,
+          topLevelItems,
         });
       } catch (driveErr: any) {
         driveDetails.push({
@@ -202,23 +232,26 @@ async function collectDriveStructure(client: any, tenantId: string): Promise<Str
 
       await new Promise(resolve => setTimeout(resolve, 300));
     }
-
-    await storage.createUsageReport({
-      tenantId,
-      reportType: "driveStructure",
-      reportDate: new Date().toISOString().split("T")[0],
-      data: {
-        drives: driveDetails,
-        totalDrives: drives.length,
-        totalStorageUsed: driveDetails.reduce((sum, d) => sum + (d.quotaUsed || 0), 0),
-        totalStorageQuota: driveDetails.reduce((sum, d) => sum + (d.quotaTotal || 0), 0),
-      },
-    });
-
-    return { reportType: "driveStructure", recordsCollected: drives.length };
   } catch (err: any) {
+    if (err.message === PERMISSION_DENIED) {
+      return { reportType: "driveStructure", recordsCollected: 0, error: "Permission denied" };
+    }
     return { reportType: "driveStructure", recordsCollected: 0, error: err.message };
   }
+
+  await storage.createUsageReport({
+    tenantId,
+    reportType: "driveStructure",
+    reportDate: new Date().toISOString().split("T")[0],
+    data: {
+      drives: driveDetails,
+      totalDrives: driveCount,
+      totalStorageUsed,
+      totalStorageQuota,
+    },
+  });
+
+  return { reportType: "driveStructure", recordsCollected: driveCount };
 }
 
 async function collectSiteGroups(client: any, tenantId: string): Promise<StructureResult> {
