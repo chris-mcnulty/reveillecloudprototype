@@ -130,6 +130,7 @@ export interface IStorage {
   getAgentTraces(tenantId?: string, platform?: string, status?: string, limit?: number, offset?: number): Promise<{ items: AgentTrace[]; total: number }>;
   getAgentTrace(id: string): Promise<AgentTrace | undefined>;
   getAgentTraceWithSpans(id: string): Promise<{ trace: AgentTrace; spans: AgentTraceSpan[] } | undefined>;
+  getTraceWithLlmCalls(id: string): Promise<{ trace: AgentTrace; spans: AgentTraceSpan[]; llmCalls: LlmCallWithModel[] } | undefined>;
   createAgentTraceSpan(data: InsertAgentTraceSpan): Promise<AgentTraceSpan>;
   getAgentTraceSpans(traceId: string): Promise<AgentTraceSpan[]>;
   getAgentHealthSummary(tenantId?: string): Promise<{ agentName: string; platform: string; status: string; lastInvocation: Date | null; successRate24h: number; avgLatency: number }[]>;
@@ -222,6 +223,7 @@ export interface IStorage {
   deleteLlmModel(id: string): Promise<void>;
 
   createLlmCall(data: InsertLlmCall): Promise<LlmCall>;
+  getLlmCallById(callId: string): Promise<LlmCallWithModel | undefined>;
   getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number; offset?: number }): Promise<{ items: LlmCall[]; total: number }>;
   getLlmStats(tenantId: string, opts?: { since?: Date; agentId?: string }): Promise<{
     totalCalls: number;
@@ -255,6 +257,43 @@ export interface IStorage {
       metrics: Record<string, { value: number; prev: number | null; delta: number | null; sparkline: number[] }>;
     }>;
   }>;
+
+  getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number }): Promise<SlowestLlmHop[]>;
+  backfillLlmCallTraceLinks(opts?: { tenantId?: string; toleranceMs?: number; dryRun?: boolean }): Promise<{ scanned: number; matched: number; updated: number; ambiguous: number }>;
+}
+
+export type LlmCallWithModel = LlmCall & {
+  modelName: string | null;
+  modelDisplayName: string | null;
+  provider: string | null;
+  deploymentName: string | null;
+  endpoint: string | null;
+};
+
+export interface SlowestLlmHop {
+  callId: string;
+  tenantId: string;
+  traceId: string | null;
+  spanId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  modelId: string;
+  modelName: string | null;
+  modelDisplayName: string | null;
+  provider: string | null;
+  deploymentName: string | null;
+  endpoint: string | null;
+  durationMs: number | null;
+  ttftMs: number | null;
+  tokensPerSec: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costCents: number | null;
+  status: string;
+  errorClass: string | null;
+  calledAt: Date;
+  traceAgentName: string | null;
+  tracePlatform: string | null;
 }
 
 function sameStringArray(a: string[] | null, b: string[] | null): boolean {
@@ -866,6 +905,52 @@ export class DatabaseStorage implements IStorage {
       .where(eq(agentTraceSpans.traceId, id))
       .orderBy(agentTraceSpans.sortOrder);
     return { trace, spans };
+  }
+
+  async getTraceWithLlmCalls(id: string): Promise<{ trace: AgentTrace; spans: AgentTraceSpan[]; llmCalls: LlmCallWithModel[] } | undefined> {
+    const base = await this.getAgentTraceWithSpans(id);
+    if (!base) return undefined;
+    const rows = await db.execute(sql`
+      SELECT lc.*, lm.model_name AS lm_model_name, lm.display_name AS lm_display_name,
+             lm.provider AS lm_provider, lm.deployment_name AS lm_deployment_name, lm.endpoint AS lm_endpoint
+      FROM llm_calls lc
+      LEFT JOIN llm_models lm ON lm.id = lc.model_id
+      WHERE lc.trace_id = ${id}
+      ORDER BY lc.called_at ASC
+    `);
+    const llmCalls: LlmCallWithModel[] = (rows.rows as any[]).map(r => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      modelId: r.model_id,
+      agentId: r.agent_id,
+      traceId: r.trace_id,
+      spanId: r.span_id,
+      agentName: r.agent_name,
+      operation: r.operation,
+      durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
+      ttftMs: r.ttft_ms == null ? null : Number(r.ttft_ms),
+      tokensPerSec: r.tokens_per_sec == null ? null : Number(r.tokens_per_sec),
+      inputTokens: r.input_tokens == null ? null : Number(r.input_tokens),
+      outputTokens: r.output_tokens == null ? null : Number(r.output_tokens),
+      cachedInputTokens: r.cached_input_tokens == null ? null : Number(r.cached_input_tokens),
+      costCents: r.cost_cents == null ? null : Number(r.cost_cents),
+      temperature: r.temperature == null ? null : Number(r.temperature),
+      maxTokensRequested: r.max_tokens_requested == null ? null : Number(r.max_tokens_requested),
+      stream: r.stream,
+      status: r.status,
+      errorClass: r.error_class,
+      errorCode: r.error_code,
+      errorMessage: r.error_message,
+      requestId: r.request_id,
+      metadata: r.metadata,
+      calledAt: r.called_at instanceof Date ? r.called_at : new Date(r.called_at),
+      modelName: r.lm_model_name ?? null,
+      modelDisplayName: r.lm_display_name ?? null,
+      provider: r.lm_provider ?? null,
+      deploymentName: r.lm_deployment_name ?? null,
+      endpoint: r.lm_endpoint ?? null,
+    }));
+    return { ...base, llmCalls };
   }
 
   async createAgentTraceSpan(data: InsertAgentTraceSpan): Promise<AgentTraceSpan> {
@@ -1922,9 +2007,73 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createLlmCall(data: InsertLlmCall): Promise<LlmCall> {
+    await this.assertTraceSpanConsistency(data.traceId ?? null, data.spanId ?? null);
     const [created] = await db.insert(llmCalls).values(data).returning();
     liveEvents.emit("llm_call.recorded", created.tenantId ?? null, created);
     return created;
+  }
+
+  private async assertTraceSpanConsistency(traceId: string | null, spanId: string | null): Promise<void> {
+    if (!spanId) return;
+    if (!traceId) {
+      throw new Error("LLM call validation: spanId provided without traceId; both must be set together.");
+    }
+    const [span] = await db.select({ id: agentTraceSpans.id, traceId: agentTraceSpans.traceId })
+      .from(agentTraceSpans)
+      .where(eq(agentTraceSpans.id, spanId));
+    if (!span) {
+      throw new Error(`LLM call validation: spanId ${spanId} does not exist.`);
+    }
+    if (span.traceId !== traceId) {
+      throw new Error(
+        `LLM call validation: span ${spanId} belongs to trace ${span.traceId}, not ${traceId}.`,
+      );
+    }
+  }
+
+  async getLlmCallById(callId: string): Promise<LlmCallWithModel | undefined> {
+    const rows = await db.execute(sql`
+      SELECT lc.*, lm.model_name, lm.display_name AS model_display_name, lm.provider,
+             lm.deployment_name, lm.endpoint
+      FROM llm_calls lc
+      LEFT JOIN llm_models lm ON lm.id = lc.model_id
+      WHERE lc.id = ${callId}
+      LIMIT 1
+    `);
+    const r = (rows.rows as any[])[0];
+    if (!r) return undefined;
+    return {
+      id: r.id,
+      tenantId: r.tenant_id,
+      modelId: r.model_id,
+      agentId: r.agent_id ?? null,
+      traceId: r.trace_id ?? null,
+      spanId: r.span_id ?? null,
+      agentName: r.agent_name ?? null,
+      operation: r.operation,
+      durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
+      ttftMs: r.ttft_ms == null ? null : Number(r.ttft_ms),
+      tokensPerSec: r.tokens_per_sec == null ? null : Number(r.tokens_per_sec),
+      inputTokens: r.input_tokens == null ? null : Number(r.input_tokens),
+      outputTokens: r.output_tokens == null ? null : Number(r.output_tokens),
+      cachedInputTokens: r.cached_input_tokens == null ? null : Number(r.cached_input_tokens),
+      costCents: r.cost_cents == null ? null : Number(r.cost_cents),
+      temperature: r.temperature == null ? null : Number(r.temperature),
+      maxTokensRequested: r.max_tokens_requested == null ? null : Number(r.max_tokens_requested),
+      stream: r.stream ?? null,
+      status: r.status,
+      errorClass: r.error_class ?? null,
+      errorCode: r.error_code ?? null,
+      errorMessage: r.error_message ?? null,
+      requestId: r.request_id ?? null,
+      metadata: r.metadata ?? null,
+      calledAt: r.called_at instanceof Date ? r.called_at : new Date(r.called_at),
+      modelName: r.model_name ?? null,
+      modelDisplayName: r.model_display_name ?? null,
+      provider: r.provider ?? null,
+      deploymentName: r.deployment_name ?? null,
+      endpoint: r.endpoint ?? null,
+    };
   }
 
   async getLlmCalls(tenantId: string, opts?: { modelId?: string; agentId?: string; status?: string; errorClass?: string; limit?: number; offset?: number }): Promise<{ items: LlmCall[]; total: number }> {
@@ -2072,6 +2221,106 @@ export class DatabaseStorage implements IStorage {
         costCents: Number(r.cost_cents),
       })),
     };
+  }
+
+  async getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number }): Promise<SlowestLlmHop[]> {
+    const since = opts?.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const limit = opts?.limit ?? 10;
+    const rows = await db.execute(sql`
+      SELECT lc.id AS call_id, lc.tenant_id, lc.trace_id, lc.span_id, lc.agent_id, lc.agent_name,
+             lc.model_id, lc.duration_ms, lc.ttft_ms, lc.tokens_per_sec,
+             lc.input_tokens, lc.output_tokens, lc.cost_cents,
+             lc.status, lc.error_class, lc.called_at,
+             lm.model_name, lm.display_name AS model_display_name, lm.provider,
+             lm.deployment_name, lm.endpoint,
+             at.agent_name AS trace_agent_name, at.platform AS trace_platform
+      FROM llm_calls lc
+      LEFT JOIN llm_models lm ON lm.id = lc.model_id
+      LEFT JOIN agent_traces at ON at.id = lc.trace_id
+      WHERE lc.tenant_id = ${tenantId}
+        AND lc.called_at >= ${since}
+        AND lc.duration_ms IS NOT NULL
+      ORDER BY lc.duration_ms DESC NULLS LAST
+      LIMIT ${limit}
+    `);
+    return (rows.rows as any[]).map(r => ({
+      callId: r.call_id,
+      tenantId: r.tenant_id,
+      traceId: r.trace_id ?? null,
+      spanId: r.span_id ?? null,
+      agentId: r.agent_id ?? null,
+      agentName: r.agent_name ?? r.trace_agent_name ?? null,
+      modelId: r.model_id,
+      modelName: r.model_name ?? null,
+      modelDisplayName: r.model_display_name ?? null,
+      provider: r.provider ?? null,
+      deploymentName: r.deployment_name ?? null,
+      endpoint: r.endpoint ?? null,
+      durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
+      ttftMs: r.ttft_ms == null ? null : Number(r.ttft_ms),
+      tokensPerSec: r.tokens_per_sec == null ? null : Number(r.tokens_per_sec),
+      inputTokens: r.input_tokens == null ? null : Number(r.input_tokens),
+      outputTokens: r.output_tokens == null ? null : Number(r.output_tokens),
+      costCents: r.cost_cents == null ? null : Number(r.cost_cents),
+      status: r.status,
+      errorClass: r.error_class ?? null,
+      calledAt: r.called_at instanceof Date ? r.called_at : new Date(r.called_at),
+      traceAgentName: r.trace_agent_name ?? null,
+      tracePlatform: r.trace_platform ?? null,
+    }));
+  }
+
+  async backfillLlmCallTraceLinks(opts?: { tenantId?: string; toleranceMs?: number; dryRun?: boolean }): Promise<{ scanned: number; matched: number; updated: number; ambiguous: number }> {
+    const toleranceMs = opts?.toleranceMs ?? 5000;
+    const dryRun = !!opts?.dryRun;
+    const tenantFilter = opts?.tenantId ? sql`AND lc.tenant_id = ${opts.tenantId}` : sql``;
+
+    const candidates = await db.execute(sql`
+      SELECT lc.id AS call_id, lc.tenant_id, lc.agent_id, lc.called_at
+      FROM llm_calls lc
+      WHERE lc.trace_id IS NULL
+        AND lc.agent_id IS NOT NULL
+        ${tenantFilter}
+    `);
+
+    let matched = 0;
+    let updated = 0;
+    let ambiguous = 0;
+    const tolSeconds = Math.max(1, Math.ceil(toleranceMs / 1000));
+
+    for (const row of candidates.rows as any[]) {
+      const callId = row.call_id as string;
+      const tenantId = row.tenant_id as string;
+      const agentId = row.agent_id as string;
+      const calledAt = row.called_at instanceof Date ? row.called_at : new Date(row.called_at);
+
+      const matches = await db.execute(sql`
+        SELECT s.id AS span_id, s.trace_id
+        FROM agent_trace_spans s
+        JOIN agent_traces t ON t.id = s.trace_id
+        JOIN known_agents ka ON ka.tenant_id = t.tenant_id
+        WHERE ka.id = ${agentId}
+          AND t.tenant_id = ${tenantId}
+          AND t.agent_name = ka.name
+          AND s.span_type IN ('inference', 'llm')
+          AND ABS(EXTRACT(EPOCH FROM (t.started_at + (s.start_offset || ' milliseconds')::interval - ${calledAt}::timestamp))) <= ${tolSeconds}
+        LIMIT 2
+      `);
+      const matchRows = matches.rows as any[];
+      if (matchRows.length === 1) {
+        matched++;
+        if (!dryRun) {
+          await db.update(llmCalls)
+            .set({ traceId: matchRows[0].trace_id, spanId: matchRows[0].span_id })
+            .where(eq(llmCalls.id, callId));
+          updated++;
+        }
+      } else if (matchRows.length > 1) {
+        ambiguous++;
+      }
+    }
+
+    return { scanned: (candidates.rows as any[]).length, matched, updated, ambiguous };
   }
 
   async getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }> {

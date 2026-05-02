@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
 import { Shell } from "@/components/layout/Shell";
@@ -130,6 +130,34 @@ export default function LlmPerformance() {
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [errorClassFilter, setErrorClassFilter] = useState<string>("all");
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
+  const [highlightCallId, setHighlightCallId] = useState<string | null>(null);
+  const callRowRefs = useRef<Map<string, HTMLTableRowElement | null>>(new Map());
+
+  useEffect(() => {
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    const params = new URLSearchParams(search);
+    const m = params.get("modelId");
+    const c = params.get("callId");
+    if (m) setExpandedModelId(m);
+    if (c) setHighlightCallId(c);
+  }, []);
+
+  const { data: pinnedCall } = useQuery<LlmCall>({
+    queryKey: ["/api/llm-calls/by-id", activeTenantId, highlightCallId],
+    enabled: !!activeTenantId && !!highlightCallId,
+    queryFn: async () => {
+      const res = await fetch(`/api/tenants/${activeTenantId}/llm-calls/${highlightCallId}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    staleTime: 60000,
+  });
+
+  useEffect(() => {
+    if (pinnedCall?.modelId && !expandedModelId) {
+      setExpandedModelId(pinnedCall.modelId);
+    }
+  }, [pinnedCall?.modelId, expandedModelId]);
 
   const { data: models = [] } = useQuery<LlmModel[]>({
     queryKey: ["/api/llm-models", activeTenantId],
@@ -169,7 +197,7 @@ export default function LlmPerformance() {
     refetchInterval: 90000,
   });
 
-  const { data: rawRecentCalls = [] } = useQuery<LlmCall[]>({
+  const { data: recentCallsRaw = [] } = useQuery<LlmCall[]>({
     queryKey: ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter],
     enabled: !!activeTenantId && !!expandedModelId,
     queryFn: async () => {
@@ -183,10 +211,10 @@ export default function LlmPerformance() {
     refetchInterval: 90000,
   });
 
-  const recentCalls = useMemo(() => {
-    if (errorClassFilter === "all") return rawRecentCalls;
-    return rawRecentCalls.filter(c => c.errorClass === errorClassFilter);
-  }, [rawRecentCalls, errorClassFilter]);
+  const filteredRecentCalls = useMemo(() => {
+    if (errorClassFilter === "all") return recentCallsRaw;
+    return recentCallsRaw.filter(c => c.errorClass === errorClassFilter);
+  }, [recentCallsRaw, errorClassFilter]);
 
   const handleLlmLive = useCallback((event: LiveEvent) => {
     if (event.type !== "llm_call.recorded") return;
@@ -214,6 +242,30 @@ export default function LlmPerformance() {
     queryClient.invalidateQueries({ queryKey: ["/api/llm-models", activeTenantId] });
   }, [queryClient, activeTenantId, expandedModelId, agentFilter]);
   useLiveStream(orgId, [activeTenantId], ["llm_call.recorded"], handleLlmLive);
+
+  const recentCalls = useMemo(() => {
+    if (
+      pinnedCall &&
+      expandedModelId &&
+      pinnedCall.modelId === expandedModelId &&
+      (errorClassFilter === "all" || pinnedCall.errorClass === errorClassFilter) &&
+      !filteredRecentCalls.some(c => c.id === pinnedCall.id)
+    ) {
+      return [pinnedCall, ...filteredRecentCalls];
+    }
+    return filteredRecentCalls;
+  }, [filteredRecentCalls, pinnedCall, expandedModelId, errorClassFilter]);
+
+  useEffect(() => {
+    if (!highlightCallId) return;
+    if (!recentCalls.some(c => c.id === highlightCallId)) return;
+    const row = callRowRefs.current.get(highlightCallId);
+    if (row) {
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      const t = setTimeout(() => setHighlightCallId(null), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [highlightCallId, recentCalls]);
 
   const seedMutation = useMutation({
     mutationFn: async () => {

@@ -1,7 +1,7 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall } from "@shared/schema";
 import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
@@ -11,6 +11,24 @@ import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
+
+function checkBackfillToken(req: Request, res: Response): boolean {
+  const expected = process.env.ADMIN_BACKFILL_TOKEN;
+  if (!expected) {
+    res.status(503).json({
+      error: "Backfill route disabled",
+      detail: "Set ADMIN_BACKFILL_TOKEN in the environment to enable this endpoint.",
+    });
+    return false;
+  }
+  const raw = req.headers["x-admin-token"] ?? req.headers["x-backfill-token"];
+  const provided = Array.isArray(raw) ? raw[0] : raw;
+  if (!provided || provided !== expected) {
+    res.status(401).json({ error: "Unauthorized: missing or invalid x-admin-token header" });
+    return false;
+  }
+  return true;
+}
 
 async function logAdminAction(
   tenantId: string | null,
@@ -766,7 +784,8 @@ export async function registerRoutes(
     const tid = tenant.id;
     const now = Date.now();
 
-    const demoTraces = [
+    type DemoSeed = { trace: InsertAgentTrace; spans: Array<Omit<InsertAgentTraceSpan, "traceId">> };
+    const demoTraces: DemoSeed[] = [
       {
         trace: { tenantId: tid, agentName: "SharePoint Content Copilot", platform: "copilot", status: "success", totalDurationMs: 3480, startedAt: new Date(now - 120000), completedAt: new Date(now - 116520), metadata: { userId: "user1@contoso.com" } },
         spans: [
@@ -871,23 +890,78 @@ export async function registerRoutes(
 
     let tracesCreated = 0;
     let spansCreated = 0;
+    let llmCallsLinked = 0;
+
+    const tenantModels = await storage.getLlmModels(tid);
+    const inferenceModels = tenantModels.filter(m => ["foundry", "openai"].includes(m.provider));
 
     for (const demo of demoTraces) {
-      const trace = await storage.createAgentTrace(demo.trace as any);
+      const trace = await storage.createAgentTrace(demo.trace);
       tracesCreated++;
 
       for (const span of demo.spans) {
-        await storage.createAgentTraceSpan({ ...span, traceId: trace.id } as any);
+        const created = await storage.createAgentTraceSpan({ ...span, traceId: trace.id });
         spansCreated++;
+
+        if (created.spanType === "inference" && inferenceModels.length > 0) {
+          const model = inferenceModels[Math.floor(Math.random() * inferenceModels.length)];
+          const isError = created.status === "failed";
+          const tokensFromMeta = typeof created.metadata?.tokens === "number" ? created.metadata.tokens : null;
+          const inputTokens = Math.floor(tokensFromMeta ?? (1000 + Math.random() * 4000));
+          const outputTokens = isError ? 0 : Math.floor(50 + Math.random() * 800);
+          const dur = created.durationMs ?? 0;
+          const ttft = isError ? Math.max(50, dur * 0.7) : Math.max(80, Math.min(dur * 0.4, dur - 50));
+          const tps = outputTokens > 0 && dur > ttft ? outputTokens / ((dur - ttft) / 1000) : 0;
+          const costCents = ((inputTokens / 1_000_000) * (model.inputCostPerMtok ?? 0) + (outputTokens / 1_000_000) * (model.outputCostPerMtok ?? 0)) * 100;
+          const errorClass = isError
+            ? (created.statusCode === 429 ? "rate_limit"
+              : created.statusCode === 400 && /context/i.test(created.errorMessage || "") ? "context_overflow"
+              : created.statusCode === 504 ? "timeout"
+              : created.statusCode === 401 ? "auth"
+              : "server_error")
+            : null;
+          const startedAtMs = demo.trace.startedAt instanceof Date
+            ? demo.trace.startedAt.getTime()
+            : new Date(demo.trace.startedAt as any).getTime();
+          const calledAt = new Date(startedAtMs + (created.startOffset ?? 0));
+          const llmCallInput: InsertLlmCall = {
+            tenantId: tid,
+            modelId: model.id,
+            agentId: null,
+            traceId: trace.id,
+            spanId: created.id,
+            agentName: demo.trace.agentName,
+            operation: "chat.completions",
+            durationMs: dur,
+            ttftMs: Math.round(ttft),
+            tokensPerSec: tps,
+            inputTokens,
+            outputTokens,
+            cachedInputTokens: null,
+            costCents,
+            temperature: 0.7,
+            maxTokensRequested: 2000,
+            stream: true,
+            status: isError ? "error" : "success",
+            errorClass,
+            errorCode: created.statusCode ? String(created.statusCode) : null,
+            errorMessage: isError ? (created.errorMessage ?? `${errorClass ?? "error"} simulated`) : null,
+            requestId: `demo-${trace.id.slice(0, 8)}-${created.id.slice(0, 6)}`,
+            metadata: null,
+            calledAt,
+          };
+          await storage.createLlmCall(llmCallInput);
+          llmCallsLinked++;
+        }
       }
     }
 
-    await logAdminAction(null, "agentTrace.demoSeeded", "agentTrace", null, { tracesCreated, spansCreated });
-    res.json({ message: "Demo data seeded", tracesCreated, spansCreated });
+    await logAdminAction(null, "agentTrace.demoSeeded", "agentTrace", null, { tracesCreated, spansCreated, llmCallsLinked });
+    res.json({ message: "Demo data seeded", tracesCreated, spansCreated, llmCallsLinked });
   });
 
   app.get("/api/agent-traces/:id", async (req, res) => {
-    const result = await storage.getAgentTraceWithSpans(req.params.id);
+    const result = await storage.getTraceWithLlmCalls(req.params.id);
     if (!result) return res.status(404).json({ message: "Trace not found" });
     res.json(result);
   });
@@ -1589,6 +1663,35 @@ export async function registerRoutes(
       agentId,
     });
     res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/llm-models/slowest-hops", async (req, res) => {
+    const { since, limit } = req.query as any;
+    const hops = await storage.getSlowestLlmHops(req.params.tenantId, {
+      since: since ? new Date(since) : undefined,
+      limit: limit ? parseInt(limit, 10) : 10,
+    });
+    res.json(hops);
+  });
+
+  app.post("/api/tenants/:tenantId/llm-calls/backfill-trace-links", async (req, res) => {
+    if (!checkBackfillToken(req, res)) return;
+    const { toleranceMs, dryRun } = (req.body || {}) as { toleranceMs?: number; dryRun?: boolean };
+    const result = await storage.backfillLlmCallTraceLinks({
+      tenantId: req.params.tenantId,
+      toleranceMs,
+      dryRun,
+    });
+    await logAdminAction(req.params.tenantId, "backfill", "llmCalls", null, result);
+    res.json(result);
+  });
+
+  app.get("/api/tenants/:tenantId/llm-calls/:callId", async (req, res) => {
+    const call = await storage.getLlmCallById(req.params.callId);
+    if (!call || call.tenantId !== req.params.tenantId) {
+      return res.status(404).json({ error: "LLM call not found" });
+    }
+    res.json(call);
   });
 
   app.get("/api/tenants/:tenantId/llm-models/:modelId", async (req, res) => {

@@ -3,6 +3,19 @@ import type { InsertLlmCall, LlmModel } from "@shared/schema";
 
 export type FoundryMessage = { role: "system" | "user" | "assistant"; content: string };
 
+/**
+ * Contract for invoking the Foundry chat completion API.
+ *
+ * Trace correlation contract:
+ * - When `agentId` is provided, `traceId` MUST also be provided so the resulting
+ *   `llm_calls` row can be correlated back to its owning agent trace and rendered
+ *   in the trace waterfall. Calling with `agentId` but no `traceId` will throw.
+ * - When `traceId` is provided, `spanId` is strongly recommended so the LLM hop
+ *   can be attached to the precise inference span. Calls with `traceId` but no
+ *   `spanId` will succeed but log a warning, and the UI will render the hop at
+ *   the trace level rather than nested under a specific span.
+ * - For ad-hoc / direct API usage (no agent run), all three may be null.
+ */
 export interface FoundryChatRequest {
   modelId: string;
   messages: FoundryMessage[];
@@ -14,6 +27,28 @@ export interface FoundryChatRequest {
   spanId?: string | null;
   agentName?: string | null;
   metadata?: Record<string, any>;
+}
+
+export class FoundryTraceContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FoundryTraceContractError";
+  }
+}
+
+function enforceTraceContract(req: FoundryChatRequest): void {
+  if (req.agentId && !req.traceId) {
+    throw new FoundryTraceContractError(
+      `foundryChatCompletion requires traceId when agentId is set (agentId=${req.agentId}). ` +
+      `Start an agent trace and pass its id so the resulting llm_call can be correlated to the trace waterfall.`,
+    );
+  }
+  if (req.traceId && !req.spanId) {
+    console.warn(
+      `[foundryClient] traceId=${req.traceId} provided without spanId. The llm_call will be linked to the trace ` +
+      `but will render at the trace level rather than nested under an inference span.`,
+    );
+  }
 }
 
 export interface FoundryChatResult {
@@ -86,6 +121,8 @@ async function recordCall(
 }
 
 export async function foundryChatCompletion(req: FoundryChatRequest): Promise<FoundryChatResult> {
+  enforceTraceContract(req);
+
   const model = await storage.getLlmModel(req.modelId);
   if (!model) throw new Error(`LLM model not found: ${req.modelId}`);
 

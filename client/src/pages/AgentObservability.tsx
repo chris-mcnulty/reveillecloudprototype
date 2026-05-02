@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import {
   Table,
   TableBody,
@@ -75,7 +76,7 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
+  Tooltip as RechartsTooltip,
   ResponsiveContainer,
   Legend,
 } from "recharts";
@@ -121,6 +122,63 @@ interface ApiSpan {
   startOffset: number;
   sortOrder: number;
   metadata: Record<string, any> | null;
+}
+
+interface ApiLlmCall {
+  id: string;
+  tenantId: string;
+  modelId: string;
+  traceId: string | null;
+  spanId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  operation: string;
+  durationMs: number | null;
+  ttftMs: number | null;
+  tokensPerSec: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  costCents: number | null;
+  temperature: number | null;
+  stream: boolean | null;
+  status: string;
+  errorClass: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  requestId: string | null;
+  calledAt: string;
+  modelName: string | null;
+  modelDisplayName: string | null;
+  provider: string | null;
+  deploymentName: string | null;
+  endpoint: string | null;
+}
+
+interface SlowestLlmHop {
+  callId: string;
+  tenantId: string;
+  traceId: string | null;
+  spanId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  modelId: string;
+  modelName: string | null;
+  modelDisplayName: string | null;
+  provider: string | null;
+  deploymentName: string | null;
+  endpoint: string | null;
+  durationMs: number | null;
+  ttftMs: number | null;
+  tokensPerSec: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costCents: number | null;
+  status: string;
+  errorClass: string | null;
+  calledAt: string;
+  traceAgentName: string | null;
+  tracePlatform: string | null;
 }
 
 interface ActionItem {
@@ -365,46 +423,201 @@ function inferActions(trace: ApiTrace, spans: ApiSpan[]): ActionItem[] {
   return actions;
 }
 
-function WaterfallView({ spans, totalDurationMs }: { spans: ApiSpan[]; totalDurationMs: number }) {
+function formatTokens(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function formatCost(cents: number | null | undefined): string {
+  if (cents == null) return "—";
+  if (cents === 0) return "$0";
+  if (cents < 1) return `$${(cents / 100).toFixed(4)}`;
+  if (cents < 100) return `$${(cents / 100).toFixed(3)}`;
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function deploymentRegion(endpoint: string | null, deploymentName: string | null): string {
+  if (deploymentName) {
+    const m = deploymentName.match(/(eastus|westus|northcentralus|southcentralus|westeurope|northeurope|uksouth|francecentral|swedencentral|japaneast|australiaeast|canadaeast|brazilsouth|centralus)/i);
+    if (m) return m[1].toLowerCase();
+  }
+  if (endpoint) {
+    try {
+      const u = new URL(endpoint);
+      return u.host;
+    } catch {
+      return endpoint;
+    }
+  }
+  return "—";
+}
+
+function LlmHopRow({ call, leftPct, widthPct }: { call: ApiLlmCall; leftPct: number; widthPct: number }) {
+  const [, navigate] = useLocation();
+  const isError = call.status === "error";
+  const ttftPct = call.durationMs && call.durationMs > 0 && call.ttftMs ? Math.min((call.ttftMs / call.durationMs) * widthPct, widthPct) : 0;
+  const totalTokens = (call.inputTokens ?? 0) + (call.outputTokens ?? 0);
+  const tps = call.tokensPerSec != null ? Math.round(call.tokensPerSec) : null;
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex items-center gap-3 group cursor-pointer" data-testid={`llm-hop-${call.id}`}>
+            <div className="flex items-center gap-2 w-52 shrink-0 pl-6">
+              <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+              <span className="text-[11px] font-medium truncate">
+                {call.modelDisplayName || call.modelName || "LLM call"}
+              </span>
+            </div>
+            <div className="flex-1 relative h-5 bg-muted/30 rounded overflow-hidden">
+              <div
+                className={`absolute top-0.5 bottom-0.5 rounded ${isError ? "bg-red-500/70" : "bg-purple-500/80"}`}
+                style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 1.5)}%`, minWidth: "6px" }}
+              />
+              {ttftPct > 0 && !isError && (
+                <div
+                  className="absolute top-0.5 bottom-0.5 rounded-l border-r border-white/40"
+                  style={{ left: `${leftPct}%`, width: `${Math.max(ttftPct, 0.8)}%`, minWidth: "2px", backgroundColor: "rgba(168, 85, 247, 0.4)" }}
+                />
+              )}
+            </div>
+            <div className="w-16 text-right text-[11px] text-muted-foreground shrink-0 tabular-nums" data-testid={`hop-ttft-${call.id}`}>
+              {call.ttftMs != null ? `${Math.round(call.ttftMs)}ms` : "—"}
+              <span className="block text-[9px] text-muted-foreground/70">TTFT</span>
+            </div>
+            <div className="w-16 text-right text-[11px] text-muted-foreground shrink-0 tabular-nums" data-testid={`hop-tokens-${call.id}`}>
+              {totalTokens > 0 ? formatTokens(totalTokens) : "—"}
+              <span className="block text-[9px] text-muted-foreground/70">tokens</span>
+            </div>
+            <div className="w-14 text-right text-[11px] text-muted-foreground shrink-0 tabular-nums" data-testid={`hop-tps-${call.id}`}>
+              {tps != null && tps > 0 ? `${tps}` : "—"}
+              <span className="block text-[9px] text-muted-foreground/70">tok/s</span>
+            </div>
+            <div className="w-14 text-right shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/llm-performance?modelId=${call.modelId}`);
+                }}
+                className="text-[10px] text-blue-400 hover:underline"
+                data-testid={`link-view-call-${call.id}`}
+              >
+                view call
+              </button>
+            </div>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-sm" data-testid={`tooltip-llm-hop-${call.id}`}>
+          <div className="space-y-1 text-xs">
+            <div className="font-semibold">{call.modelDisplayName || call.modelName || "LLM call"}</div>
+            <div className="text-muted-foreground">
+              <span className="font-medium text-foreground">Provider:</span> {call.provider ?? "—"}
+              {call.deploymentName ? <> · <span className="font-medium text-foreground">Deployment:</span> {call.deploymentName}</> : null}
+            </div>
+            <div className="text-muted-foreground">
+              <span className="font-medium text-foreground">Region/Endpoint:</span> {deploymentRegion(call.endpoint, call.deploymentName)}
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 pt-1">
+              <div><span className="text-muted-foreground">TTFT:</span> {call.ttftMs != null ? `${Math.round(call.ttftMs)}ms` : "—"}</div>
+              <div><span className="text-muted-foreground">Total:</span> {formatDuration(call.durationMs)}</div>
+              <div><span className="text-muted-foreground">Input:</span> {formatTokens(call.inputTokens)}</div>
+              <div><span className="text-muted-foreground">Output:</span> {formatTokens(call.outputTokens)}</div>
+              <div><span className="text-muted-foreground">Tokens/s:</span> {call.tokensPerSec ? Math.round(call.tokensPerSec) : "—"}</div>
+              <div><span className="text-muted-foreground">Cost:</span> {formatCost(call.costCents)}</div>
+            </div>
+            {isError && (
+              <div className="pt-1 border-t border-border/50">
+                <Badge variant="outline" className="border-red-500/50 text-red-400 text-[10px]">
+                  {call.errorClass ?? "error"}{call.errorCode ? ` · ${call.errorCode}` : ""}
+                </Badge>
+                {call.errorMessage && <div className="text-red-400 mt-0.5">{call.errorMessage}</div>}
+              </div>
+            )}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function WaterfallView({ spans, totalDurationMs, llmCalls = [] }: { spans: ApiSpan[]; totalDurationMs: number; llmCalls?: ApiLlmCall[] }) {
   const maxDuration = Math.max(totalDurationMs, 1);
+  const callsBySpan = new Map<string, ApiLlmCall[]>();
+  const orphanCalls: ApiLlmCall[] = [];
+  for (const c of llmCalls) {
+    if (c.spanId) {
+      if (!callsBySpan.has(c.spanId)) callsBySpan.set(c.spanId, []);
+      callsBySpan.get(c.spanId)!.push(c);
+    } else {
+      orphanCalls.push(c);
+    }
+  }
 
   return (
     <div className="space-y-1.5 py-2" data-testid="waterfall-view">
       {spans.map((span) => {
         const leftPct = (span.startOffset / maxDuration) * 100;
         const widthPct = Math.max(((span.durationMs || 0) / maxDuration) * 100, span.status === "skipped" ? 0 : 1.5);
+        const spanCalls = callsBySpan.get(span.id) ?? [];
 
         return (
-          <div key={span.id} className="flex items-center gap-3 group" data-testid={`span-${span.id}`}>
-            <div className="flex items-center gap-2 w-52 shrink-0">
-              {spanTypeIcon(span.spanType)}
-              <span className="text-xs font-medium truncate">{span.spanName}</span>
+          <Fragment key={span.id}>
+            <div className="flex items-center gap-3 group" data-testid={`span-${span.id}`}>
+              <div className="flex items-center gap-2 w-52 shrink-0">
+                {spanTypeIcon(span.spanType)}
+                <span className="text-xs font-medium truncate">{span.spanName}</span>
+              </div>
+              <div className="flex-1 relative h-7 bg-muted/40 rounded overflow-hidden">
+                {span.status !== "skipped" ? (
+                  <div
+                    className={`absolute top-1 bottom-1 rounded ${spanStatusColor(span.status)} ${span.status === "running" ? "animate-pulse" : ""}`}
+                    style={{ left: `${leftPct}%`, width: `${widthPct}%`, minWidth: "6px" }}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-[10px] text-muted-foreground italic">skipped</span>
+                  </div>
+                )}
+              </div>
+              <div className="w-16 text-right text-xs text-muted-foreground shrink-0">
+                {formatDuration(span.durationMs)}
+              </div>
+              <div className="w-12 text-right shrink-0">
+                {span.statusCode ? (
+                  <Badge variant="outline" className={`text-[10px] px-1 ${span.statusCode >= 400 ? "border-red-500 text-red-500" : "border-green-500 text-green-500"}`}>
+                    {span.statusCode}
+                  </Badge>
+                ) : null}
+              </div>
             </div>
-            <div className="flex-1 relative h-7 bg-muted/40 rounded overflow-hidden">
-              {span.status !== "skipped" ? (
-                <div
-                  className={`absolute top-1 bottom-1 rounded ${spanStatusColor(span.status)} ${span.status === "running" ? "animate-pulse" : ""}`}
-                  style={{ left: `${leftPct}%`, width: `${widthPct}%`, minWidth: "6px" }}
-                />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-[10px] text-muted-foreground italic">skipped</span>
-                </div>
-              )}
-            </div>
-            <div className="w-16 text-right text-xs text-muted-foreground shrink-0">
-              {formatDuration(span.durationMs)}
-            </div>
-            <div className="w-12 text-right shrink-0">
-              {span.statusCode ? (
-                <Badge variant="outline" className={`text-[10px] px-1 ${span.statusCode >= 400 ? "border-red-500 text-red-500" : "border-green-500 text-green-500"}`}>
-                  {span.statusCode}
-                </Badge>
-              ) : null}
-            </div>
-          </div>
+            {spanCalls.map((call) => (
+              <LlmHopRow
+                key={call.id}
+                call={call}
+                leftPct={leftPct}
+                widthPct={Math.max(((call.durationMs || span.durationMs || 0) / maxDuration) * 100, 1.5)}
+              />
+            ))}
+          </Fragment>
         );
       })}
+      {orphanCalls.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-dashed border-border/40">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1 ml-[8px]">Unattached LLM hops</div>
+          {orphanCalls.map((call) => (
+            <LlmHopRow
+              key={call.id}
+              call={call}
+              leftPct={0}
+              widthPct={Math.max(((call.durationMs || 0) / maxDuration) * 100, 1.5)}
+            />
+          ))}
+        </div>
+      )}
       {spans.filter(s => s.errorMessage).map((span) => (
         <div key={`err-${span.id}`} className="ml-[220px] mt-1 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
           <span className="font-semibold">{span.spanName}:</span> {span.errorMessage}
@@ -493,7 +706,7 @@ function ActionsPanel({ actions }: { actions: ActionItem[] }) {
 }
 
 function TraceDetailRow({ traceId }: { traceId: string }) {
-  const { data, isLoading } = useQuery<{ trace: ApiTrace; spans: ApiSpan[] }>({
+  const { data, isLoading } = useQuery<{ trace: ApiTrace; spans: ApiSpan[]; llmCalls?: ApiLlmCall[] }>({
     queryKey: ["/api/agent-traces", traceId],
     queryFn: async () => {
       const res = await fetch(`/api/agent-traces/${traceId}`);
@@ -513,7 +726,7 @@ function TraceDetailRow({ traceId }: { traceId: string }) {
 
   if (!data) return null;
 
-  const { trace, spans } = data;
+  const { trace, spans, llmCalls = [] } = data;
   const diagnosis = inferDiagnosis(trace, spans);
   const actions = inferActions(trace, spans);
 
@@ -526,8 +739,14 @@ function TraceDetailRow({ traceId }: { traceId: string }) {
           <span className="text-xs font-normal text-muted-foreground">
             Total: {formatDuration(trace.totalDurationMs)}
           </span>
+          {llmCalls.length > 0 && (
+            <Badge variant="outline" className="text-[10px] border-purple-500/40 text-purple-400" data-testid={`badge-llm-hops-${trace.id}`}>
+              <Sparkles className="h-2.5 w-2.5 mr-1" />
+              {llmCalls.length} LLM hop{llmCalls.length === 1 ? "" : "s"}
+            </Badge>
+          )}
         </h4>
-        <WaterfallView spans={spans} totalDurationMs={trace.totalDurationMs || 0} />
+        <WaterfallView spans={spans} totalDurationMs={trace.totalDurationMs || 0} llmCalls={llmCalls} />
       </div>
       {(diagnosis || actions.length > 0) && (
         <div className="grid gap-4 md:grid-cols-2">
@@ -536,6 +755,152 @@ function TraceDetailRow({ traceId }: { traceId: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+type SlowestHopWindow = "1h" | "24h" | "7d" | "30d";
+
+function SlowestLlmHopsPanel({ tenantId, onSelectTrace }: { tenantId: string | null; onSelectTrace: (traceId: string) => void }) {
+  const [, navigate] = useLocation();
+  const [window, setWindow] = useState<SlowestHopWindow>("24h");
+
+  const sinceMs = window === "1h" ? 60 * 60 * 1000
+    : window === "24h" ? 24 * 60 * 60 * 1000
+    : window === "7d" ? 7 * 24 * 60 * 60 * 1000
+    : 30 * 24 * 60 * 60 * 1000;
+
+  const { data: hops = [], isLoading } = useQuery<SlowestLlmHop[]>({
+    queryKey: ["/api/llm-models/slowest-hops", tenantId, window],
+    enabled: !!tenantId,
+    queryFn: async () => {
+      const since = new Date(Date.now() - sinceMs).toISOString();
+      const res = await fetch(`/api/tenants/${tenantId}/llm-models/slowest-hops?limit=10&since=${encodeURIComponent(since)}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  if (!tenantId) return null;
+
+  const windowLabel = window === "1h" ? "Last hour" : window === "24h" ? "Last 24h" : window === "7d" ? "Last 7 days" : "Last 30 days";
+
+  return (
+    <Card data-testid="card-slowest-llm-hops">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-purple-400" />
+          Slowest LLM hops
+          <Badge variant="outline" className="text-xs ml-1">{windowLabel} · top 10</Badge>
+          <div className="ml-auto">
+            <Select value={window} onValueChange={(v) => setWindow(v as SlowestHopWindow)}>
+              <SelectTrigger className="h-7 w-[130px] text-xs" data-testid="select-slowest-hops-window">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1h">Last hour</SelectItem>
+                <SelectItem value="24h">Last 24 hours</SelectItem>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span className="text-sm">Loading slowest hops...</span>
+          </div>
+        ) : hops.length === 0 ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">
+            No LLM hops recorded in this window. Seed demo data or run an agent.
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Model</TableHead>
+                <TableHead>Agent / Trace</TableHead>
+                <TableHead className="text-right">Duration</TableHead>
+                <TableHead className="text-right">TTFT</TableHead>
+                <TableHead className="text-right">Tokens</TableHead>
+                <TableHead className="text-right">Cost</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {hops.map((h, i) => (
+                <TableRow key={h.callId} data-testid={`row-slow-hop-${i}`}>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-[10px]">{h.provider ?? "—"}</Badge>
+                      <span className="text-sm font-medium">{h.modelDisplayName || h.modelName || "—"}</span>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">{deploymentRegion(h.endpoint, h.deploymentName)}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="text-sm">{h.traceAgentName || h.agentName || "—"}</div>
+                    {h.tracePlatform && (
+                      <div className="text-[11px] text-muted-foreground">{platformLabel(h.tracePlatform)}</div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right text-sm tabular-nums font-medium">
+                    {formatDuration(h.durationMs)}
+                  </TableCell>
+                  <TableCell className="text-right text-sm tabular-nums text-muted-foreground">
+                    {h.ttftMs != null ? `${Math.round(h.ttftMs)}ms` : "—"}
+                  </TableCell>
+                  <TableCell className="text-right text-sm tabular-nums text-muted-foreground">
+                    {formatTokens((h.inputTokens ?? 0) + (h.outputTokens ?? 0))}
+                  </TableCell>
+                  <TableCell className="text-right text-sm tabular-nums text-muted-foreground">
+                    {formatCost(h.costCents)}
+                  </TableCell>
+                  <TableCell>
+                    {h.status === "error" ? (
+                      <Badge variant="outline" className="border-red-500/50 text-red-400 text-[10px]">
+                        {h.errorClass ?? "error"}
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="border-green-500/50 text-green-500 text-[10px]">
+                        {h.status}
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {h.traceId ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs h-7"
+                        onClick={() => onSelectTrace(h.traceId!)}
+                        data-testid={`button-open-trace-${i}`}
+                      >
+                        <ExternalLink className="h-3 w-3 mr-1" />
+                        Open trace
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs h-7"
+                        onClick={() => navigate(`/llm-performance?modelId=${h.modelId}`)}
+                        data-testid={`button-open-model-${i}`}
+                      >
+                        View model
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2636,6 +3001,20 @@ export default function AgentObservability() {
     return list;
   }, [traces, agentSearch, datePreset, windowSince]);
 
+  const pinnedTraceMissing = !!expandedTraceId && !filteredTraces.some(t => t.id === expandedTraceId);
+
+  const { data: pinnedTraceData } = useQuery<{ trace: ApiTrace }>({
+    queryKey: ["/api/agent-traces/pinned", expandedTraceId],
+    enabled: pinnedTraceMissing,
+    queryFn: async () => {
+      const res = await fetch(`/api/agent-traces/${expandedTraceId}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    staleTime: 60000,
+  });
+  const pinnedTrace: ApiTrace | null = pinnedTraceMissing && pinnedTraceData?.trace ? pinnedTraceData.trace : null;
+
   const healthyCount = healthData.filter(a => a.status === "healthy").length;
   const degradedCount = healthData.filter(a => a.status === "degraded").length;
   const failedAgentCount = healthData.filter(a => a.status === "failed").length;
@@ -2893,6 +3272,19 @@ export default function AgentObservability() {
             )}
           </div>
 
+          <SlowestLlmHopsPanel
+            tenantId={activeTenantId}
+            onSelectTrace={(traceId) => {
+              setExpandedTraceId(traceId);
+              if (typeof window !== "undefined") {
+                setTimeout(() => {
+                  const row = document.querySelector(`[data-testid="row-trace-${traceId}"]`);
+                  row?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }, 100);
+              }
+            }}
+          />
+
           <div>
             <h2 className="text-lg font-semibold mb-3" data-testid="text-section-history">Trace History</h2>
             {chartData.length > 0 && (
@@ -2903,7 +3295,7 @@ export default function AgentObservability() {
                       <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                       <XAxis dataKey="day" tick={{ fontSize: 11 }} />
                       <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip
+                      <RechartsTooltip
                         contentStyle={{
                           backgroundColor: "hsl(var(--card))",
                           border: "1px solid hsl(var(--border))",
@@ -2972,7 +3364,7 @@ export default function AgentObservability() {
                     <Loader2 className="h-5 w-5 animate-spin" />
                     <span>Loading traces...</span>
                   </div>
-                ) : filteredTraces.length === 0 ? (
+                ) : filteredTraces.length === 0 && !pinnedTrace ? (
                   <div className="py-8 text-center text-sm text-muted-foreground">
                     No traces match the current filters.
                   </div>
@@ -2990,6 +3382,38 @@ export default function AgentObservability() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
+                      {pinnedTrace && (
+                        <Fragment key={`pinned-${pinnedTrace.id}`}>
+                          <TableRow
+                            className="cursor-pointer hover:bg-muted/50 bg-purple-500/5 ring-1 ring-purple-500/30"
+                            onClick={() => setExpandedTraceId(expandedTraceId === pinnedTrace.id ? null : pinnedTrace.id)}
+                            data-testid={`row-trace-${pinnedTrace.id}`}
+                          >
+                            <TableCell className="px-3">
+                              {expandedTraceId === pinnedTrace.id ?
+                                <ChevronDown className="h-4 w-4 text-purple-400" /> :
+                                <ChevronRight className="h-4 w-4 text-purple-400" />
+                              }
+                            </TableCell>
+                            <TableCell>{platformBadge(pinnedTrace.platform)}</TableCell>
+                            <TableCell className="font-medium text-sm">
+                              {pinnedTrace.agentName}
+                              <Badge variant="outline" className="ml-2 text-[10px] border-purple-500/40 text-purple-300">linked</Badge>
+                            </TableCell>
+                            <TableCell>{statusBadge(pinnedTrace.status)}</TableCell>
+                            <TableCell className="text-sm">{formatDuration(pinnedTrace.totalDurationMs)}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{formatDateTime(pinnedTrace.startedAt)}</TableCell>
+                            <TableCell className="text-xs text-red-400 max-w-[200px] truncate">{pinnedTrace.errorSummary || ""}</TableCell>
+                          </TableRow>
+                          {expandedTraceId === pinnedTrace.id && (
+                            <TableRow key={`pinned-${pinnedTrace.id}-detail`}>
+                              <TableCell colSpan={7} className="bg-muted/20 p-4">
+                                <TraceDetailRow traceId={pinnedTrace.id} />
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      )}
                       {filteredTraces.map((trace) => (
                         <Fragment key={trace.id}>
                           <TableRow

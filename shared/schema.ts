@@ -725,6 +725,7 @@ export const llmCalls = pgTable("llm_calls", {
   index("llm_calls_tenant_called_idx").on(table.tenantId, table.calledAt.desc()),
   index("llm_calls_model_called_idx").on(table.modelId, table.calledAt.desc()),
   index("llm_calls_tenant_agent_called_idx").on(table.tenantId, table.agentId, table.calledAt.desc()),
+  index("llm_calls_trace_span_idx").on(table.traceId, table.spanId),
 ]);
 
 export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
