@@ -133,9 +133,80 @@ export function useMetricsSummary(tenantId: string | null) {
   return useQuery<{ avgLatency: number; errorCount: number; totalTests: number }>({ queryKey: ["/api/tenants", tenantId, "metrics", "summary"], queryFn: () => fetchJson(`/api/tenants/${tenantId}/metrics/summary`), enabled: !!tenantId });
 }
 
-export function useAlerts(tenantId?: string) {
-  const url = tenantId ? `/api/alerts?tenantId=${tenantId}` : "/api/alerts";
-  return useQuery<Alert[]>({ queryKey: ["/api/alerts", tenantId], queryFn: () => fetchJson(url), refetchInterval: 90000 });
+export function useAlerts(tenantId?: string, filters?: { alertType?: string; streamKey?: string }) {
+  const params = new URLSearchParams();
+  if (tenantId) params.set("tenantId", tenantId);
+  if (filters?.alertType) params.set("alertType", filters.alertType);
+  if (filters?.streamKey) params.set("streamKey", filters.streamKey);
+  const qs = params.toString();
+  const url = `/api/alerts${qs ? `?${qs}` : ""}`;
+  return useQuery<Alert[]>({ queryKey: ["/api/alerts", tenantId, filters?.alertType, filters?.streamKey], queryFn: () => fetchJson(url), refetchInterval: 90000 });
+}
+
+export interface AnomalyStreamConfigUI {
+  key: string;
+  label: string;
+  unit: string;
+  category: string;
+  higherIsWorse: boolean;
+  enabled: boolean;
+  sensitivity: number;
+  configId: string | null;
+}
+
+export function useAnomalyStreamConfigs(tenantId: string | null) {
+  return useQuery<AnomalyStreamConfigUI[]>({
+    queryKey: ["/api/tenants", tenantId, "anomaly", "configs"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/anomaly/configs`),
+    enabled: !!tenantId,
+  });
+}
+
+export function useUpdateAnomalyStreamConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenantId, streamKey, sensitivity, enabled }: { tenantId: string; streamKey: string; sensitivity: number; enabled: boolean }) => {
+      return fetch(`/api/tenants/${tenantId}/anomaly/configs/${streamKey}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sensitivity, enabled }),
+      }).then(r => { if (!r.ok) throw new Error("Failed"); return r.json(); });
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["/api/tenants", vars.tenantId, "anomaly", "configs"] });
+    },
+  });
+}
+
+export interface MetricBaselinePoint {
+  id: string;
+  tenantId: string;
+  streamKey: string;
+  windowStart: string;
+  mean: number;
+  stddev: number;
+  p50: number;
+  p95: number;
+  sampleCount: number;
+  current: number;
+  zScore: number;
+}
+
+export function useMetricBaselineHistory(tenantId: string | null, streamKey: string | null, sinceHours = 168) {
+  return useQuery<MetricBaselinePoint[]>({
+    queryKey: ["/api/tenants", tenantId, "anomaly", "baselines", streamKey, sinceHours],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/anomaly/baselines/${streamKey}?sinceHours=${sinceHours}`),
+    enabled: !!tenantId && !!streamKey,
+  });
+}
+
+export function useAnomalyCount(tenantId: string | null, hours = 24) {
+  return useQuery<{ count: number; sinceHours: number }>({
+    queryKey: ["/api/tenants", tenantId, "anomaly", "count", hours],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/anomaly/count?hours=${hours}`),
+    enabled: !!tenantId,
+    refetchInterval: 60000,
+  });
 }
 
 export function useAcknowledgeAlert() {

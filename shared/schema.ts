@@ -107,13 +107,81 @@ export const alerts = pgTable("alerts", {
   message: text("message"),
   acknowledged: boolean("acknowledged").notNull().default(false),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
+  alertType: text("alert_type").notNull().default("threshold"),
+  streamKey: text("stream_key"),
+  payload: jsonb("payload").$type<Record<string, any>>(),
 }, (table) => [
   index("alerts_tenant_timestamp_idx").on(table.tenantId, table.timestamp.desc()),
 ]);
 
+export interface AnomalyAlertPayload {
+  streamKey: string;
+  label: string;
+  unit: string;
+  current: number;
+  mean: number;
+  stddev: number;
+  p50: number;
+  p95: number;
+  zScore: number;
+  sensitivity: number;
+  sampleCount: number;
+  windowStart: string;
+  state: "open" | "recovered";
+  followupCount: 0 | 1;
+  isFollowup: boolean;
+}
+
+export function isAnomalyAlertPayload(p: unknown): p is AnomalyAlertPayload {
+  if (!p || typeof p !== "object") return false;
+  const o = p as Record<string, unknown>;
+  return typeof o.streamKey === "string"
+    && typeof o.zScore === "number"
+    && typeof o.current === "number"
+    && typeof o.mean === "number"
+    && typeof o.stddev === "number"
+    && (o.state === "open" || o.state === "recovered");
+}
+
 export const insertAlertSchema = createInsertSchema(alerts).omit({ id: true });
 export type InsertAlert = z.infer<typeof insertAlertSchema>;
 export type Alert = typeof alerts.$inferSelect;
+
+export const metricBaselines = pgTable("metric_baselines", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  streamKey: text("stream_key").notNull(),
+  windowStart: timestamp("window_start").notNull(),
+  mean: real("mean").notNull(),
+  stddev: real("stddev").notNull(),
+  p50: real("p50").notNull(),
+  p95: real("p95").notNull(),
+  sampleCount: integer("sample_count").notNull(),
+  current: real("current"),
+  zScore: real("z_score"),
+  computedAt: timestamp("computed_at").notNull().defaultNow(),
+}, (table) => ({
+  uqStreamWindow: uniqueIndex("uq_baseline_stream_window").on(table.tenantId, table.streamKey, table.windowStart),
+}));
+
+export const insertMetricBaselineSchema = createInsertSchema(metricBaselines).omit({ id: true, computedAt: true });
+export type InsertMetricBaseline = z.infer<typeof insertMetricBaselineSchema>;
+export type MetricBaseline = typeof metricBaselines.$inferSelect;
+
+export const anomalyStreamConfigs = pgTable("anomaly_stream_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  streamKey: text("stream_key").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  sensitivity: real("sensitivity").notNull().default(3),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  uqTenantStream: uniqueIndex("uq_anomaly_tenant_stream").on(table.tenantId, table.streamKey),
+}));
+
+export const insertAnomalyStreamConfigSchema = createInsertSchema(anomalyStreamConfigs).omit({ id: true, updatedAt: true });
+export type InsertAnomalyStreamConfig = z.infer<typeof insertAnomalyStreamConfigSchema>;
+export type AnomalyStreamConfig = typeof anomalyStreamConfigs.$inferSelect;
 
 export const testRuns = pgTable("test_runs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

@@ -1,12 +1,15 @@
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2, HardDrive, Users, Activity, ShieldAlert } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2, HardDrive, Users, Activity, ShieldAlert, Sparkles } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell,
 } from "recharts";
-import { useMetrics, useMetricsSummary, useLatestMetrics, useLatestUsageReport, useServiceHealth } from "@/lib/api";
+import { useMetrics, useMetricsSummary, useLatestMetrics, useLatestUsageReport, useServiceHealth, useAnomalyCount, useAlerts } from "@/lib/api";
+import { Link } from "wouter";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { isAnomalyAlertPayload, type Alert } from "@shared/schema";
 
 const CHART_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6"];
 
@@ -31,6 +34,8 @@ export default function Dashboard() {
   const { data: fileActivity } = useLatestUsageReport(tenantId, "fileActivity");
   const { data: teamsActivity } = useLatestUsageReport(tenantId, "teamsActivity");
   const { data: serviceHealthData } = useServiceHealth();
+  const { data: anomalyCount } = useAnomalyCount(tenantId, 24);
+  const { data: anomalyAlerts } = useAlerts(tenantId || undefined, { alertType: "anomaly" });
 
   if (!tenantId || loadingMetrics || loadingSummary) {
     return (
@@ -110,6 +115,11 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <AnomaliesWidget
+        count={anomalyCount?.count || 0}
+        alerts={(anomalyAlerts || []).filter((a) => !a.acknowledged).slice(0, 4)}
+      />
 
       <M365InsightsSection
         siteUsage={siteUsage}
@@ -199,6 +209,55 @@ export default function Dashboard() {
         </CardContent>
       </Card>
     </Shell>
+  );
+}
+
+function AnomaliesWidget({ count, alerts }: { count: number; alerts: Alert[] }) {
+  if (count === 0 && alerts.length === 0) return null;
+  return (
+    <Card data-testid="card-anomalies-widget">
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <div>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-amber-500" />
+            Anomalies (last 24h)
+          </CardTitle>
+          <CardDescription>Statistical deviations detected vs 7-day rolling baseline.</CardDescription>
+        </div>
+        <div className="flex items-center gap-3">
+          <div data-testid="text-anomaly-count" className={`text-3xl font-bold ${count > 0 ? "text-amber-500" : "text-muted-foreground"}`}>{count}</div>
+          <Link href="/alerts">
+            <Button variant="outline" size="sm" data-testid="button-view-anomalies">View</Button>
+          </Link>
+        </div>
+      </CardHeader>
+      {alerts.length > 0 && (
+        <CardContent>
+          <div className="space-y-2">
+            {alerts.map((a) => {
+              const d = new Date(a.timestamp!);
+              const mins = Math.round((Date.now() - d.getTime()) / 60000);
+              const timeStr = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+              const payload = isAnomalyAlertPayload(a.payload) ? a.payload : null;
+              const label = payload?.label ?? a.streamKey ?? "anomaly";
+              const zStr = payload ? `z=${payload.zScore.toFixed(2)}` : "";
+              return (
+                <div key={a.id} data-testid={`row-anomaly-${a.id}`} className="flex items-center justify-between text-sm border-b last:border-0 pb-2 last:pb-0">
+                  <div className="flex items-center gap-2">
+                    <Activity className="h-3 w-3 text-amber-500" />
+                    <span className="font-medium">{label}</span>
+                    <Badge variant={a.severity === "critical" ? "destructive" : "secondary"} className="text-xs">{a.severity}</Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground font-mono">
+                    {zStr} · {timeStr}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      )}
+    </Card>
   );
 }
 

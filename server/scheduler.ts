@@ -8,6 +8,7 @@ import { collectPowerPlatformTelemetry } from "./collectors/powerPlatform";
 import { collectCopilotInteractions } from "./collectors/copilotInteractions";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
+import { runAnomalyDetection } from "./anomalyDetection";
 import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -30,6 +31,7 @@ const jobStatus: Record<string, JobStatus> = {
   copilotEnrichmentBackfill: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   entraSignIns: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   speData: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  anomalyDetection: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 function parseIntervalMs(interval: string): number {
@@ -686,7 +688,45 @@ let copilotInteractionsInterval: NodeJS.Timeout | null = null;
 let copilotEnrichmentBackfillInterval: NodeJS.Timeout | null = null;
 let entraSignInsInterval: NodeJS.Timeout | null = null;
 let speDataInterval: NodeJS.Timeout | null = null;
+let anomalyDetectionInterval: NodeJS.Timeout | null = null;
 let stuckJobInterval: NodeJS.Timeout | null = null;
+
+async function runAnomalyDetectionJob(): Promise<void> {
+  if (jobStatus.anomalyDetection.isRunning) {
+    console.log("[Scheduler] Anomaly detection already running, skipping...");
+    return;
+  }
+
+  jobStatus.anomalyDetection.isRunning = true;
+  const jobRunId = await trackJobStart("anomalyDetection", undefined, undefined, "Anomaly detection sweep");
+  jobStatus.anomalyDetection.activeJobRunId = jobRunId;
+
+  try {
+    const result = await runAnomalyDetection();
+    await trackJobComplete(
+      jobRunId,
+      "completed",
+      {
+        tenants: result.tenants,
+        streamsEvaluated: result.streamsEvaluated,
+        baselinesUpdated: result.baselinesUpdated,
+        alertsCreated: result.alertsCreated,
+        recoveriesMarked: result.recoveriesMarked,
+        errors: result.errors,
+      },
+      result.errors.length > 0 ? result.errors.slice(0, 3).join("; ") : undefined,
+    );
+    console.log(`[Scheduler] Anomaly detection: ${result.tenants} tenants, ${result.baselinesUpdated} baselines updated, ${result.alertsCreated} alerts created, ${result.recoveriesMarked} recoveries`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await trackJobComplete(jobRunId, "failed", undefined, msg);
+    console.error("[Scheduler] Anomaly detection failed:", msg);
+  } finally {
+    jobStatus.anomalyDetection.isRunning = false;
+    jobStatus.anomalyDetection.activeJobRunId = null;
+    jobStatus.anomalyDetection.lastRun = new Date();
+  }
+}
 
 export function startScheduler(): void {
   console.log("[Scheduler] Initializing scheduled jobs...");
@@ -701,6 +741,7 @@ export function startScheduler(): void {
   if (copilotEnrichmentBackfillInterval) clearInterval(copilotEnrichmentBackfillInterval);
   if (entraSignInsInterval) clearInterval(entraSignInsInterval);
   if (speDataInterval) clearInterval(speDataInterval);
+  if (anomalyDetectionInterval) clearInterval(anomalyDetectionInterval);
   if (stuckJobInterval) clearInterval(stuckJobInterval);
 
   syntheticTestInterval = setInterval(() => {
@@ -742,6 +783,10 @@ export function startScheduler(): void {
   speDataInterval = setInterval(() => {
     runSpeDataJob();
   }, 30 * 60 * 1000);
+
+  anomalyDetectionInterval = setInterval(() => {
+    runAnomalyDetectionJob();
+  }, 60 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -803,6 +848,11 @@ export function startScheduler(): void {
     runSpeDataJob();
   }, 85 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial anomaly detection sweep...");
+    runAnomalyDetectionJob();
+  }, 95 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -828,6 +878,7 @@ export function stopScheduler(): void {
   if (copilotEnrichmentBackfillInterval) { clearInterval(copilotEnrichmentBackfillInterval); copilotEnrichmentBackfillInterval = null; }
   if (entraSignInsInterval) { clearInterval(entraSignInsInterval); entraSignInsInterval = null; }
   if (speDataInterval) { clearInterval(speDataInterval); speDataInterval = null; }
+  if (anomalyDetectionInterval) { clearInterval(anomalyDetectionInterval); anomalyDetectionInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -883,6 +934,10 @@ export async function triggerEntraSignInsNow(): Promise<void> {
 
 export async function triggerSpeDataNow(): Promise<void> {
   runSpeDataJob();
+}
+
+export async function triggerAnomalyDetectionNow(): Promise<void> {
+  runAnomalyDetectionJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

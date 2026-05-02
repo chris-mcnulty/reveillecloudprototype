@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, gte, gt, asc, sql } from "drizzle-orm";
+import { eq, desc, and, gte, gt, asc, sql, type SQL } from "drizzle-orm";
 import { liveEvents } from "./events";
 import { extractCopilotEnrichment } from "./collectors/copilotEnrichment";
 import {
@@ -33,6 +33,8 @@ import {
   llmModels, type LlmModel, type InsertLlmModel,
   llmCalls, type LlmCall, type InsertLlmCall,
   savedViews, type SavedView, type InsertSavedView,
+  metricBaselines, type MetricBaseline, type InsertMetricBaseline,
+  anomalyStreamConfigs, type AnomalyStreamConfig, type InsertAnomalyStreamConfig,
 } from "@shared/schema";
 import { or } from "drizzle-orm";
 
@@ -72,9 +74,20 @@ export interface IStorage {
   createMetric(metric: InsertMetric): Promise<Metric>;
   getMetricsSummary(tenantId: string): Promise<{ avgLatency: number; errorCount: number; totalTests: number }>;
 
-  getAlerts(tenantId?: string): Promise<Alert[]>;
+  getAlerts(tenantId?: string, opts?: { alertType?: string; streamKey?: string; since?: Date }): Promise<Alert[]>;
   createAlert(alert: InsertAlert): Promise<Alert>;
   acknowledgeAlert(id: string): Promise<Alert | undefined>;
+  updateAlertPayload(id: string, payload: Record<string, unknown>): Promise<Alert | undefined>;
+  getLatestAnomalyAlertForStream(tenantId: string, streamKey: string): Promise<Alert | undefined>;
+  getAnomalyAlertCount(tenantId: string, since: Date): Promise<number>;
+
+  upsertMetricBaseline(data: InsertMetricBaseline): Promise<MetricBaseline>;
+  getLatestMetricBaseline(tenantId: string, streamKey: string): Promise<MetricBaseline | undefined>;
+  getMetricBaselineHistory(tenantId: string, streamKey: string, since?: Date, limit?: number): Promise<MetricBaseline[]>;
+
+  getAnomalyStreamConfigs(tenantId: string): Promise<AnomalyStreamConfig[]>;
+  getAnomalyStreamConfig(tenantId: string, streamKey: string): Promise<AnomalyStreamConfig | undefined>;
+  upsertAnomalyStreamConfig(data: InsertAnomalyStreamConfig): Promise<AnomalyStreamConfig>;
 
   getGlobalStats(): Promise<{ totalTenants: number; activeIncidents: number; totalTests24h: number }>;
 
@@ -327,6 +340,8 @@ export class DatabaseStorage implements IStorage {
     await db.delete(serviceHealthIncidents).where(eq(serviceHealthIncidents.tenantId, id));
     await db.delete(alerts).where(eq(alerts.tenantId, id));
     await db.delete(metrics).where(eq(metrics.tenantId, id));
+    await db.delete(metricBaselines).where(eq(metricBaselines.tenantId, id));
+    await db.delete(anomalyStreamConfigs).where(eq(anomalyStreamConfigs.tenantId, id));
     const tests = await db.select({ id: syntheticTests.id }).from(syntheticTests).where(eq(syntheticTests.tenantId, id));
     for (const t of tests) {
       await db.delete(testRuns).where(eq(testRuns.testId, t.id));
@@ -436,11 +451,17 @@ export class DatabaseStorage implements IStorage {
     return result[0] || { avgLatency: 0, errorCount: 0, totalTests: 0 };
   }
 
-  async getAlerts(tenantId?: string): Promise<Alert[]> {
-    if (tenantId) {
-      return db.select().from(alerts).where(eq(alerts.tenantId, tenantId)).orderBy(desc(alerts.timestamp));
+  async getAlerts(tenantId?: string, opts?: { alertType?: string; streamKey?: string; since?: Date }): Promise<Alert[]> {
+    const conditions: SQL[] = [];
+    if (tenantId) conditions.push(eq(alerts.tenantId, tenantId));
+    if (opts?.alertType) conditions.push(eq(alerts.alertType, opts.alertType));
+    if (opts?.streamKey) conditions.push(eq(alerts.streamKey, opts.streamKey));
+    if (opts?.since) conditions.push(gte(alerts.timestamp, opts.since));
+    const query = db.select().from(alerts);
+    if (conditions.length > 0) {
+      return query.where(and(...conditions)).orderBy(desc(alerts.timestamp));
     }
-    return db.select().from(alerts).orderBy(desc(alerts.timestamp));
+    return query.orderBy(desc(alerts.timestamp));
   }
 
   async createAlert(alert: InsertAlert): Promise<Alert> {
@@ -452,6 +473,83 @@ export class DatabaseStorage implements IStorage {
   async acknowledgeAlert(id: string): Promise<Alert | undefined> {
     const [updated] = await db.update(alerts).set({ acknowledged: true }).where(eq(alerts.id, id)).returning();
     return updated;
+  }
+
+  async updateAlertPayload(id: string, payload: Record<string, unknown>): Promise<Alert | undefined> {
+    const [updated] = await db.update(alerts).set({ payload }).where(eq(alerts.id, id)).returning();
+    return updated;
+  }
+
+  async getLatestAnomalyAlertForStream(tenantId: string, streamKey: string): Promise<Alert | undefined> {
+    const [row] = await db.select().from(alerts)
+      .where(and(eq(alerts.tenantId, tenantId), eq(alerts.alertType, "anomaly"), eq(alerts.streamKey, streamKey)))
+      .orderBy(desc(alerts.timestamp))
+      .limit(1);
+    return row;
+  }
+
+  async getAnomalyAlertCount(tenantId: string, since: Date): Promise<number> {
+    const [row] = await db.select({ count: sql<number>`count(*)` }).from(alerts)
+      .where(and(eq(alerts.tenantId, tenantId), eq(alerts.alertType, "anomaly"), gte(alerts.timestamp, since)));
+    return Number(row?.count || 0);
+  }
+
+  async upsertMetricBaseline(data: InsertMetricBaseline): Promise<MetricBaseline> {
+    const [upserted] = await db.insert(metricBaselines)
+      .values({ ...data, computedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [metricBaselines.tenantId, metricBaselines.streamKey, metricBaselines.windowStart],
+        set: {
+          mean: data.mean,
+          stddev: data.stddev,
+          p50: data.p50,
+          p95: data.p95,
+          sampleCount: data.sampleCount,
+          current: data.current,
+          zScore: data.zScore,
+          computedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getLatestMetricBaseline(tenantId: string, streamKey: string): Promise<MetricBaseline | undefined> {
+    const [row] = await db.select().from(metricBaselines)
+      .where(and(eq(metricBaselines.tenantId, tenantId), eq(metricBaselines.streamKey, streamKey)))
+      .orderBy(desc(metricBaselines.windowStart))
+      .limit(1);
+    return row;
+  }
+
+  async getMetricBaselineHistory(tenantId: string, streamKey: string, since?: Date, limit = 168): Promise<MetricBaseline[]> {
+    const conditions: SQL[] = [eq(metricBaselines.tenantId, tenantId), eq(metricBaselines.streamKey, streamKey)];
+    if (since) conditions.push(gte(metricBaselines.windowStart, since));
+    return db.select().from(metricBaselines)
+      .where(and(...conditions))
+      .orderBy(desc(metricBaselines.windowStart))
+      .limit(limit);
+  }
+
+  async getAnomalyStreamConfigs(tenantId: string): Promise<AnomalyStreamConfig[]> {
+    return db.select().from(anomalyStreamConfigs).where(eq(anomalyStreamConfigs.tenantId, tenantId));
+  }
+
+  async getAnomalyStreamConfig(tenantId: string, streamKey: string): Promise<AnomalyStreamConfig | undefined> {
+    const [row] = await db.select().from(anomalyStreamConfigs)
+      .where(and(eq(anomalyStreamConfigs.tenantId, tenantId), eq(anomalyStreamConfigs.streamKey, streamKey)));
+    return row;
+  }
+
+  async upsertAnomalyStreamConfig(data: InsertAnomalyStreamConfig): Promise<AnomalyStreamConfig> {
+    const [upserted] = await db.insert(anomalyStreamConfigs)
+      .values({ ...data, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [anomalyStreamConfigs.tenantId, anomalyStreamConfigs.streamKey],
+        set: { enabled: data.enabled, sensitivity: data.sensitivity, updatedAt: new Date() },
+      })
+      .returning();
+    return upserted;
   }
 
   async getGlobalStats(): Promise<{ totalTenants: number; activeIncidents: number; totalTests24h: number }> {

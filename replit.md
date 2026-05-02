@@ -11,7 +11,7 @@ The application uses a modern web stack with **React**, **Vite**, **TailwindCSS*
 
 Key architectural decisions include:
 - **Multi-tenant Design**: Supports "standard" customer organizations and "msp" organizations with different UI modes and tenant management capabilities.
-- **Data Models**: Centralized schema for organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, and admin audit logs).
+- **Data Models**: Centralized schema for organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, and admin audit logs). Anomaly detection adds two tables — `metricBaselines` (hourly rolling-window stats per tenant×stream: mean/stddev/p50/p95/sampleCount/current/zScore) and `anomalyStreamConfigs` (per-tenant×stream sensitivity 1–6, default 3, with enabled flag) — and extends `alerts` with `alertType` (`threshold` default vs `anomaly`), `streamKey`, and a `payload` JSON column carrying anomaly metadata (current/mean/stddev/zScore/sensitivity/state/followupCount).
 - **SharePoint Integration**: Utilizes the Microsoft Graph API, enhanced by the Replit SharePoint connector for delegated authentication in synthetic tests and Azure AD multi-tenant app registration with client credentials for server-side collectors.
 - **Automated Scheduler**: An adapted multi-tenant scheduler handles various job types (synthetic tests, service health, audit logs, Graph reports, site structure, Copilot interactions) with independent intervals, staggered execution, and persistence of job runs.
 - **Passive Data Collectors**:
@@ -44,6 +44,14 @@ Key architectural decisions include:
 - **entraSignIns**: Microsoft Entra ID sign-in records (per-tenant). Structured columns for user, app, location (geo), status, risk level, conditional access, MFA, device info. Collected from Graph API `/auditLogs/signIns`.
 - **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
 - **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
+- **metricBaselines**, **anomalyStreamConfigs**: Rolling 7-day hourly baselines per tenant×stream and per-stream sensitivity config. New columns on **alerts**: `alertType` ("threshold" | "anomaly"), `streamKey`, `payload` (jsonb).
+
+### Anomaly Detection
+`server/anomalyDetection.ts` runs hourly via the scheduler:
+- 6 streams: `synthetic.latency`, `agent.error_rate`, `llm.ttft`, `llm.error_rate`, `entra.failure_rate`, `mcp.failure_rate`
+- 7-day hourly baseline (min 10 samples). Z-score = (latest − mean) / stddev (with stddev floor). Severity by |z|: ≥5 critical, ≥4 warning, else info.
+- Per tenant×stream state machine on the latest alert payload: `recovered` + anomalous → fire fresh alert (state=open, followupCount=0); `open` with followupCount=0 still anomalous and ≥4h since first alert → emit single follow-up (followupCount=1, isFollowup=true); `open` with followupCount=1 still anomalous → suppressed; `open` but metric back to normal → mark latest alert payload `state="recovered"` via `updateAlertPayload` (no new alert). One initial + one 4h follow-up per open episode; no time-based auto-close.
+- Manual trigger via `POST /api/scheduler/trigger { jobType: "anomalyDetection" }`.
 
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
@@ -64,7 +72,11 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/tests`, `POST/PATCH/DELETE /tests`
 - `GET /tenants/:tenantId/alert-rules`, `POST/PATCH/DELETE /alert-rules`
 - `GET /tenants/:tenantId/metrics`, `/metrics/latest`, `/metrics/summary`
-- `GET/POST /alerts`, `PATCH /alerts/:id/acknowledge`
+- `GET/POST /alerts`, `PATCH /alerts/:id/acknowledge` (GET supports `alertType=anomaly|threshold`, `streamKey`, `since`)
+- `GET /anomaly/streams` (catalog of detector streams)
+- `GET /tenants/:tenantId/anomaly/configs`, `PUT /tenants/:tenantId/anomaly/configs/:streamKey` (sensitivity + enabled)
+- `GET /tenants/:tenantId/anomaly/baselines/:streamKey?sinceHours=`
+- `GET /tenants/:tenantId/anomaly/count?hours=`
 - `GET /stats` (global MSP stats)
 - `GET /sharepoint/status` (Graph API connection check)
 - `GET /agent-traces` (list traces, ?tenantId, ?platform, ?status, ?limit)

@@ -6,7 +6,8 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
 import { isAzureAppConfigured, buildAdminConsentUrl, buildCommonConsentUrl, clearTokenCache, signState, verifyState } from "./azureAuth";
@@ -221,7 +222,10 @@ export async function registerRoutes(
 
   app.get("/api/alerts", async (req, res) => {
     const tenantId = req.query.tenantId as string | undefined;
-    const data = await storage.getAlerts(tenantId);
+    const alertType = req.query.alertType as string | undefined;
+    const streamKey = req.query.streamKey as string | undefined;
+    const since = req.query.since ? new Date(req.query.since as string) : undefined;
+    const data = await storage.getAlerts(tenantId, { alertType, streamKey, since });
     res.json(data);
   });
 
@@ -242,6 +246,54 @@ export async function registerRoutes(
   app.get("/api/stats", async (_req, res) => {
     const stats = await storage.getGlobalStats();
     res.json(stats);
+  });
+
+  app.get("/api/anomaly/streams", async (_req, res) => {
+    res.json({ streams: STREAM_DEFINITIONS, defaultSensitivity: DEFAULT_SENSITIVITY });
+  });
+
+  app.get("/api/tenants/:tenantId/anomaly/configs", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const configs = await storage.getAnomalyStreamConfigs(tenantId);
+    const byKey = new Map(configs.map(c => [c.streamKey, c]));
+    const merged = STREAM_DEFINITIONS.map(def => {
+      const existing = byKey.get(def.key);
+      return existing
+        ? { ...def, enabled: existing.enabled, sensitivity: existing.sensitivity, configId: existing.id }
+        : { ...def, enabled: true, sensitivity: DEFAULT_SENSITIVITY, configId: null };
+    });
+    res.json(merged);
+  });
+
+  app.put("/api/tenants/:tenantId/anomaly/configs/:streamKey", async (req, res) => {
+    const { tenantId, streamKey } = req.params;
+    if (!STREAM_DEFINITIONS.some(s => s.key === streamKey)) {
+      return res.status(400).json({ message: "Unknown stream key" });
+    }
+    const sensitivity = typeof req.body?.sensitivity === "number" ? req.body.sensitivity : DEFAULT_SENSITIVITY;
+    const enabled = typeof req.body?.enabled === "boolean" ? req.body.enabled : true;
+    if (sensitivity < 1 || sensitivity > 6) {
+      return res.status(400).json({ message: "Sensitivity must be between 1 and 6" });
+    }
+    const cfg = await storage.upsertAnomalyStreamConfig({ tenantId, streamKey, enabled, sensitivity });
+    await logAdminAction(tenantId, "anomalyConfig.updated", "anomalyStreamConfig", cfg.id, { streamKey, enabled, sensitivity });
+    res.json(cfg);
+  });
+
+  app.get("/api/tenants/:tenantId/anomaly/baselines/:streamKey", async (req, res) => {
+    const { tenantId, streamKey } = req.params;
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 168;
+    const sinceMs = req.query.sinceHours ? parseInt(req.query.sinceHours as string) * 60 * 60 * 1000 : undefined;
+    const since = sinceMs ? new Date(Date.now() - sinceMs) : undefined;
+    const history = await storage.getMetricBaselineHistory(tenantId, streamKey, since, limit);
+    res.json(history);
+  });
+
+  app.get("/api/tenants/:tenantId/anomaly/count", async (req, res) => {
+    const hours = req.query.hours ? parseInt(req.query.hours as string) : 24;
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+    const count = await storage.getAnomalyAlertCount(req.params.tenantId, since);
+    res.json({ count, sinceHours: hours });
   });
 
   app.get("/api/sharepoint/status", async (_req, res) => {
@@ -314,6 +366,9 @@ export async function registerRoutes(
         break;
       case "speData":
         await triggerSpeDataNow();
+        break;
+      case "anomalyDetection":
+        await triggerAnomalyDetectionNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
