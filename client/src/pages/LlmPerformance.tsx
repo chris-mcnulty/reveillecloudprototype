@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -120,7 +121,8 @@ function StatusDot({ status }: { status: string }) {
 
 export default function LlmPerformance() {
   const queryClient = useQueryClient();
-  const { activeTenantId } = useActiveTenant();
+  const { activeTenantId, activeOrgId, organization } = useActiveTenant();
+  const orgId = organization?.id ?? activeOrgId;
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
 
@@ -132,7 +134,7 @@ export default function LlmPerformance() {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    refetchInterval: 30000,
+    refetchInterval: 90000,
   });
 
   const { data: agents = [] } = useQuery<KnownAgent[]>({
@@ -159,7 +161,7 @@ export default function LlmPerformance() {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    refetchInterval: 30000,
+    refetchInterval: 90000,
   });
 
   const { data: recentCalls = [] } = useQuery<LlmCall[]>({
@@ -173,8 +175,35 @@ export default function LlmPerformance() {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    refetchInterval: 15000,
+    refetchInterval: 90000,
   });
+
+  const handleLlmLive = useCallback((event: LiveEvent) => {
+    if (event.type !== "llm_call.recorded") return;
+    const call = event.data as LlmCall;
+    if (!call?.id || !call?.modelId) return;
+    if (activeTenantId && call.tenantId !== activeTenantId) return;
+    if (agentFilter !== "all" && call.agentId !== agentFilter) {
+      queryClient.invalidateQueries({ queryKey: ["/api/llm-models/stats", activeTenantId] });
+      return;
+    }
+    if (expandedModelId && call.modelId === expandedModelId) {
+      queryClient.setQueryData<LlmCall[] | undefined>(
+        ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter],
+        (prev) => {
+          if (!prev) return prev;
+          if (prev.find((c) => c.id === call.id)) return prev;
+          return [call, ...prev].slice(0, 30);
+        },
+      );
+    }
+    // Refresh any other recent-calls views and stats so live data shows
+    // immediately on every llm-calls list, not only the expanded model.
+    queryClient.invalidateQueries({ queryKey: ["/api/llm-calls"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/llm-models/stats", activeTenantId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/llm-models", activeTenantId] });
+  }, [queryClient, activeTenantId, expandedModelId, agentFilter]);
+  useLiveStream(orgId, [activeTenantId], ["llm_call.recorded"], handleLlmLive);
 
   const seedMutation = useMutation({
     mutationFn: async () => {

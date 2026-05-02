@@ -27,6 +27,33 @@ import logoUrl from "@assets/Reveille_Icon_V1_PNG_1772142507568.png";
 import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 import logoFullUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { useLiveStreamStatus } from "@/lib/liveStream";
+
+function LiveIndicator() {
+  const status = useLiveStreamStatus();
+  const config: Record<string, { label: string; dot: string; ring: string; pulse: boolean }> = {
+    connected: { label: "Live", dot: "bg-emerald-500", ring: "ring-emerald-500/30", pulse: false },
+    connecting: { label: "Connecting…", dot: "bg-amber-500", ring: "ring-amber-500/30", pulse: true },
+    reconnecting: { label: "Reconnecting…", dot: "bg-amber-500", ring: "ring-amber-500/30", pulse: true },
+    offline: { label: "Offline", dot: "bg-rose-500", ring: "ring-rose-500/30", pulse: false },
+  };
+  const s = config[status] ?? config.offline;
+  return (
+    <div
+      className="hidden md:flex items-center gap-1.5 px-2 h-7 rounded-md border bg-background text-xs text-muted-foreground"
+      data-testid={`live-indicator-${status}`}
+      title={`Live stream: ${s.label}`}
+    >
+      <span className={`relative inline-flex h-2 w-2 items-center justify-center`}>
+        {s.pulse && (
+          <span className={`absolute inline-flex h-full w-full rounded-full ${s.dot} opacity-60 animate-ping`} />
+        )}
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${s.dot} ring-2 ${s.ring}`} />
+      </span>
+      <span className="font-medium tracking-tight">{s.label}</span>
+    </div>
+  );
+}
 
 export function Header() {
   const [location] = useLocation();
@@ -157,6 +184,7 @@ export function Header() {
             />
           </div>
         </form>
+        <LiveIndicator />
         <ThemeToggle />
         <Button variant="outline" size="icon" className="relative h-8 w-8 rounded-full">
           <Bell className="h-4 w-4" />

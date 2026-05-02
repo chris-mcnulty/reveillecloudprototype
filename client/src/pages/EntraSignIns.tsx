@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLiveStream } from "@/lib/liveStream";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -53,7 +54,8 @@ const RISK_COLORS: Record<string, string> = {
 const PIE_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#f97316"];
 
 export default function EntraSignIns() {
-  const { activeTenantId } = useActiveTenant();
+  const { activeTenantId, activeOrgId, organization } = useActiveTenant();
+  const orgId = organization?.id ?? activeOrgId;
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [riskFilter, setRiskFilter] = useState<string>("all");
@@ -65,7 +67,7 @@ export default function EntraSignIns() {
     queryKey: ["/api/tenants", activeTenantId, "entra-signins", "stats"],
     queryFn: () => fetch(`/api/tenants/${activeTenantId}/entra-signins/stats`).then(r => r.json()),
     enabled: !!activeTenantId,
-    refetchInterval: 60000,
+    refetchInterval: 120000,
   });
 
   const { data: signIns = [], isLoading } = useQuery({
@@ -79,8 +81,13 @@ export default function EntraSignIns() {
       return fetch(`/api/tenants/${activeTenantId}/entra-signins?${params}`).then(r => r.json());
     },
     enabled: !!activeTenantId,
-    refetchInterval: 60000,
+    refetchInterval: 120000,
   });
+
+  const handleLive = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["/api/tenants", activeTenantId, "entra-signins"] });
+  }, [queryClient, activeTenantId]);
+  useLiveStream(orgId, [activeTenantId], ["entra_signin.batch"], handleLive);
 
   const { data: userBreakdown = [] } = useQuery({
     queryKey: ["/api/tenants", activeTenantId, "entra-signins", "users"],

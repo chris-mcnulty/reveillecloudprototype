@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { eq, desc, and, gte, sql } from "drizzle-orm";
+import { liveEvents } from "./events";
 import {
   organizations, type Organization, type InsertOrganization,
   tenants, type Tenant, type InsertTenant,
@@ -402,6 +403,7 @@ export class DatabaseStorage implements IStorage {
 
   async createAlert(alert: InsertAlert): Promise<Alert> {
     const [created] = await db.insert(alerts).values(alert).returning();
+    liveEvents.emit("alert.created", created.tenantId ?? null, created);
     return created;
   }
 
@@ -529,6 +531,7 @@ export class DatabaseStorage implements IStorage {
       .limit(1);
 
     if (existing.length > 0) {
+      const prevStatus = existing[0].status;
       const [updated] = await db.update(serviceHealthIncidents)
         .set({
           status: data.status,
@@ -540,10 +543,14 @@ export class DatabaseStorage implements IStorage {
         })
         .where(eq(serviceHealthIncidents.externalId, data.externalId))
         .returning();
+      if (prevStatus !== updated.status) {
+        liveEvents.emit("service_health.changed", updated.tenantId ?? null, updated);
+      }
       return updated;
     }
 
     const [created] = await db.insert(serviceHealthIncidents).values(data).returning();
+    liveEvents.emit("service_health.changed", created.tenantId ?? null, created);
     return created;
   }
 
@@ -679,6 +686,7 @@ export class DatabaseStorage implements IStorage {
 
   async createAgentTrace(data: InsertAgentTrace): Promise<AgentTrace> {
     const [created] = await db.insert(agentTraces).values(data).returning();
+    liveEvents.emit("agent_trace.created", created.tenantId ?? null, created);
     return created;
   }
 
@@ -722,6 +730,10 @@ export class DatabaseStorage implements IStorage {
 
   async createAgentTraceSpan(data: InsertAgentTraceSpan): Promise<AgentTraceSpan> {
     const [created] = await db.insert(agentTraceSpans).values(data).returning();
+    const [parent] = await db.select().from(agentTraces).where(eq(agentTraces.id, created.traceId)).limit(1);
+    if (parent) {
+      liveEvents.emit("agent_trace.updated", parent.tenantId ?? null, { trace: parent, span: created });
+    }
     return created;
   }
 
@@ -990,6 +1002,8 @@ export class DatabaseStorage implements IStorage {
 
   async createMcpToolCall(data: InsertMcpToolCall): Promise<McpToolCall> {
     const [call] = await db.insert(mcpToolCalls).values(data).returning();
+    const [server] = await db.select().from(mcpServers).where(eq(mcpServers.id, call.serverId)).limit(1);
+    liveEvents.emit("mcp_tool_call.recorded", server?.tenantId ?? null, { call, serverId: call.serverId });
     return call;
   }
 
@@ -1098,6 +1112,7 @@ export class DatabaseStorage implements IStorage {
         },
       })
       .returning();
+    liveEvents.emit("entra_signin.batch", result.tenantId ?? null, { latest: result });
     return result;
   }
 
@@ -1455,6 +1470,7 @@ export class DatabaseStorage implements IStorage {
 
   async createLlmCall(data: InsertLlmCall): Promise<LlmCall> {
     const [created] = await db.insert(llmCalls).values(data).returning();
+    liveEvents.emit("llm_call.recorded", created.tenantId ?? null, created);
     return created;
   }
 

@@ -1,6 +1,7 @@
-import { useState, useMemo, useEffect, Fragment } from "react";
+import { useState, useMemo, useEffect, useCallback, Fragment } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -2000,37 +2001,87 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
 
 export default function AgentObservability() {
   const queryClient = useQueryClient();
-  const { activeTenantId } = useActiveTenant();
+  const { activeTenantId, activeOrgId, organization } = useActiveTenant();
+  const orgId = organization?.id ?? activeOrgId;
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [agentSearch, setAgentSearch] = useState("");
 
   const { data: healthData = [], isLoading: healthLoading } = useQuery<AgentHealthItem[]>({
-    queryKey: ["/api/agent-health"],
+    queryKey: ["/api/agent-health", activeTenantId],
     queryFn: async () => {
-      const res = await fetch("/api/agent-health");
+      const url = activeTenantId
+        ? `/api/agent-health?tenantId=${encodeURIComponent(activeTenantId)}`
+        : "/api/agent-health";
+      const res = await fetch(url);
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    refetchInterval: 30000,
+    refetchInterval: 90000,
   });
 
   const traceParams = new URLSearchParams();
+  if (activeTenantId) traceParams.set("tenantId", activeTenantId);
   if (platformFilter !== "all") traceParams.set("platform", platformFilter);
   if (statusFilter !== "all") traceParams.set("status", statusFilter);
   traceParams.set("limit", "50");
   const traceUrl = `/api/agent-traces?${traceParams.toString()}`;
 
   const { data: traces = [], isLoading: tracesLoading } = useQuery<ApiTrace[]>({
-    queryKey: ["/api/agent-traces", platformFilter, statusFilter],
+    queryKey: ["/api/agent-traces", activeTenantId, platformFilter, statusFilter],
     queryFn: async () => {
       const res = await fetch(traceUrl);
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    refetchInterval: 15000,
+    refetchInterval: 90000,
   });
+
+  const handleAgentLive = useCallback((event: LiveEvent) => {
+    if (event.type === "agent_trace.created") {
+      const trace = event.data as ApiTrace;
+      if (!trace?.id) return;
+      if (activeTenantId && trace.tenantId !== activeTenantId) return;
+      if (platformFilter !== "all" && trace.platform !== platformFilter) {
+        queryClient.invalidateQueries({ queryKey: ["/api/agent-health", activeTenantId] });
+        return;
+      }
+      if (statusFilter !== "all" && trace.status !== statusFilter) {
+        queryClient.invalidateQueries({ queryKey: ["/api/agent-health", activeTenantId] });
+        return;
+      }
+      queryClient.setQueryData<ApiTrace[] | undefined>(
+        ["/api/agent-traces", activeTenantId, platformFilter, statusFilter],
+        (prev) => {
+          if (!prev) return prev;
+          if (prev.find((t) => t.id === trace.id)) return prev;
+          return [trace, ...prev].slice(0, 50);
+        },
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-health", activeTenantId] });
+    } else if (event.type === "agent_trace.updated") {
+      const data = event.data as { trace?: ApiTrace } | undefined;
+      const trace = data?.trace;
+      if (!trace?.id) return;
+      if (activeTenantId && trace.tenantId !== activeTenantId) return;
+      queryClient.setQueryData<ApiTrace[] | undefined>(
+        ["/api/agent-traces", activeTenantId, platformFilter, statusFilter],
+        (prev) => {
+          if (!prev) return prev;
+          const idx = prev.findIndex((t) => t.id === trace.id);
+          if (idx === -1) return prev;
+          const next = prev.slice();
+          next[idx] = { ...prev[idx], ...trace };
+          return next;
+        },
+      );
+      if (expandedTraceId === trace.id) {
+        queryClient.invalidateQueries({ queryKey: ["/api/agent-traces", trace.id] });
+      }
+    }
+  }, [queryClient, activeTenantId, platformFilter, statusFilter, expandedTraceId]);
+  useLiveStream(orgId, [activeTenantId], ["agent_trace.created", "agent_trace.updated"], handleAgentLive);
 
   const seedMutation = useMutation({
     mutationFn: async () => {

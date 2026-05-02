@@ -1,61 +1,28 @@
 # Reveille Cloud - SharePoint Online Performance Monitoring Collector
 
 ## Overview
-Multi-tenant SaaS platform for monitoring SharePoint Online performance across customer tenants. Provides synthetic transaction testing, passive telemetry collection, alerting, and MSP-level visibility.
+Reveille Cloud is a multi-tenant SaaS platform designed to monitor SharePoint Online performance for customer tenants. It offers synthetic transaction testing, passive telemetry collection, alerting, and provides MSP-level visibility. The platform aims to ensure optimal SharePoint performance, detect issues proactively, and offer comprehensive insights into M365 usage and health.
 
-## Architecture
-- **Frontend**: React + Vite + TailwindCSS + shadcn/ui + Recharts
-- **Backend**: Express.js (TypeScript)
-- **Database**: PostgreSQL via Drizzle ORM (node-postgres driver)
-- **Routing**: wouter (frontend), Express (API)
-- **SharePoint**: Microsoft Graph API via Replit SharePoint connector (@microsoft/microsoft-graph-client)
-- **Azure AD Auth**: Multi-tenant app registration with client credentials flow (server/azureAuth.ts)
+## User Preferences
+No specific user preferences were provided in the original document.
 
-## Project Structure
-```
-client/src/
-  pages/           - Route pages (Environments, Dashboard, Tenants, etc.)
-  components/      - UI components (shadcn/ui + layout Shell/Sidebar/Header)
-  lib/             - API hooks (api.ts), query client, utils
-server/
-  index.ts         - Express server entry
-  routes.ts        - API route handlers (/api/*)
-  storage.ts       - Database storage interface (IStorage + DatabaseStorage)
-  db.ts            - Drizzle ORM + pg Pool setup
-  seed.ts          - Database seeding with org/tenant/test structure (no fake metrics - real data only)
-  sharepoint.ts    - Microsoft Graph client auth (Replit SharePoint connector — delegated auth for synthetic tests)
-  azureAuth.ts     - Azure AD multi-tenant app auth (client credentials flow for per-tenant token acquisition)
-  testRunner.ts    - Synthetic test execution engine (Page Load, File Transfer, Search, Auth)
-  scheduler.ts     - Automated scheduler (synthetic tests + passive collectors)
-  collectors/
-    graphReports.ts  - M365 usage reports via Graph Reports API (14 report types: SP, OneDrive, Teams, Exchange, M365 Apps, Copilot)
-    serviceHealth.ts - M365 Service Health incident collector (auto-creates alerts)
-    auditLogs.ts     - Unified audit log collector (4 Management API content types: Audit.SharePoint, Audit.General, Audit.Exchange, Audit.AzureActiveDirectory + Graph directoryAudits + signInLogs + site fallback)
-    siteStructure.ts - SharePoint site structure collector (subsites, lists, drives, groups, users)
-shared/
-  schema.ts        - Drizzle schema (all tables)
-```
+## System Architecture
+The application uses a modern web stack with **React**, **Vite**, **TailwindCSS**, and **shadcn/ui** for the frontend, and an **Express.js (TypeScript)** backend. **PostgreSQL** is the database, managed with **Drizzle ORM**. Routing is handled by **wouter** on the frontend and **Express** for the API.
 
-## Key Data Models
-- **organizations**: Top-level entities (mode: "standard" for customers, "msp" for managed service providers). Controls UI mode.
-- **tenants**: Customer tenants with Azure AD consent status, linked to an organization via `organizationId`
-- **monitoredSystems**: Services per tenant (M365, Google Workspace, OpenText)
-- **syntheticTests**: Configured test profiles (page load, file upload, search, auth)
-- **alertRules**: Threshold-based alert configurations with notification channels
-- **metrics**: Time-series performance measurements
-- **alerts**: Generated incident records
-- **testRuns**: Synthetic test execution history with timing breakdowns
-- **scheduledJobRuns**: Scheduler job run tracking (status, results, errors, timing)
-- **usageReports**: Graph API usage report snapshots (site usage, storage, file counts, active users)
-- **serviceHealthIncidents**: M365 Service Health incidents/advisories (global, not per-tenant)
-- **auditLogEntries**: SharePoint audit log events (per-tenant)
-- **adminAuditLog**: Internal Reveille admin actions (tracks all mutating API operations)
-- **agentTraces**: End-to-end agent invocation traces (Copilot, GPT, Agentforce) with status, duration, error summary
-- **agentTraceSpans**: Individual spans within an agent trace (auth, content, mcp, license, api, inference)
-- **copilotInteractions**: Microsoft 365 Copilot interaction history (prompts/responses) collected via Graph API. Unique on interactionId, grouped by requestId (prompt↔response pair) and sessionId (conversation thread).
-- **entraSignIns**: Microsoft Entra ID sign-in records (per-tenant). Structured columns for user, app, location (geo), status, risk level, conditional access, MFA, device info. Collected from Graph API `/auditLogs/signIns`.
-- **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
-- **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
+Key architectural decisions include:
+- **Multi-tenant Design**: Supports "standard" customer organizations and "msp" organizations with different UI modes and tenant management capabilities.
+- **Data Models**: Centralized schema for organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, and admin audit logs).
+- **SharePoint Integration**: Utilizes the Microsoft Graph API, enhanced by the Replit SharePoint connector for delegated authentication in synthetic tests and Azure AD multi-tenant app registration with client credentials for server-side collectors.
+- **Automated Scheduler**: An adapted multi-tenant scheduler handles various job types (synthetic tests, service health, audit logs, Graph reports, site structure, Copilot interactions) with independent intervals, staggered execution, and persistence of job runs.
+- **Passive Data Collectors**:
+    - **Graph Reports**: Collects 11 types of M365 usage reports (SharePoint, OneDrive, Cross-M365 workloads).
+    - **Service Health**: Monitors M365 service health for SharePoint/OneDrive/M365 incidents and generates alerts.
+    - **Audit Logs**: Collects audit data from multiple sources including Office 365 Management Activity API, Graph Directory Audits, Graph Sign-Ins, and site analytics with a cascading fallback mechanism.
+    - **Site Structure**: Enumerates SharePoint subsites, lists/libraries, drives, M365 Groups, and tenant users.
+    - **Copilot Interactions**: Gathers Copilot prompt/response history via Graph API, organizing them into conversation threads and prompt-response pairs.
+- **Azure AD Multi-Tenant App Registration**: Enables server-side collectors to acquire per-tenant tokens using client credentials flow, supporting admin consent and managing required Graph and Office 365 Management API permissions.
+- **Admin Audit Logging**: All mutating API operations are logged for administrative oversight.
+- **Branding**: Reveille Cloud branding with custom logo assets.
 
 ## Organization Model
 - **Cascadia Oceanic** (standard): Single-tenant customer org. Domain: cascadiaoceanic.sharepoint.com, admin: chris@chrismcnulty.net. Default on load. MSP features hidden, tenant selector locked.
@@ -253,3 +220,17 @@ Re-run `EXPLAIN (ANALYZE, BUFFERS)` against the production DB to validate p95 ta
 ## External References
 - **Zenith** (M365 reporting & governance app): https://github.com/chris-mcnulty/synozur-zenith — Chris's app for reporting on and governing M365
 - Synozur Orbit (competitive intelligence): https://github.com/chris-mcnulty/synozur-orbit — has multi-tenant task scheduler pattern used as basis for Reveille scheduler
+
+## External Dependencies
+- **Microsoft Graph API**: Core for SharePoint integration, M365 reports, service health, audit logs, Copilot interactions, and Entra Sign-ins.
+- **Replit SharePoint connector**: Used for delegated authentication in synthetic tests.
+- **PostgreSQL**: Primary database for data storage.
+- **Drizzle ORM**: ORM for interacting with PostgreSQL.
+- **node-postgres**: PostgreSQL client for Node.js.
+- **Express.js**: Web application framework for the backend API.
+- **React**: Frontend JavaScript library.
+- **Vite**: Frontend build tool.
+- **TailwindCSS**: Utility-first CSS framework.
+- **shadcn/ui**: UI component library.
+- **Recharts**: Charting library for data visualization.
+- **wouter**: Small routing library for React.

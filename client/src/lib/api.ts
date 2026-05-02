@@ -135,7 +135,7 @@ export function useMetricsSummary(tenantId: string | null) {
 
 export function useAlerts(tenantId?: string) {
   const url = tenantId ? `/api/alerts?tenantId=${tenantId}` : "/api/alerts";
-  return useQuery<Alert[]>({ queryKey: ["/api/alerts", tenantId], queryFn: () => fetchJson(url) });
+  return useQuery<Alert[]>({ queryKey: ["/api/alerts", tenantId], queryFn: () => fetchJson(url), refetchInterval: 90000 });
 }
 
 export function useAcknowledgeAlert() {

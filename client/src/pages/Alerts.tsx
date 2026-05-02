@@ -4,11 +4,32 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { BellRing, CheckCircle2, AlertOctagon, Loader2 } from "lucide-react";
 import { useAlerts, useAcknowledgeAlert } from "@/lib/api";
+import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
+import { useActiveTenant } from "@/lib/tenant-context";
 import { Link } from "wouter";
+import type { Alert as AlertType } from "@shared/schema";
 
 export default function Alerts() {
-  const { data: alertList, isLoading } = useAlerts();
+  const { activeTenantId, activeOrgId, organization } = useActiveTenant();
+  const orgId = organization?.id ?? activeOrgId;
+  const { data: alertList, isLoading } = useAlerts(activeTenantId ?? undefined);
   const ackMutation = useAcknowledgeAlert();
+  const queryClient = useQueryClient();
+
+  const handleLive = useCallback((event: LiveEvent) => {
+    if (event.type !== "alert.created") return;
+    const alert = event.data as AlertType;
+    if (!alert?.id) return;
+    if (activeTenantId && alert.tenantId !== activeTenantId) return;
+    queryClient.setQueriesData<AlertType[] | undefined>({ queryKey: ["/api/alerts", activeTenantId ?? undefined] }, (prev) => {
+      if (!prev) return prev;
+      if (prev.find((a) => a.id === alert.id)) return prev;
+      return [alert, ...prev];
+    });
+  }, [queryClient, activeTenantId]);
+  useLiveStream(orgId, [activeTenantId], ["alert.created"], handleLive);
 
   if (isLoading) {
     return (
