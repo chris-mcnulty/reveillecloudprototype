@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -6,17 +7,58 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, LineChart } from "recharts";
 import { Download, DollarSign } from "lucide-react";
 import { useLlmSpendExplorer } from "@/lib/api";
+import { SavedViews } from "@/components/SavedViews";
 
 type SliceBy = "model" | "agent" | "time" | "surface";
+
+const SLICE_BY_VALUES: SliceBy[] = ["model", "agent", "time", "surface"];
+const WINDOW_DAYS_VALUES = [7, 30, 90];
+const DEFAULT_SLICE_BY: SliceBy = "model";
+const DEFAULT_WINDOW_DAYS = 30;
+
+interface CostExplorerFilters {
+  sliceBy: SliceBy;
+  windowDays: number;
+}
+
+const DEFAULT_FILTERS: CostExplorerFilters = {
+  sliceBy: DEFAULT_SLICE_BY,
+  windowDays: DEFAULT_WINDOW_DAYS,
+};
+
+function readFiltersFromUrl(): CostExplorerFilters {
+  if (typeof window === "undefined") return DEFAULT_FILTERS;
+  const params = new URLSearchParams(window.location.search);
+  const rawSlice = params.get("sliceBy");
+  const sliceBy = SLICE_BY_VALUES.includes(rawSlice as SliceBy) ? (rawSlice as SliceBy) : DEFAULT_SLICE_BY;
+  const rawWindow = Number(params.get("windowDays"));
+  const windowDays = WINDOW_DAYS_VALUES.includes(rawWindow) ? rawWindow : DEFAULT_WINDOW_DAYS;
+  return { sliceBy, windowDays };
+}
 
 function fmtUsd(cents: number): string {
   return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function LlmCostExplorer({ tenantId }: { tenantId: string }) {
-  const [sliceBy, setSliceBy] = useState<SliceBy>("model");
-  const [windowDays, setWindowDays] = useState<number>(30);
+  const initial = useMemo(readFiltersFromUrl, []);
+  const [sliceBy, setSliceBy] = useState<SliceBy>(initial.sliceBy);
+  const [windowDays, setWindowDays] = useState<number>(initial.windowDays);
+  const [, setLocation] = useLocation();
   const { data, isLoading } = useLlmSpendExplorer(tenantId, sliceBy, windowDays * 24);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (sliceBy === DEFAULT_SLICE_BY) params.delete("sliceBy");
+    else params.set("sliceBy", sliceBy);
+    if (windowDays === DEFAULT_WINDOW_DAYS) params.delete("windowDays");
+    else params.set("windowDays", String(windowDays));
+    const qs = params.toString();
+    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (next !== current) setLocation(next, { replace: true });
+  }, [sliceBy, windowDays, setLocation]);
 
   const breakdown = data?.breakdown || [];
   const total = breakdown.reduce((s, r) => s + r.costCents, 0);
@@ -27,6 +69,18 @@ export function LlmCostExplorer({ tenantId }: { tenantId: string }) {
     const url = `/api/tenants/${tenantId}/llm-spend/explorer?sliceBy=${sliceBy}&since=${encodeURIComponent(since)}&format=csv`;
     window.open(url, "_blank");
   }
+
+  const currentFilters = useMemo<CostExplorerFilters>(
+    () => ({ sliceBy, windowDays }),
+    [sliceBy, windowDays],
+  );
+
+  const handleApplyView = useCallback((f: CostExplorerFilters) => {
+    const nextSlice = SLICE_BY_VALUES.includes(f.sliceBy as SliceBy) ? (f.sliceBy as SliceBy) : DEFAULT_SLICE_BY;
+    const nextWindow = WINDOW_DAYS_VALUES.includes(Number(f.windowDays)) ? Number(f.windowDays) : DEFAULT_WINDOW_DAYS;
+    setSliceBy(nextSlice);
+    setWindowDays(nextWindow);
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -60,10 +114,18 @@ export function LlmCostExplorer({ tenantId }: { tenantId: string }) {
             </Select>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-cost-csv">
-          <Download className="h-4 w-4 mr-1.5" />
-          Export CSV
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <SavedViews
+            pageKey="llm-cost-explorer"
+            currentFilters={currentFilters}
+            defaultFilters={DEFAULT_FILTERS}
+            onApply={handleApplyView}
+          />
+          <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-cost-csv">
+            <Download className="h-4 w-4 mr-1.5" />
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
