@@ -44,7 +44,15 @@ const inboundSchema = z.union([subscribeSchema, pingSchema]);
 
 const MAX_FRAME_BYTES = 8 * 1024;
 
-export function attachLiveWebSocket(httpServer: HttpServer): void {
+export interface AttachLiveWebSocketOptions {
+  heartbeatIntervalMs?: number;
+}
+
+export function attachLiveWebSocket(
+  httpServer: HttpServer,
+  options: AttachLiveWebSocketOptions = {},
+): WebSocketServer {
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30000;
   const wss = new WebSocketServer({ server: httpServer, path: "/ws/live" });
   const connections = new Set<ConnectionState>();
   let busUnsubscribe: (() => void) | null = null;
@@ -199,7 +207,7 @@ export function attachLiveWebSocket(httpServer: HttpServer): void {
         if (conn.eventTypes.size > 0) bumpActive(-1);
       }
     });
-  }, 30000);
+  }, heartbeatIntervalMs);
 
   wss.on("close", () => {
     clearInterval(heartbeat);
@@ -210,4 +218,5 @@ export function attachLiveWebSocket(httpServer: HttpServer): void {
   });
 
   console.log(`[ws] /ws/live mounted (${ALL_EVENT_TYPES.length} event types)`);
+  return wss;
 }

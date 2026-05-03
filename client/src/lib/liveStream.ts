@@ -69,7 +69,7 @@ interface Subscription {
   handler: LiveEventHandler;
 }
 
-class LiveStreamClient {
+export class LiveStreamClient {
   private ws: WebSocket | null = null;
   private url: string;
   private subscriptions = new Set<Subscription>();
