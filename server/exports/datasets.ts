@@ -130,6 +130,115 @@ export async function exportEntraSignIns(req: Request, res: Response): Promise<v
   await streamExport(res, parseFormat(req), `entra-signins-${tenantId.slice(0, 8)}`, "Sign-Ins", columns, source);
 }
 
+type FoundryCostAllocationRow = {
+  deploymentId: string;
+  deploymentName: string;
+  accountName: string;
+  modelName: string;
+  region: string;
+  resolvedInputCostPerMtok: number | null;
+  resolvedOutputCostPerMtok: number | null;
+  authoritativeInputTokens: number;
+  authoritativeOutputTokens: number;
+  authoritativeTotalCalls: number;
+  authoritativeTotalCostCents: number;
+  agentId: string;
+  agentName: string;
+  platform: string;
+  agentInputTokens: number;
+  agentOutputTokens: number;
+  agentCallCount: number;
+  shareOfTokens: number;
+  allocatedCostCents: number;
+};
+
+export async function exportFoundryCostAllocation(req: Request, res: Response): Promise<void> {
+  const tenantId = String(req.params.tenantId);
+  const windowHours = Math.max(1, parseInt(String(req.query.windowHours || "24"), 10) || 24);
+  const allocation = await storage.getFoundryCostAllocation(tenantId, windowHours);
+
+  function* rows(): Generator<FoundryCostAllocationRow> {
+    for (const d of allocation.deployments) {
+      const baseRow = {
+        deploymentId: d.deploymentId,
+        deploymentName: d.deploymentName,
+        accountName: d.accountName,
+        modelName: d.modelName || "",
+        region: d.region || "",
+        resolvedInputCostPerMtok: d.resolvedInputCostPerMtok,
+        resolvedOutputCostPerMtok: d.resolvedOutputCostPerMtok,
+        authoritativeInputTokens: d.authoritativeInputTokens,
+        authoritativeOutputTokens: d.authoritativeOutputTokens,
+        authoritativeTotalCalls: d.authoritativeTotalCalls,
+        authoritativeTotalCostCents: d.authoritativeTotalCostCents,
+      };
+      if (d.agents.length === 0) {
+        yield {
+          ...baseRow,
+          agentId: "",
+          agentName: "(unallocated)",
+          platform: "",
+          agentInputTokens: 0,
+          agentOutputTokens: 0,
+          agentCallCount: 0,
+          shareOfTokens: 0,
+          allocatedCostCents: 0,
+        };
+        continue;
+      }
+      for (const a of d.agents) {
+        yield {
+          ...baseRow,
+          agentId: a.agentId || "",
+          agentName: a.agentName || "(ad-hoc)",
+          platform: a.platform || "",
+          agentInputTokens: a.inputTokens,
+          agentOutputTokens: a.outputTokens,
+          agentCallCount: a.callCount,
+          shareOfTokens: a.shareOfTokens,
+          allocatedCostCents: a.allocatedCostCents,
+        };
+      }
+      if (d.unallocatedCostCents > 0.0001) {
+        yield {
+          ...baseRow,
+          agentId: "",
+          agentName: "(unallocated)",
+          platform: "",
+          agentInputTokens: 0,
+          agentOutputTokens: 0,
+          agentCallCount: 0,
+          shareOfTokens: 0,
+          allocatedCostCents: d.unallocatedCostCents,
+        };
+      }
+    }
+  }
+
+  const columns: ExportColumn<FoundryCostAllocationRow>[] = [
+    { key: "deploymentName", header: "Deployment", accessor: r => r.deploymentName, width: 30 },
+    { key: "accountName", header: "Account", accessor: r => r.accountName, width: 24 },
+    { key: "modelName", header: "Model", accessor: r => r.modelName, width: 24 },
+    { key: "region", header: "Region", accessor: r => r.region, width: 14 },
+    { key: "resolvedInputCostPerMtok", header: "Input $/Mtok", accessor: r => r.resolvedInputCostPerMtok ?? "", width: 14 },
+    { key: "resolvedOutputCostPerMtok", header: "Output $/Mtok", accessor: r => r.resolvedOutputCostPerMtok ?? "", width: 14 },
+    { key: "authoritativeInputTokens", header: "Auth Input Tokens", accessor: r => r.authoritativeInputTokens, width: 16 },
+    { key: "authoritativeOutputTokens", header: "Auth Output Tokens", accessor: r => r.authoritativeOutputTokens, width: 16 },
+    { key: "authoritativeTotalCalls", header: "Auth Calls", accessor: r => r.authoritativeTotalCalls, width: 12 },
+    { key: "authoritativeTotalCostCents", header: "Deployment Cost (cents)", accessor: r => r.authoritativeTotalCostCents.toFixed(4), width: 18 },
+    { key: "agentId", header: "Agent ID", accessor: r => r.agentId, width: 38 },
+    { key: "agentName", header: "Agent", accessor: r => r.agentName, width: 28 },
+    { key: "platform", header: "Business Unit (platform)", accessor: r => r.platform, width: 18 },
+    { key: "agentInputTokens", header: "Agent Input Tokens", accessor: r => r.agentInputTokens, width: 16 },
+    { key: "agentOutputTokens", header: "Agent Output Tokens", accessor: r => r.agentOutputTokens, width: 16 },
+    { key: "agentCallCount", header: "Agent Calls", accessor: r => r.agentCallCount, width: 12 },
+    { key: "shareOfTokens", header: "Share", accessor: r => r.shareOfTokens.toFixed(4), width: 10 },
+    { key: "allocatedCostCents", header: "Allocated Cost (cents)", accessor: r => r.allocatedCostCents.toFixed(4), width: 18 },
+  ];
+
+  await streamExport(res, parseFormat(req), `foundry-cost-allocation-${tenantId.slice(0, 8)}-${windowHours}h`, "Foundry Cost Allocation", columns, rows());
+}
+
 export async function exportLlmCalls(req: Request, res: Response): Promise<void> {
   const tenantId = String(req.params.tenantId);
   const modelId = qStr(req.query.modelId);

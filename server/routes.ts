@@ -2,7 +2,7 @@ import type { Express, Request, Response, NextFunction, RequestHandler } from "e
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, insertScheduledDigestSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall, type FoundryUsageSnapshot } from "@shared/schema";
-import { exportAgentTraces, exportEntraSignIns, exportLlmCalls, exportAlerts, exportUsageReports } from "./exports/datasets";
+import { exportAgentTraces, exportEntraSignIns, exportLlmCalls, exportAlerts, exportUsageReports, exportFoundryCostAllocation } from "./exports/datasets";
 import { runDigest, computeNextRunAt } from "./digests/runner";
 import { gatherDigestData, renderDigestHtml, renderDigestPdf } from "./digests/render";
 import type { DigestSection } from "./digests/render";
@@ -1891,6 +1891,69 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/tenants/:tenantId/foundry/cost-allocation", async (req, res) => {
+    try {
+      const windowHours = Math.max(1, parseInt(String(req.query.windowHours || "24"), 10) || 24);
+      const allowed = [24, 168, 720];
+      if (!allowed.includes(windowHours)) {
+        return res.status(400).json({ message: `windowHours must be one of ${allowed.join(", ")}` });
+      }
+      const allocation = await storage.getFoundryCostAllocation(req.params.tenantId, windowHours);
+      res.json(allocation);
+    } catch (err: any) {
+      console.error("[Foundry] cost-allocation failed:", err);
+      res.status(500).json({ message: err?.message || String(err) });
+    }
+  });
+
+  app.get("/api/tenants/:tenantId/foundry/pricing-overrides", async (req, res) => {
+    const overrides = await storage.getFoundryPricingOverrides(req.params.tenantId);
+    res.json(overrides);
+  });
+
+  app.put("/api/tenants/:tenantId/foundry/pricing-overrides/:deploymentId", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const deploymentId = req.params.deploymentId;
+    const deployment = await storage.getFoundryDeployment(deploymentId);
+    if (!deployment || deployment.tenantId !== tenantId) {
+      return res.status(404).json({ message: "Deployment not found" });
+    }
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    const inputCostPerMtok = body.inputCostPerMtok !== undefined && body.inputCostPerMtok !== null && body.inputCostPerMtok !== ""
+      ? Number(body.inputCostPerMtok) : null;
+    const outputCostPerMtok = body.outputCostPerMtok !== undefined && body.outputCostPerMtok !== null && body.outputCostPerMtok !== ""
+      ? Number(body.outputCostPerMtok) : null;
+    if (inputCostPerMtok != null && (!Number.isFinite(inputCostPerMtok) || inputCostPerMtok < 0)) {
+      return res.status(400).json({ message: "inputCostPerMtok must be a non-negative number" });
+    }
+    if (outputCostPerMtok != null && (!Number.isFinite(outputCostPerMtok) || outputCostPerMtok < 0)) {
+      return res.status(400).json({ message: "outputCostPerMtok must be a non-negative number" });
+    }
+    const upserted = await storage.upsertFoundryPricingOverride({
+      tenantId,
+      deploymentId,
+      inputCostPerMtok,
+      outputCostPerMtok,
+      notes: typeof body.notes === "string" ? body.notes : null,
+    });
+    await logAdminAction(tenantId, "foundry.pricingOverride.upsert", "foundryDeployment", deploymentId, {
+      inputCostPerMtok, outputCostPerMtok,
+    });
+    res.json(upserted);
+  });
+
+  app.delete("/api/tenants/:tenantId/foundry/pricing-overrides/:deploymentId", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const deploymentId = req.params.deploymentId;
+    const deployment = await storage.getFoundryDeployment(deploymentId);
+    if (!deployment || deployment.tenantId !== tenantId) {
+      return res.status(404).json({ message: "Deployment not found" });
+    }
+    await storage.deleteFoundryPricingOverride(deploymentId);
+    await logAdminAction(tenantId, "foundry.pricingOverride.delete", "foundryDeployment", deploymentId, {});
+    res.status(204).end();
+  });
+
   app.get("/api/tenants/:tenantId/foundry/usage", async (req, res) => {
     const { deploymentId, since, limit } = req.query as any;
     const snapshots = await storage.getFoundryUsageSnapshots(req.params.tenantId, {
@@ -2445,6 +2508,13 @@ export async function registerRoutes(
   app.get("/api/tenants/:tenantId/exports/llm-calls", (req, res) => {
     exportLlmCalls(req, res).catch(err => {
       console.error("[Exports] llm-calls failed:", err);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
+    });
+  });
+
+  app.get("/api/tenants/:tenantId/exports/foundry-cost-allocation", (req, res) => {
+    exportFoundryCostAllocation(req, res).catch(err => {
+      console.error("[Exports] foundry-cost-allocation failed:", err);
       if (!res.headersSent) res.status(500).json({ message: err.message });
     });
   });

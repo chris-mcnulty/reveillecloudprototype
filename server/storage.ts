@@ -40,6 +40,7 @@ import {
   scheduledDigestRuns, type ScheduledDigestRun, type InsertScheduledDigestRun,
   foundryDeployments, type FoundryDeployment, type InsertFoundryDeployment,
   foundryUsageSnapshots, type FoundryUsageSnapshot, type InsertFoundryUsageSnapshot,
+  foundryPricingOverrides, type FoundryPricingOverride, type InsertFoundryPricingOverride,
 } from "@shared/schema";
 import { or } from "drizzle-orm";
 
@@ -300,6 +301,62 @@ export interface IStorage {
   getLatestFoundryUsageByWindow(deploymentId: string): Promise<Record<number, FoundryUsageSnapshot>>;
 
   countSavedViewMatches(pageKey: string, tenantId: string, filtersJson: Record<string, any>): Promise<number>;
+
+  getFoundryPricingOverrides(tenantId: string): Promise<FoundryPricingOverride[]>;
+  upsertFoundryPricingOverride(data: InsertFoundryPricingOverride): Promise<FoundryPricingOverride>;
+  deleteFoundryPricingOverride(deploymentId: string): Promise<void>;
+  getFoundryCostAllocation(tenantId: string, windowHours: number): Promise<FoundryCostAllocation>;
+}
+
+export interface FoundryAgentAllocation {
+  agentId: string | null;
+  agentName: string | null;
+  platform: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  callCount: number;
+  shareOfTokens: number;
+  allocatedCostCents: number;
+}
+
+export interface FoundryDeploymentAllocation {
+  deploymentId: string;
+  deploymentName: string;
+  accountName: string;
+  modelName: string | null;
+  modelVersion: string | null;
+  region: string | null;
+  llmModelId: string | null;
+  resolvedInputCostPerMtok: number | null;
+  resolvedOutputCostPerMtok: number | null;
+  overrideInputCostPerMtok: number | null;
+  overrideOutputCostPerMtok: number | null;
+  modelInputCostPerMtok: number | null;
+  modelOutputCostPerMtok: number | null;
+  authoritativeInputTokens: number;
+  authoritativeOutputTokens: number;
+  authoritativeTotalCalls: number;
+  authoritativeTotalCostCents: number;
+  instrumentedInputTokens: number;
+  instrumentedOutputTokens: number;
+  instrumentedCallCount: number;
+  unallocatedCostCents: number;
+  windowEnd: Date | null;
+  agents: FoundryAgentAllocation[];
+}
+
+export interface FoundryCostAllocation {
+  windowHours: number;
+  windowStart: Date;
+  windowEnd: Date;
+  deployments: FoundryDeploymentAllocation[];
+  totals: {
+    authoritativeTotalCostCents: number;
+    allocatedCostCents: number;
+    unallocatedCostCents: number;
+    authoritativeInputTokens: number;
+    authoritativeOutputTokens: number;
+  };
 }
 
 export type LlmCallWithModel = LlmCall & {
@@ -428,6 +485,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteTenant(id: string): Promise<void> {
+    await db.delete(foundryPricingOverrides).where(eq(foundryPricingOverrides.tenantId, id));
     await db.delete(foundryUsageSnapshots).where(eq(foundryUsageSnapshots.tenantId, id));
     await db.delete(foundryDeployments).where(eq(foundryDeployments.tenantId, id));
     await db.delete(llmSpendDaily).where(eq(llmSpendDaily.tenantId, id));
@@ -2520,6 +2578,196 @@ export class DatabaseStorage implements IStorage {
       result[Number(r.window_hours)] = mapFoundrySnapshotRow(r);
     }
     return result;
+  }
+
+  async getFoundryPricingOverrides(tenantId: string): Promise<FoundryPricingOverride[]> {
+    return db.select().from(foundryPricingOverrides).where(eq(foundryPricingOverrides.tenantId, tenantId));
+  }
+
+  async upsertFoundryPricingOverride(data: InsertFoundryPricingOverride): Promise<FoundryPricingOverride> {
+    const now = new Date();
+    const [upserted] = await db.insert(foundryPricingOverrides)
+      .values({ ...data, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [foundryPricingOverrides.deploymentId],
+        set: {
+          inputCostPerMtok: data.inputCostPerMtok ?? null,
+          outputCostPerMtok: data.outputCostPerMtok ?? null,
+          notes: data.notes ?? null,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async deleteFoundryPricingOverride(deploymentId: string): Promise<void> {
+    await db.delete(foundryPricingOverrides).where(eq(foundryPricingOverrides.deploymentId, deploymentId));
+  }
+
+  async getFoundryCostAllocation(tenantId: string, windowHours: number): Promise<FoundryCostAllocation> {
+    const deployments = await db.select().from(foundryDeployments)
+      .where(eq(foundryDeployments.tenantId, tenantId))
+      .orderBy(desc(foundryDeployments.lastSeenAt));
+    const overrides = await db.select().from(foundryPricingOverrides)
+      .where(eq(foundryPricingOverrides.tenantId, tenantId));
+    const overrideByDeployment = new Map(overrides.map(o => [o.deploymentId, o]));
+
+    const latestUsage = await this.getLatestFoundryUsageByDeployment(tenantId, windowHours);
+
+    const linkedModelIds = deployments.map(d => d.llmModelId).filter((x): x is string => !!x);
+    const modelById = new Map<string, LlmModel>();
+    if (linkedModelIds.length > 0) {
+      const models = await db.select().from(llmModels)
+        .where(and(eq(llmModels.tenantId, tenantId), sql`${llmModels.id} = ANY(${linkedModelIds})`));
+      for (const m of models) modelById.set(m.id, m);
+    }
+
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
+
+    let agentRows: Array<{
+      modelId: string;
+      agentId: string | null;
+      agentName: string | null;
+      platform: string | null;
+      inputTokens: number;
+      outputTokens: number;
+      callCount: number;
+    }> = [];
+    if (linkedModelIds.length > 0) {
+      const result = await db.execute(sql`
+        SELECT
+          lc.model_id AS "modelId",
+          lc.agent_id AS "agentId",
+          COALESCE(ka.name, MAX(lc.agent_name)) AS "agentName",
+          ka.platform AS "platform",
+          COALESCE(SUM(lc.input_tokens), 0)::float AS "inputTokens",
+          COALESCE(SUM(lc.output_tokens), 0)::float AS "outputTokens",
+          COUNT(*)::int AS "callCount"
+        FROM llm_calls lc
+        LEFT JOIN known_agents ka ON ka.id = lc.agent_id
+        WHERE lc.tenant_id = ${tenantId}
+          AND lc.called_at >= ${windowStart}
+          AND lc.called_at <= ${now}
+          AND lc.model_id = ANY(${linkedModelIds})
+        GROUP BY lc.model_id, lc.agent_id, ka.platform, ka.name
+      `);
+      agentRows = (result.rows as any[]).map(r => ({
+        modelId: String(r.modelId),
+        agentId: r.agentId ? String(r.agentId) : null,
+        agentName: r.agentName ? String(r.agentName) : null,
+        platform: r.platform ? String(r.platform) : null,
+        inputTokens: Number(r.inputTokens) || 0,
+        outputTokens: Number(r.outputTokens) || 0,
+        callCount: Number(r.callCount) || 0,
+      }));
+    }
+    const agentByModel = new Map<string, typeof agentRows>();
+    for (const row of agentRows) {
+      const list = agentByModel.get(row.modelId) ?? [];
+      list.push(row);
+      agentByModel.set(row.modelId, list);
+    }
+
+    const deploymentAllocations: FoundryDeploymentAllocation[] = deployments.map(d => {
+      const usage = latestUsage[d.id] ?? null;
+      const override = overrideByDeployment.get(d.id) ?? null;
+      const model = d.llmModelId ? modelById.get(d.llmModelId) ?? null : null;
+
+      const modelInputCost = model?.inputCostPerMtok ?? null;
+      const modelOutputCost = model?.outputCostPerMtok ?? null;
+      const overrideInputCost = override?.inputCostPerMtok ?? null;
+      const overrideOutputCost = override?.outputCostPerMtok ?? null;
+      const resolvedInputCost = overrideInputCost ?? modelInputCost;
+      const resolvedOutputCost = overrideOutputCost ?? modelOutputCost;
+
+      const authInput = usage ? Number(usage.processedPromptTokens) || 0 : 0;
+      const authOutput = usage ? Number(usage.generatedTokens) || 0 : 0;
+      const authCalls = usage ? Number(usage.totalCalls) || 0 : 0;
+
+      let authoritativeTotalCostCents = 0;
+      if (resolvedInputCost != null) {
+        authoritativeTotalCostCents += (authInput / 1_000_000) * resolvedInputCost * 100;
+      }
+      if (resolvedOutputCost != null) {
+        authoritativeTotalCostCents += (authOutput / 1_000_000) * resolvedOutputCost * 100;
+      }
+
+      const modelAgents = (d.llmModelId ? agentByModel.get(d.llmModelId) : undefined) ?? [];
+      const totalInstrumentedTokens = modelAgents.reduce((s, a) => s + a.inputTokens + a.outputTokens, 0);
+      const totalInstrumentedInput = modelAgents.reduce((s, a) => s + a.inputTokens, 0);
+      const totalInstrumentedOutput = modelAgents.reduce((s, a) => s + a.outputTokens, 0);
+      const totalInstrumentedCalls = modelAgents.reduce((s, a) => s + a.callCount, 0);
+
+      const agents: FoundryAgentAllocation[] = modelAgents.map(a => {
+        const tokens = a.inputTokens + a.outputTokens;
+        const share = totalInstrumentedTokens > 0 ? tokens / totalInstrumentedTokens : 0;
+        return {
+          agentId: a.agentId,
+          agentName: a.agentName,
+          platform: a.platform,
+          inputTokens: a.inputTokens,
+          outputTokens: a.outputTokens,
+          callCount: a.callCount,
+          shareOfTokens: share,
+          allocatedCostCents: authoritativeTotalCostCents * share,
+        };
+      }).sort((x, y) => y.allocatedCostCents - x.allocatedCostCents);
+
+      const allocatedCostCents = agents.reduce((s, a) => s + a.allocatedCostCents, 0);
+      const unallocated = Math.max(0, authoritativeTotalCostCents - allocatedCostCents);
+
+      return {
+        deploymentId: d.id,
+        deploymentName: d.deploymentName,
+        accountName: d.accountName,
+        modelName: d.modelName,
+        modelVersion: d.modelVersion,
+        region: d.region,
+        llmModelId: d.llmModelId,
+        resolvedInputCostPerMtok: resolvedInputCost,
+        resolvedOutputCostPerMtok: resolvedOutputCost,
+        overrideInputCostPerMtok: overrideInputCost,
+        overrideOutputCostPerMtok: overrideOutputCost,
+        modelInputCostPerMtok: modelInputCost,
+        modelOutputCostPerMtok: modelOutputCost,
+        authoritativeInputTokens: authInput,
+        authoritativeOutputTokens: authOutput,
+        authoritativeTotalCalls: authCalls,
+        authoritativeTotalCostCents,
+        instrumentedInputTokens: totalInstrumentedInput,
+        instrumentedOutputTokens: totalInstrumentedOutput,
+        instrumentedCallCount: totalInstrumentedCalls,
+        unallocatedCostCents: unallocated,
+        windowEnd: usage ? (usage.windowEnd instanceof Date ? usage.windowEnd : new Date(usage.windowEnd)) : null,
+        agents,
+      };
+    });
+
+    deploymentAllocations.sort((a, b) => b.authoritativeTotalCostCents - a.authoritativeTotalCostCents);
+
+    const totals = deploymentAllocations.reduce((acc, d) => ({
+      authoritativeTotalCostCents: acc.authoritativeTotalCostCents + d.authoritativeTotalCostCents,
+      allocatedCostCents: acc.allocatedCostCents + (d.authoritativeTotalCostCents - d.unallocatedCostCents),
+      unallocatedCostCents: acc.unallocatedCostCents + d.unallocatedCostCents,
+      authoritativeInputTokens: acc.authoritativeInputTokens + d.authoritativeInputTokens,
+      authoritativeOutputTokens: acc.authoritativeOutputTokens + d.authoritativeOutputTokens,
+    }), {
+      authoritativeTotalCostCents: 0,
+      allocatedCostCents: 0,
+      unallocatedCostCents: 0,
+      authoritativeInputTokens: 0,
+      authoritativeOutputTokens: 0,
+    });
+
+    return {
+      windowHours,
+      windowStart,
+      windowEnd: now,
+      deployments: deploymentAllocations,
+      totals,
+    };
   }
 
   async getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }> {

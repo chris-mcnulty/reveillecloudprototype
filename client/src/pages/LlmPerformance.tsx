@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -431,7 +433,7 @@ export default function LlmPerformance() {
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <SavedViews
               pageKey="llm-calls"
               currentFilters={{ agentFilter, errorClass: errorClassFilter }}
@@ -500,10 +502,11 @@ export default function LlmPerformance() {
           </div>
         </div>
 
-        <Tabs defaultValue="performance" className="w-full">
+        <Tabs defaultValue="performance" className="w-full space-y-6">
           <TabsList data-testid="tabs-llm">
             <TabsTrigger value="performance" data-testid="tab-performance">Performance</TabsTrigger>
             <TabsTrigger value="cost" data-testid="tab-cost-explorer">Cost Explorer</TabsTrigger>
+            <TabsTrigger value="cost-allocation" data-testid="tab-cost-allocation">Cost allocation</TabsTrigger>
           </TabsList>
           <TabsContent value="cost" className="mt-6">
             <LlmCostExplorer tenantId={activeTenantId} />
@@ -695,6 +698,10 @@ export default function LlmPerformance() {
             </Table>
           </CardContent>
         </Card>
+          </TabsContent>
+
+          <TabsContent value="cost-allocation" className="mt-6 space-y-6">
+            <CostAllocationTab tenantId={activeTenantId} />
           </TabsContent>
         </Tabs>
       </div>
@@ -905,6 +912,373 @@ function FoundryDiscoveryPanel({
         </div>
       </div>
     </div>
+  );
+}
+
+interface FoundryAgentAllocation {
+  agentId: string | null;
+  agentName: string | null;
+  platform: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  callCount: number;
+  shareOfTokens: number;
+  allocatedCostCents: number;
+}
+
+interface FoundryDeploymentAllocation {
+  deploymentId: string;
+  deploymentName: string;
+  accountName: string;
+  modelName: string | null;
+  modelVersion: string | null;
+  region: string | null;
+  llmModelId: string | null;
+  resolvedInputCostPerMtok: number | null;
+  resolvedOutputCostPerMtok: number | null;
+  overrideInputCostPerMtok: number | null;
+  overrideOutputCostPerMtok: number | null;
+  modelInputCostPerMtok: number | null;
+  modelOutputCostPerMtok: number | null;
+  authoritativeInputTokens: number;
+  authoritativeOutputTokens: number;
+  authoritativeTotalCalls: number;
+  authoritativeTotalCostCents: number;
+  instrumentedInputTokens: number;
+  instrumentedOutputTokens: number;
+  instrumentedCallCount: number;
+  unallocatedCostCents: number;
+  windowEnd: string | null;
+  agents: FoundryAgentAllocation[];
+}
+
+interface FoundryCostAllocationResp {
+  windowHours: number;
+  windowStart: string;
+  windowEnd: string;
+  deployments: FoundryDeploymentAllocation[];
+  totals: {
+    authoritativeTotalCostCents: number;
+    allocatedCostCents: number;
+    unallocatedCostCents: number;
+    authoritativeInputTokens: number;
+    authoritativeOutputTokens: number;
+  };
+}
+
+function CostAllocationTab({ tenantId }: { tenantId: string }) {
+  const queryClient = useQueryClient();
+  const [windowHours, setWindowHours] = useState<number>(24);
+  const [editing, setEditing] = useState<FoundryDeploymentAllocation | null>(null);
+
+  const { data, isLoading } = useQuery<FoundryCostAllocationResp>({
+    queryKey: ["/api/foundry/cost-allocation", tenantId, windowHours],
+    enabled: !!tenantId,
+    queryFn: async () => {
+      const res = await fetch(`/api/tenants/${tenantId}/foundry/cost-allocation?windowHours=${windowHours}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    refetchInterval: 60000,
+  });
+
+  const overrideMutation = useMutation({
+    mutationFn: async (vars: { deploymentId: string; inputCostPerMtok: number | null; outputCostPerMtok: number | null; notes?: string | null }) => {
+      const res = await fetch(`/api/tenants/${tenantId}/foundry/pricing-overrides/${vars.deploymentId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(vars),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/foundry/cost-allocation"] });
+      setEditing(null);
+    },
+  });
+
+  const clearOverrideMutation = useMutation({
+    mutationFn: async (deploymentId: string) => {
+      const res = await fetch(`/api/tenants/${tenantId}/foundry/pricing-overrides/${deploymentId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/foundry/cost-allocation"] });
+      setEditing(null);
+    },
+  });
+
+  const totals = data?.totals;
+  const deployments = data?.deployments ?? [];
+
+  return (
+    <div className="space-y-4" data-testid="section-cost-allocation">
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-sm font-medium">Window:</div>
+            <Select value={String(windowHours)} onValueChange={(v) => setWindowHours(parseInt(v, 10))}>
+              <SelectTrigger className="w-[180px]" data-testid="select-allocation-window">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="24">Last 24 hours</SelectItem>
+                <SelectItem value="168">Last 7 days</SelectItem>
+                <SelectItem value="720">Last 30 days</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/foundry/cost-allocation"] })}
+                data-testid="button-refresh-allocation"
+              >
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Refresh
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                asChild
+                data-testid="button-export-allocation"
+              >
+                <a href={`/api/tenants/${tenantId}/exports/foundry-cost-allocation?windowHours=${windowHours}&format=csv`} download>
+                  <Download className="h-3.5 w-3.5 mr-1.5" />Export CSV
+                </a>
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <MetricCard
+          icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
+          label="Inferred deployment cost"
+          value={totals ? formatCost(totals.authoritativeTotalCostCents) : "—"}
+          testId="metric-allocation-total-cost"
+        />
+        <MetricCard
+          icon={<DollarSign className="h-4 w-4 text-blue-500" />}
+          label="Allocated to agents"
+          value={totals ? formatCost(totals.allocatedCostCents) : "—"}
+          testId="metric-allocation-allocated"
+        />
+        <MetricCard
+          icon={<DollarSign className="h-4 w-4 text-amber-500" />}
+          label="Unallocated"
+          value={totals ? formatCost(totals.unallocatedCostCents) : "—"}
+          testId="metric-allocation-unallocated"
+        />
+        <MetricCard
+          icon={<Zap className="h-4 w-4" />}
+          label="Total tokens"
+          value={totals ? formatTokens((totals.authoritativeInputTokens || 0) + (totals.authoritativeOutputTokens || 0)) : "—"}
+          testId="metric-allocation-tokens"
+        />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Per-deployment cost split by agent / business unit</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>
+          ) : deployments.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-10 text-center" data-testid="text-no-deployments">
+              No Foundry deployments discovered yet. Use "Discover Foundry models" first.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {deployments.map(d => (
+                <DeploymentAllocationRow
+                  key={d.deploymentId}
+                  deployment={d}
+                  onEdit={() => setEditing(d)}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {editing && (
+        <PricingOverrideDialog
+          deployment={editing}
+          onClose={() => setEditing(null)}
+          onSave={(vals) => overrideMutation.mutate({ deploymentId: editing.deploymentId, ...vals })}
+          onClear={() => clearOverrideMutation.mutate(editing.deploymentId)}
+          saving={overrideMutation.isPending}
+          clearing={clearOverrideMutation.isPending}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeploymentAllocationRow({ deployment, onEdit }: { deployment: FoundryDeploymentAllocation; onEdit: () => void }) {
+  const d = deployment;
+  const hasOverride = d.overrideInputCostPerMtok != null || d.overrideOutputCostPerMtok != null;
+  const noPricing = d.resolvedInputCostPerMtok == null && d.resolvedOutputCostPerMtok == null;
+  return (
+    <div className="border rounded-lg p-3 space-y-2" data-testid={`row-allocation-deployment-${d.deploymentId}`}>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium" data-testid={`text-allocation-deployment-name-${d.deploymentId}`}>{d.deploymentName}</span>
+            {d.modelName && <Badge variant="outline" className="text-xs">{d.modelName}{d.modelVersion ? ` · ${d.modelVersion}` : ""}</Badge>}
+            {hasOverride && <Badge className="text-xs bg-blue-500/15 text-blue-700 border-blue-500/30 border">Pricing override</Badge>}
+            {noPricing && <Badge variant="destructive" className="text-xs">No pricing</Badge>}
+            {!d.llmModelId && <Badge variant="secondary" className="text-xs">Not imported</Badge>}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {d.accountName} · {d.region || "?"}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            <span className="font-mono">in {d.resolvedInputCostPerMtok != null ? `$${d.resolvedInputCostPerMtok.toFixed(2)}` : "—"}/Mtok</span>
+            {" · "}
+            <span className="font-mono">out {d.resolvedOutputCostPerMtok != null ? `$${d.resolvedOutputCostPerMtok.toFixed(2)}` : "—"}/Mtok</span>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-muted-foreground">Deployment cost</div>
+          <div className="text-lg font-semibold tabular-nums" data-testid={`text-allocation-cost-${d.deploymentId}`}>
+            {formatCost(d.authoritativeTotalCostCents)}
+          </div>
+          <div className="text-xs text-muted-foreground tabular-nums">
+            {formatTokens(d.authoritativeInputTokens)} in / {formatTokens(d.authoritativeOutputTokens)} out
+          </div>
+          <Button variant="outline" size="sm" className="mt-1" onClick={onEdit} data-testid={`button-edit-pricing-${d.deploymentId}`}>
+            Edit pricing
+          </Button>
+        </div>
+      </div>
+
+      {d.agents.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic">
+          No instrumented llm_calls in this window — full cost is unallocated.
+        </p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Agent</TableHead>
+              <TableHead>Business unit</TableHead>
+              <TableHead className="text-right">Calls</TableHead>
+              <TableHead className="text-right">Tokens in/out</TableHead>
+              <TableHead className="text-right">Share</TableHead>
+              <TableHead className="text-right">Allocated cost</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {d.agents.map((a, i) => (
+              <TableRow key={a.agentId || `adhoc-${i}`} data-testid={`row-agent-allocation-${d.deploymentId}-${a.agentId || "adhoc"}`}>
+                <TableCell className="text-sm">{a.agentName || <span className="text-muted-foreground">ad-hoc</span>}</TableCell>
+                <TableCell className="text-xs">{a.platform || <span className="text-muted-foreground">—</span>}</TableCell>
+                <TableCell className="text-right tabular-nums text-xs">{a.callCount.toLocaleString()}</TableCell>
+                <TableCell className="text-right tabular-nums text-xs">{formatTokens(a.inputTokens)} / {formatTokens(a.outputTokens)}</TableCell>
+                <TableCell className="text-right tabular-nums text-xs">{(a.shareOfTokens * 100).toFixed(1)}%</TableCell>
+                <TableCell className="text-right tabular-nums" data-testid={`text-allocated-cost-${d.deploymentId}-${a.agentId || "adhoc"}`}>
+                  {formatCost(a.allocatedCostCents)}
+                </TableCell>
+              </TableRow>
+            ))}
+            {d.unallocatedCostCents > 0.0001 && (
+              <TableRow data-testid={`row-unallocated-${d.deploymentId}`}>
+                <TableCell className="text-sm italic text-muted-foreground" colSpan={5}>
+                  Unallocated (Azure-reported tokens not matched to instrumented agents)
+                </TableCell>
+                <TableCell className="text-right tabular-nums text-amber-600">{formatCost(d.unallocatedCostCents)}</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      )}
+    </div>
+  );
+}
+
+function PricingOverrideDialog({
+  deployment,
+  onClose,
+  onSave,
+  onClear,
+  saving,
+  clearing,
+}: {
+  deployment: FoundryDeploymentAllocation;
+  onClose: () => void;
+  onSave: (vals: { inputCostPerMtok: number | null; outputCostPerMtok: number | null; notes?: string | null }) => void;
+  onClear: () => void;
+  saving: boolean;
+  clearing: boolean;
+}) {
+  const [inputStr, setInputStr] = useState(deployment.overrideInputCostPerMtok != null ? String(deployment.overrideInputCostPerMtok) : "");
+  const [outputStr, setOutputStr] = useState(deployment.overrideOutputCostPerMtok != null ? String(deployment.overrideOutputCostPerMtok) : "");
+  const hasOverride = deployment.overrideInputCostPerMtok != null || deployment.overrideOutputCostPerMtok != null;
+
+  function handleSave() {
+    const inputCostPerMtok = inputStr.trim() === "" ? null : Number(inputStr);
+    const outputCostPerMtok = outputStr.trim() === "" ? null : Number(outputStr);
+    onSave({ inputCostPerMtok, outputCostPerMtok });
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent data-testid="dialog-pricing-override">
+        <DialogHeader>
+          <DialogTitle>Pricing override · {deployment.deploymentName}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Override the per-Mtok cost used to compute this deployment's inferred cost. Leave blank to fall back to the imported model's cost
+            ({deployment.modelInputCostPerMtok != null ? `$${deployment.modelInputCostPerMtok.toFixed(2)}` : "—"} in /
+            {deployment.modelOutputCostPerMtok != null ? ` $${deployment.modelOutputCostPerMtok.toFixed(2)}` : " —"} out).
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium block mb-1">Input $/Mtok</label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={inputStr}
+                onChange={(e) => setInputStr(e.target.value)}
+                placeholder={deployment.modelInputCostPerMtok != null ? String(deployment.modelInputCostPerMtok) : "e.g. 2.50"}
+                data-testid="input-override-input-cost"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1">Output $/Mtok</label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={outputStr}
+                onChange={(e) => setOutputStr(e.target.value)}
+                placeholder={deployment.modelOutputCostPerMtok != null ? String(deployment.modelOutputCostPerMtok) : "e.g. 10.00"}
+                data-testid="input-override-output-cost"
+              />
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          {hasOverride && (
+            <Button variant="ghost" onClick={onClear} disabled={clearing} data-testid="button-clear-override">
+              {clearing ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : null}
+              Clear override
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-override">Cancel</Button>
+          <Button onClick={handleSave} disabled={saving} data-testid="button-save-override">
+            {saving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : null}
+            Save override
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

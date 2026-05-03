@@ -888,3 +888,22 @@ export const insertFoundryUsageSnapshotSchema = createInsertSchema(foundryUsageS
 });
 export type InsertFoundryUsageSnapshot = z.infer<typeof insertFoundryUsageSnapshotSchema>;
 export type FoundryUsageSnapshot = typeof foundryUsageSnapshots.$inferSelect;
+
+export const foundryPricingOverrides = pgTable("foundry_pricing_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  deploymentId: varchar("deployment_id").notNull().references(() => foundryDeployments.id, { onDelete: "cascade" }),
+  inputCostPerMtok: real("input_cost_per_mtok"),
+  outputCostPerMtok: real("output_cost_per_mtok"),
+  notes: text("notes"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("foundry_pricing_overrides_deployment_idx").on(table.deploymentId),
+]);
+
+export const insertFoundryPricingOverrideSchema = createInsertSchema(foundryPricingOverrides).omit({
+  id: true,
+  updatedAt: true,
+});
+export type InsertFoundryPricingOverride = z.infer<typeof insertFoundryPricingOverrideSchema>;
+export type FoundryPricingOverride = typeof foundryPricingOverrides.$inferSelect;

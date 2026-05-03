@@ -274,3 +274,11 @@ Re-run `EXPLAIN (ANALYZE, BUFFERS)` against the production DB to validate p95 ta
 - **shadcn/ui**: UI component library.
 - **Recharts**: Charting library for data visualization.
 - **wouter**: Small routing library for React.
+
+## Foundry Cost Allocation (Task #23)
+- `foundry_pricing_overrides` table: per-deployment input/output $/Mtok overrides.
+- `GET /api/tenants/:id/foundry/cost-allocation?windowHours=24|168|720` — joins authoritative `foundry_usage_snapshots` (latest per windowHours) with `llm_calls` aggregated over [now-windowHours, now] grouped by (model, agent, platform). Pricing precedence: override > llmModels rate. Per-agent share prorated by tokens; remainder = unallocated.
+- `GET/PUT/DELETE /api/tenants/:id/foundry/pricing-overrides[/:deploymentId]`.
+- `GET /api/tenants/:id/exports/foundry-cost-allocation?format=csv|xlsx`.
+- UI: `/llm-performance` → "Cost allocation" tab — window selector, totals, per-deployment expandable agent rows, "Edit pricing" dialog, CSV export.
+- Business unit proxy: `knownAgents.platform`.
