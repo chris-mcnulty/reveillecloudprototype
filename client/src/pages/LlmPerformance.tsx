@@ -261,24 +261,20 @@ export default function LlmPerformance() {
     refetchInterval: 90000,
   });
 
-  const { data: recentCallsRaw = [] } = useQuery<LlmCall[]>({
-    queryKey: ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter],
+  const { data: filteredRecentCalls = [] } = useQuery<LlmCall[]>({
+    queryKey: ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter, errorClassFilter],
     enabled: !!activeTenantId && !!expandedModelId,
     queryFn: async () => {
       const qs = new URLSearchParams();
       qs.set("limit", "30");
       if (agentFilter !== "all") qs.set("agentId", agentFilter);
+      if (errorClassFilter !== "all") qs.set("errorClass", errorClassFilter);
       const res = await fetch(`/api/tenants/${activeTenantId}/llm-models/${expandedModelId}/calls?${qs.toString()}`);
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
     refetchInterval: 90000,
   });
-
-  const filteredRecentCalls = useMemo(() => {
-    if (errorClassFilter === "all") return recentCallsRaw;
-    return recentCallsRaw.filter(c => c.errorClass === errorClassFilter);
-  }, [recentCallsRaw, errorClassFilter]);
 
   const handleLlmLive = useCallback((event: LiveEvent) => {
     if (event.type !== "llm_call.recorded") return;
@@ -289,9 +285,13 @@ export default function LlmPerformance() {
       queryClient.invalidateQueries({ queryKey: ["/api/llm-models/stats", activeTenantId] });
       return;
     }
+    if (errorClassFilter !== "all" && call.errorClass !== errorClassFilter) {
+      queryClient.invalidateQueries({ queryKey: ["/api/llm-models/stats", activeTenantId] });
+      return;
+    }
     if (expandedModelId && call.modelId === expandedModelId) {
       queryClient.setQueryData<LlmCall[] | undefined>(
-        ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter],
+        ["/api/llm-calls", activeTenantId, expandedModelId, agentFilter, errorClassFilter],
         (prev) => {
           if (!prev) return prev;
           if (prev.find((c) => c.id === call.id)) return prev;
@@ -304,7 +304,7 @@ export default function LlmPerformance() {
     queryClient.invalidateQueries({ queryKey: ["/api/llm-calls"] });
     queryClient.invalidateQueries({ queryKey: ["/api/llm-models/stats", activeTenantId] });
     queryClient.invalidateQueries({ queryKey: ["/api/llm-models", activeTenantId] });
-  }, [queryClient, activeTenantId, expandedModelId, agentFilter]);
+  }, [queryClient, activeTenantId, expandedModelId, agentFilter, errorClassFilter]);
   useLiveStream(orgId, [activeTenantId], ["llm_call.recorded"], handleLlmLive);
 
   const recentCalls = useMemo(() => {
@@ -450,6 +450,25 @@ export default function LlmPerformance() {
                 {agents.map(a => (
                   <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select value={errorClassFilter} onValueChange={setErrorClassFilter}>
+              <SelectTrigger className="w-[180px]" data-testid="select-error-class-filter">
+                <SelectValue placeholder="All error classes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All error classes</SelectItem>
+                <SelectItem value="rate_limit">rate_limit</SelectItem>
+                <SelectItem value="context_overflow">context_overflow</SelectItem>
+                <SelectItem value="timeout">timeout</SelectItem>
+                <SelectItem value="server_error">server_error</SelectItem>
+                <SelectItem value="auth">auth</SelectItem>
+                {(stats?.byErrorClass ?? [])
+                  .map(e => e.errorClass)
+                  .filter(c => c && !["rate_limit", "context_overflow", "timeout", "server_error", "auth"].includes(c))
+                  .map(c => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
               </SelectContent>
             </Select>
             <Button variant="outline" size="sm" onClick={() => {
