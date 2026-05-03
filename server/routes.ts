@@ -2350,6 +2350,46 @@ export async function registerRoutes(
     res.json(updated);
   });
 
+  app.post("/api/saved-views/:id/share/slack", async (req, res) => {
+    const view = await storage.getSavedView(req.params.id);
+    if (!view) return res.status(404).json({ message: "Not found" });
+    const userId = getRequestUserId(req);
+    if (!canAccessSavedView(view, view.orgId, userId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const org = await storage.getOrganization(view.orgId);
+    if (!org) return res.status(404).json({ message: "Organization not found" });
+    const webhookUrl = org.slackWebhookUrl;
+    if (!webhookUrl) {
+      return res.status(400).json({
+        message: "Slack webhook is not configured for this organization. Set it in organization settings.",
+      });
+    }
+    const { url, message } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ message: "url required" });
+    }
+    const text = `${message ? `${message}\n` : ""}*${org.name}* shared a saved view: *${view.name}*\n${url}`;
+    try {
+      const slackRes = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!slackRes.ok) {
+        const body = await slackRes.text();
+        return res.status(502).json({ message: `Slack webhook failed: ${slackRes.status} ${body}` });
+      }
+    } catch (err: any) {
+      return res.status(502).json({ message: `Slack webhook error: ${err.message}` });
+    }
+    await logAdminAction(null, "savedView.sharedSlack", "savedView", view.id, {
+      pageKey: view.pageKey,
+      name: view.name,
+    });
+    res.json({ ok: true });
+  });
+
   app.delete("/api/saved-views/:id", async (req, res) => {
     const existing = await storage.getSavedView(req.params.id);
     if (!existing) return res.status(404).json({ message: "Not found" });

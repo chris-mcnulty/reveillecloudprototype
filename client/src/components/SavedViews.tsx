@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bookmark, BookmarkPlus, Check, ChevronDown, Copy, Lock, Trash2, Users } from "lucide-react";
+import { Bookmark, BookmarkPlus, Check, ChevronDown, Copy, Lock, Mail, Send, Share2, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -185,13 +185,53 @@ export function SavedViews<TFilters extends Record<string, any>>({
   const orgViews = views.filter(v => v.scope === "org" && !v.isSystem);
   const systemViews = views.filter(v => v.isSystem);
 
+  const buildShareUrl = () => {
+    return `${window.location.origin}${window.location.pathname}${window.location.search}`;
+  };
+
   const handleCopyLink = () => {
-    const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+    const url = buildShareUrl();
     navigator.clipboard.writeText(url).then(
       () => toast({ title: "Link copied", description: "Share this URL with your team." }),
       () => toast({ title: "Copy failed", variant: "destructive" }),
     );
   };
+
+  const handleEmailShare = () => {
+    if (!activeView) return;
+    const url = buildShareUrl();
+    const subject = encodeURIComponent(`Saved view: ${activeView.name}`);
+    const body = encodeURIComponent(
+      `I'm sharing the saved view "${activeView.name}" with you.\n\nOpen the filtered view here:\n${url}\n`,
+    );
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  const slackMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeView) throw new Error("No active view");
+      const res = await authedFetch(`/api/saved-views/${activeView.id}/share/slack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: buildShareUrl() }),
+      });
+      if (!res.ok) {
+        let msg = `Slack share failed (${res.status})`;
+        try {
+          const data = await res.json();
+          if (data?.message) msg = data.message;
+        } catch {}
+        throw new Error(msg);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Sent to Slack", description: "Your team will see it in the configured channel." });
+    },
+    onError: (err: any) => {
+      toast({ title: "Could not send to Slack", description: err.message, variant: "destructive" });
+    },
+  });
 
   const handleClearActive = () => {
     setActiveViewId(null);
@@ -291,15 +331,56 @@ export function SavedViews<TFilters extends Record<string, any>>({
       </Button>
 
       {activeView && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleCopyLink}
-          data-testid={`button-copy-view-link-${pageKey}`}
-          title="Copy shareable link"
-        >
-          <Copy className="h-3.5 w-3.5" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid={`button-share-view-${pageKey}`}
+              title="Share this view"
+            >
+              <Share2 className="h-3.5 w-3.5 mr-1.5" />
+              Share
+              <ChevronDown className="h-3 w-3 ml-1.5 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Share "{activeView.name}"
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleCopyLink();
+              }}
+              data-testid={`button-copy-view-link-${pageKey}`}
+            >
+              <Copy className="h-3.5 w-3.5 mr-2" />
+              <span className="text-sm">Copy link</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                handleEmailShare();
+              }}
+              data-testid={`button-email-view-${pageKey}`}
+            >
+              <Mail className="h-3.5 w-3.5 mr-2" />
+              <span className="text-sm">Email link</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                slackMutation.mutate();
+              }}
+              disabled={slackMutation.isPending}
+              data-testid={`button-slack-view-${pageKey}`}
+            >
+              <Send className="h-3.5 w-3.5 mr-2" />
+              <span className="text-sm">{slackMutation.isPending ? "Sending..." : "Send to Slack"}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
 
       <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>

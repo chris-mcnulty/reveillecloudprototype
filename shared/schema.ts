@@ -9,6 +9,7 @@ export const organizations = pgTable("organizations", {
   domain: text("domain").notNull(),
   adminEmail: text("admin_email").notNull(),
   mode: text("mode").notNull().default("standard"),
+  slackWebhookUrl: text("slack_webhook_url"),
 });
 
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true });
