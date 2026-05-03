@@ -1749,6 +1749,15 @@ export async function registerRoutes(
     res.json(result);
   });
 
+  app.post("/api/admin/llm-spend/backfill", async (req, res) => {
+    if (!checkBackfillToken(req, res)) return;
+    const { tenantId, sinceDays } = (req.body || {}) as { tenantId?: string; sinceDays?: number };
+    const days = Math.min(Math.max(parseInt(String(sinceDays ?? 90), 10) || 90, 1), 365);
+    const result = await storage.rollupLlmSpendDaily({ tenantId, sinceDays: days });
+    await logAdminAction(tenantId ?? null, "backfill", "llmSpendDaily", null, { sinceDays: days, ...result });
+    res.json({ sinceDays: days, ...result });
+  });
+
   app.get("/api/tenants/:tenantId/llm-calls/:callId", async (req, res) => {
     const call = await storage.getLlmCallById(req.params.callId);
     if (!call || call.tenantId !== req.params.tenantId) {
