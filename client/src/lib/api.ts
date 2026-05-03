@@ -121,6 +121,19 @@ export function useUpdateAlertRule() {
   return useMutation({ mutationFn: ({ id, ...data }: any) => patchJson(`/api/alert-rules/${id}`, data), onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/tenants"] }) });
 }
 
+export function useDeleteAlertRule() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => deleteReq(`/api/alert-rules/${id}`), onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/tenants"] }) });
+}
+
+export function useLlmModels(tenantId: string | null) {
+  return useQuery<{ id: string; modelName: string; displayName: string | null; provider: string }[]>({
+    queryKey: ["/api/tenants", tenantId, "llm-models"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/llm-models`),
+    enabled: !!tenantId,
+  });
+}
+
 export function useMetrics(tenantId: string | null) {
   return useQuery<Metric[]>({ queryKey: ["/api/tenants", tenantId, "metrics"], queryFn: () => fetchJson(`/api/tenants/${tenantId}/metrics`), enabled: !!tenantId, refetchInterval: 30000 });
 }
@@ -206,6 +219,58 @@ export function useAnomalyCount(tenantId: string | null, hours = 24) {
     queryFn: () => fetchJson(`/api/tenants/${tenantId}/anomaly/count?hours=${hours}`),
     enabled: !!tenantId,
     refetchInterval: 60000,
+  });
+}
+
+export interface LlmSpendMtd {
+  totalCents: number;
+  projectedMonthCents: number;
+  daysElapsed: number;
+  daysInMonth: number;
+  topModels: { modelId: string; modelName: string; provider: string; costCents: number }[];
+  daily: { date: string; costCents: number }[];
+}
+
+export function useLlmSpendMtd(tenantId: string | null) {
+  return useQuery<LlmSpendMtd>({
+    queryKey: ["/api/tenants", tenantId, "llm-spend", "mtd"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/llm-spend/mtd`),
+    enabled: !!tenantId,
+    refetchInterval: 5 * 60 * 1000,
+  });
+}
+
+export interface LlmSpendByTenant {
+  tenantId: string;
+  tenantName: string;
+  totalCents: number;
+  byModel: { modelName: string; costCents: number }[];
+}
+
+export function useLlmSpendByTenant(orgId: string | null) {
+  return useQuery<LlmSpendByTenant[]>({
+    queryKey: ["/api/orgs", orgId, "llm-spend", "by-tenant"],
+    queryFn: () => fetchJson(`/api/orgs/${orgId}/llm-spend/by-tenant`),
+    enabled: !!orgId,
+    refetchInterval: 5 * 60 * 1000,
+  });
+}
+
+export interface LlmSpendBreakdownRow {
+  key: string;
+  label: string;
+  costCents: number;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export function useLlmSpendExplorer(tenantId: string | null, sliceBy: "model" | "agent" | "time" | "surface", sinceHours = 30 * 24) {
+  const since = new Date(Date.now() - sinceHours * 60 * 60 * 1000).toISOString();
+  return useQuery<{ sliceBy: string; breakdown: LlmSpendBreakdownRow[] }>({
+    queryKey: ["/api/tenants", tenantId, "llm-spend", "explorer", sliceBy, sinceHours],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/llm-spend/explorer?sliceBy=${sliceBy}&since=${encodeURIComponent(since)}`),
+    enabled: !!tenantId,
   });
 }
 

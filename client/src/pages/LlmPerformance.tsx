@@ -41,6 +41,8 @@ import { SavedViews } from "@/components/SavedViews";
 import { useUrlWindow } from "@/lib/use-url-window";
 import { WindowFilterBadge } from "@/components/WindowFilterBadge";
 import { ExportMenu } from "@/components/ExportMenu";
+import { LlmCostExplorer } from "@/components/LlmCostExplorer";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   LineChart,
   Line,
@@ -479,6 +481,15 @@ export default function LlmPerformance() {
           </div>
         </div>
 
+        <Tabs defaultValue="performance" className="w-full">
+          <TabsList data-testid="tabs-llm">
+            <TabsTrigger value="performance" data-testid="tab-performance">Performance</TabsTrigger>
+            <TabsTrigger value="cost" data-testid="tab-cost-explorer">Cost Explorer</TabsTrigger>
+          </TabsList>
+          <TabsContent value="cost" className="mt-6">
+            <LlmCostExplorer tenantId={activeTenantId} />
+          </TabsContent>
+          <TabsContent value="performance" className="mt-6 space-y-6">
         <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
           <MetricCard icon={<Activity className="h-4 w-4" />} label="Total Calls (24h)" value={stats ? stats.totalCalls.toLocaleString() : "—"} testId="metric-total-calls" />
           <MetricCard icon={<XCircle className="h-4 w-4 text-red-500" />} label="Error Rate" value={stats ? `${stats.errorRate.toFixed(1)}%` : "—"} tone={stats && stats.errorRate > 5 ? "bad" : "ok"} testId="metric-error-rate" />
@@ -665,6 +676,8 @@ export default function LlmPerformance() {
             </Table>
           </CardContent>
         </Card>
+          </TabsContent>
+        </Tabs>
       </div>
 
       {foundryPanelOpen && (

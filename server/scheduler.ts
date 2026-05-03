@@ -35,7 +35,52 @@ const jobStatus: Record<string, JobStatus> = {
   anomalyDetection: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   digests: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   foundryDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  llmSpendRollup: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  llmBudgetEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
+
+let llmSpendRollupInterval: NodeJS.Timeout | null = null;
+let llmBudgetEvalInterval: NodeJS.Timeout | null = null;
+
+async function runLlmSpendRollupJob(): Promise<void> {
+  if (jobStatus.llmSpendRollup.isRunning) return;
+  jobStatus.llmSpendRollup.isRunning = true;
+  const jobRunId = await trackJobStart("llmSpendRollup");
+  jobStatus.llmSpendRollup.activeJobRunId = jobRunId;
+  try {
+    const result = await storage.rollupLlmSpendDaily({ sinceDays: 35 });
+    await trackJobComplete(jobRunId, "completed", result);
+    console.log(`[Scheduler] LLM spend rollup: ${result.rolledUp} rows, ${result.tenants} tenants`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await trackJobComplete(jobRunId, "failed", undefined, msg);
+    console.error("[Scheduler] LLM spend rollup failed:", msg);
+  } finally {
+    jobStatus.llmSpendRollup.isRunning = false;
+    jobStatus.llmSpendRollup.activeJobRunId = null;
+    jobStatus.llmSpendRollup.lastRun = new Date();
+  }
+}
+
+async function runLlmBudgetEvalJob(): Promise<void> {
+  if (jobStatus.llmBudgetEval.isRunning) return;
+  jobStatus.llmBudgetEval.isRunning = true;
+  const jobRunId = await trackJobStart("llmBudgetEval");
+  jobStatus.llmBudgetEval.activeJobRunId = jobRunId;
+  try {
+    const result = await storage.evaluateLlmBudgets();
+    await trackJobComplete(jobRunId, "completed", result);
+    console.log(`[Scheduler] LLM budget eval: ${result.rulesEvaluated} rules, ${result.alertsCreated} alerts`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await trackJobComplete(jobRunId, "failed", undefined, msg);
+    console.error("[Scheduler] LLM budget eval failed:", msg);
+  } finally {
+    jobStatus.llmBudgetEval.isRunning = false;
+    jobStatus.llmBudgetEval.activeJobRunId = null;
+    jobStatus.llmBudgetEval.lastRun = new Date();
+  }
+}
 
 function parseIntervalMs(interval: string): number {
   const normalized = interval.trim().toLowerCase();
@@ -883,6 +928,14 @@ export function startScheduler(): void {
     runFoundryDiscoveryJob();
   }, 60 * 60 * 1000);
 
+  llmSpendRollupInterval = setInterval(() => {
+    runLlmSpendRollupJob();
+  }, 60 * 60 * 1000);
+
+  llmBudgetEvalInterval = setInterval(() => {
+    runLlmBudgetEvalJob();
+  }, 60 * 60 * 1000);
+
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
       console.error("[Scheduler] Periodic stuck job cleanup error:", err);
@@ -958,6 +1011,16 @@ export function startScheduler(): void {
     runFoundryDiscoveryJob();
   }, 105 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial LLM spend rollup...");
+    runLlmSpendRollupJob().then(() => {
+      setTimeout(() => {
+        console.log("[Scheduler] Running initial LLM budget evaluation...");
+        runLlmBudgetEvalJob();
+      }, 5 * 1000);
+    });
+  }, 115 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -971,6 +1034,8 @@ export function startScheduler(): void {
   console.log("  - SPE data: every 30m (initial in 85s)");
   console.log("  - Digests: every 5m (initial in 100s)");
   console.log("  - Foundry discovery: every 1h (initial in 105s)");
+  console.log("  - LLM spend rollup: every 1h (initial in 115s)");
+  console.log("  - LLM budget eval: every 1h (initial in 120s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -988,6 +1053,8 @@ export function stopScheduler(): void {
   if (anomalyDetectionInterval) { clearInterval(anomalyDetectionInterval); anomalyDetectionInterval = null; }
   if (digestsInterval) { clearInterval(digestsInterval); digestsInterval = null; }
   if (foundryDiscoveryInterval) { clearInterval(foundryDiscoveryInterval); foundryDiscoveryInterval = null; }
+  if (llmSpendRollupInterval) { clearInterval(llmSpendRollupInterval); llmSpendRollupInterval = null; }
+  if (llmBudgetEvalInterval) { clearInterval(llmBudgetEvalInterval); llmBudgetEvalInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -1051,6 +1118,14 @@ export async function triggerAnomalyDetectionNow(): Promise<void> {
 
 export async function triggerFoundryDiscoveryNow(): Promise<void> {
   runFoundryDiscoveryJob();
+}
+
+export async function triggerLlmSpendRollupNow(): Promise<void> {
+  runLlmSpendRollupJob();
+}
+
+export async function triggerLlmBudgetEvalNow(): Promise<void> {
+  runLlmBudgetEvalJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

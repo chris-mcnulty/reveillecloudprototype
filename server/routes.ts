@@ -11,7 +11,7 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
@@ -396,6 +396,12 @@ export async function registerRoutes(
         break;
       case "foundryDiscovery":
         await triggerFoundryDiscoveryNow();
+        break;
+      case "llmSpendRollup":
+        await triggerLlmSpendRollupNow();
+        break;
+      case "llmBudgetEval":
+        await triggerLlmBudgetEvalNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -1663,6 +1669,54 @@ export async function registerRoutes(
     const model = await storage.createLlmModel(parsed.data);
     await logAdminAction(req.params.tenantId, "create", "llmModel", model.id, { name: model.modelName, provider: model.provider });
     res.status(201).json(maskLlmModel(model));
+  });
+
+  app.get("/api/tenants/:tenantId/llm-spend/mtd", async (req, res) => {
+    const data = await storage.getLlmSpendMtd(req.params.tenantId);
+    res.json(data);
+  });
+
+  app.get("/api/tenants/:tenantId/llm-spend/explorer", async (req, res) => {
+    const sliceBy = (req.query.sliceBy as string) || "model";
+    if (!["model", "agent", "time", "surface"].includes(sliceBy)) {
+      return res.status(400).json({ error: "sliceBy must be model|agent|time|surface" });
+    }
+    const since = req.query.since ? new Date(String(req.query.since)) : undefined;
+    const until = req.query.until ? new Date(String(req.query.until)) : undefined;
+    const breakdown = await storage.getLlmSpendBreakdown(req.params.tenantId, {
+      sliceBy: sliceBy as any,
+      since,
+      until,
+    });
+    const format = String(req.query.format || "").toLowerCase();
+    if (format && format !== "csv" && format !== "json") {
+      return res.status(400).json({ error: `format must be csv or json (got "${format}")` });
+    }
+    if (format === "csv") {
+      const header = ["key", "label", "cost_usd", "calls", "input_tokens", "output_tokens"];
+      const csvLines = [header.join(",")];
+      for (const r of breakdown) {
+        const cells = [
+          JSON.stringify(r.key),
+          JSON.stringify(r.label),
+          (r.costCents / 100).toFixed(4),
+          r.calls,
+          r.inputTokens,
+          r.outputTokens,
+        ];
+        csvLines.push(cells.join(","));
+      }
+      const filename = `llm-spend-${sliceBy}-${new Date().toISOString().slice(0, 10)}.csv`;
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(csvLines.join("\n"));
+    }
+    res.json({ sliceBy, breakdown });
+  });
+
+  app.get("/api/orgs/:orgId/llm-spend/by-tenant", async (req, res) => {
+    const data = await storage.getLlmSpendByTenantMtd(req.params.orgId);
+    res.json(data);
   });
 
   app.get("/api/tenants/:tenantId/llm-models/stats", async (req, res) => {

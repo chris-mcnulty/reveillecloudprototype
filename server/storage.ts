@@ -32,6 +32,7 @@ import {
   agentDiscoverySources, type AgentDiscoverySource, type InsertAgentDiscoverySource,
   llmModels, type LlmModel, type InsertLlmModel,
   llmCalls, type LlmCall, type InsertLlmCall,
+  llmSpendDaily, type LlmSpendDaily, type InsertLlmSpendDaily,
   savedViews, type SavedView, type InsertSavedView,
   metricBaselines, type MetricBaseline, type InsertMetricBaseline,
   anomalyStreamConfigs, type AnomalyStreamConfig, type InsertAnomalyStreamConfig,
@@ -246,6 +247,20 @@ export interface IStorage {
   }>;
   getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }>;
 
+  rollupLlmSpendDaily(opts?: { tenantId?: string; sinceDays?: number }): Promise<{ rolledUp: number; tenants: number }>;
+  getLlmSpendMtd(tenantId: string): Promise<{
+    totalCents: number;
+    projectedMonthCents: number;
+    daysElapsed: number;
+    daysInMonth: number;
+    topModels: { modelId: string; modelName: string; provider: string; costCents: number }[];
+    daily: { date: string; costCents: number }[];
+  }>;
+  getLlmSpendByTenantMtd(orgId: string): Promise<{ tenantId: string; tenantName: string; totalCents: number; byModel: { modelName: string; costCents: number }[] }[]>;
+  getLlmSpendBreakdown(tenantId: string, opts: { since?: Date; until?: Date; sliceBy: "model" | "agent" | "time" | "surface" }): Promise<{ key: string; label: string; costCents: number; calls: number; inputTokens: number; outputTokens: number }[]>;
+  getActiveLlmBudgetRules(): Promise<AlertRule[]>;
+  evaluateLlmBudgets(): Promise<{ rulesEvaluated: number; alertsCreated: number }>;
+
   createSavedView(data: InsertSavedView): Promise<SavedView>;
   updateSavedView(id: string, data: Partial<InsertSavedView>): Promise<SavedView | undefined>;
   deleteSavedView(id: string): Promise<void>;
@@ -414,6 +429,7 @@ export class DatabaseStorage implements IStorage {
   async deleteTenant(id: string): Promise<void> {
     await db.delete(foundryUsageSnapshots).where(eq(foundryUsageSnapshots.tenantId, id));
     await db.delete(foundryDeployments).where(eq(foundryDeployments.tenantId, id));
+    await db.delete(llmSpendDaily).where(eq(llmSpendDaily.tenantId, id));
     await db.delete(llmCalls).where(eq(llmCalls.tenantId, id));
     await db.delete(llmModels).where(eq(llmModels.tenantId, id));
     await db.delete(knownAgents).where(eq(knownAgents.tenantId, id));
@@ -2505,25 +2521,6 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async getLatestFoundryUsageByWindow(deploymentId: string): Promise<Record<number, FoundryUsageSnapshot>> {
-    const rows = await db.execute(sql`
-      SELECT DISTINCT ON (window_hours) *
-      FROM foundry_usage_snapshots
-      WHERE deployment_id = ${deploymentId}
-      ORDER BY window_hours, window_end DESC
-    `);
-    const result: Record<number, FoundryUsageSnapshot> = {};
-    for (const r of rows.rows as any[]) {
-      result[Number(r.window_hours)] = mapFoundrySnapshotRow(r);
-    }
-    return result;
-  }
-
-  async getFoundryDeploymentByLlmModelId(llmModelId: string): Promise<FoundryDeployment | undefined> {
-    const [row] = await db.select().from(foundryDeployments).where(eq(foundryDeployments.llmModelId, llmModelId));
-    return row;
-  }
-
   async getLlmModelHealth(modelId: string): Promise<{ recentCalls: LlmCall[]; errorRate: number; avgDurationMs: number; avgTtftMs: number; totalCalls: number; totalCostCents: number }> {
     const recentCalls = await db.select().from(llmCalls)
       .where(eq(llmCalls.modelId, modelId))
@@ -3024,6 +3021,330 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(usageReports.collectedAt))
       .limit(opts.limit)
       .offset(opts.offset);
+  }
+
+  async rollupLlmSpendDaily(opts?: { tenantId?: string; sinceDays?: number }): Promise<{ rolledUp: number; tenants: number }> {
+    const sinceDays = opts?.sinceDays ?? 35;
+    const sinceDate = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    const conditions: SQL[] = [gte(llmCalls.calledAt, sinceDate)];
+    if (opts?.tenantId) conditions.push(eq(llmCalls.tenantId, opts.tenantId));
+    const rows = await db.execute(sql`
+      SELECT
+        tenant_id AS "tenantId",
+        model_id AS "modelId",
+        to_char(date_trunc('day', called_at), 'YYYY-MM-DD') AS "date",
+        COUNT(*)::int AS "callCount",
+        COALESCE(SUM(input_tokens), 0)::int AS "inputTokens",
+        COALESCE(SUM(output_tokens), 0)::int AS "outputTokens",
+        COALESCE(SUM(cost_cents), 0)::real AS "costCents"
+      FROM llm_calls
+      WHERE called_at >= ${sinceDate}
+        ${opts?.tenantId ? sql`AND tenant_id = ${opts.tenantId}` : sql``}
+      GROUP BY tenant_id, model_id, date_trunc('day', called_at)
+    `);
+    const tenantSet = new Set<string>();
+    let rolledUp = 0;
+    for (const r of rows.rows as any[]) {
+      await db.insert(llmSpendDaily).values({
+        tenantId: r.tenantId,
+        modelId: r.modelId,
+        date: r.date,
+        callCount: r.callCount,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        costCents: r.costCents,
+      } as InsertLlmSpendDaily).onConflictDoUpdate({
+        target: [llmSpendDaily.tenantId, llmSpendDaily.modelId, llmSpendDaily.date],
+        set: {
+          callCount: r.callCount,
+          inputTokens: r.inputTokens,
+          outputTokens: r.outputTokens,
+          costCents: r.costCents,
+          computedAt: new Date(),
+        },
+      });
+      tenantSet.add(r.tenantId);
+      rolledUp++;
+    }
+
+    // Merge in authoritative Azure AI Foundry usage snapshots so that LLM cost
+    // does not under-report when Foundry deployments are not fully covered by
+    // the per-call llm_calls stream.
+    //
+    // Foundry usage_snapshots are *rolling* 24h windows collected hourly, so
+    // many rows exist per (deployment, day) with overlapping ranges. To avoid
+    // multi-counting we pick exactly ONE snapshot per (deployment, UTC day):
+    // the latest snapshot whose window_end falls inside that UTC day. That
+    // snapshot represents the authoritative 24h usage ending in the day.
+    // Multiple deployments mapping to the same llm_model_id are then summed
+    // across deployments (legitimate) and the result is merged into
+    // llm_spend_daily via GREATEST(...) so we never double-count against
+    // llm_calls.
+    const foundryRows = await db.execute(sql`
+      WITH ranked AS (
+        SELECT
+          d.tenant_id AS tenant_id,
+          d.llm_model_id AS llm_model_id,
+          s.deployment_id AS deployment_id,
+          s.window_end AS window_end,
+          s.total_calls AS total_calls,
+          s.processed_prompt_tokens AS processed_prompt_tokens,
+          s.generated_tokens AS generated_tokens,
+          s.inferred_cost_cents AS inferred_cost_cents,
+          to_char(date_trunc('day', s.window_end), 'YYYY-MM-DD') AS day_str,
+          ROW_NUMBER() OVER (
+            PARTITION BY s.deployment_id, date_trunc('day', s.window_end)
+            ORDER BY s.window_end DESC
+          ) AS rn
+        FROM foundry_usage_snapshots s
+        JOIN foundry_deployments d ON d.id = s.deployment_id
+        WHERE s.window_hours = 24
+          AND s.window_end >= ${sinceDate}
+          AND d.llm_model_id IS NOT NULL
+          AND s.inferred_cost_cents IS NOT NULL
+          ${opts?.tenantId ? sql`AND d.tenant_id = ${opts.tenantId}` : sql``}
+      )
+      SELECT
+        tenant_id AS "tenantId",
+        llm_model_id AS "modelId",
+        day_str AS "date",
+        COALESCE(SUM(total_calls), 0)::int AS "callCount",
+        COALESCE(SUM(processed_prompt_tokens), 0)::int AS "inputTokens",
+        COALESCE(SUM(generated_tokens), 0)::int AS "outputTokens",
+        COALESCE(SUM(inferred_cost_cents), 0)::real AS "costCents"
+      FROM ranked
+      WHERE rn = 1
+      GROUP BY tenant_id, llm_model_id, day_str
+    `);
+    for (const r of foundryRows.rows as any[]) {
+      await db.execute(sql`
+        INSERT INTO llm_spend_daily (tenant_id, model_id, date, call_count, input_tokens, output_tokens, cost_cents, computed_at)
+        VALUES (${r.tenantId}, ${r.modelId}, ${r.date}, ${r.callCount}, ${r.inputTokens}, ${r.outputTokens}, ${r.costCents}, NOW())
+        ON CONFLICT (tenant_id, model_id, date) DO UPDATE SET
+          call_count = GREATEST(llm_spend_daily.call_count, EXCLUDED.call_count),
+          input_tokens = GREATEST(llm_spend_daily.input_tokens, EXCLUDED.input_tokens),
+          output_tokens = GREATEST(llm_spend_daily.output_tokens, EXCLUDED.output_tokens),
+          cost_cents = GREATEST(llm_spend_daily.cost_cents, EXCLUDED.cost_cents),
+          computed_at = NOW()
+      `);
+      tenantSet.add(r.tenantId);
+      rolledUp++;
+    }
+    return { rolledUp, tenants: tenantSet.size };
+  }
+
+  async getLlmSpendMtd(tenantId: string): Promise<{
+    totalCents: number;
+    projectedMonthCents: number;
+    daysElapsed: number;
+    daysInMonth: number;
+    topModels: { modelId: string; modelName: string; provider: string; costCents: number }[];
+    daily: { date: string; costCents: number }[];
+  }> {
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const monthStartStr = monthStart.toISOString().slice(0, 10);
+    const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+    const daysElapsed = Math.max(1, now.getUTCDate());
+
+    const rows = await db.execute(sql`
+      SELECT
+        s.model_id AS "modelId",
+        m.model_name AS "modelName",
+        m.provider AS "provider",
+        s.date AS "date",
+        s.cost_cents AS "costCents"
+      FROM llm_spend_daily s
+      LEFT JOIN llm_models m ON m.id = s.model_id
+      WHERE s.tenant_id = ${tenantId} AND s.date >= ${monthStartStr}
+    `);
+    let totalCents = 0;
+    const byModel = new Map<string, { modelId: string; modelName: string; provider: string; costCents: number }>();
+    const byDay = new Map<string, number>();
+    for (const r of rows.rows as any[]) {
+      const c = Number(r.costCents) || 0;
+      totalCents += c;
+      const cur = byModel.get(r.modelId);
+      if (cur) cur.costCents += c;
+      else byModel.set(r.modelId, { modelId: r.modelId, modelName: r.modelName ?? "unknown", provider: r.provider ?? "unknown", costCents: c });
+      byDay.set(r.date, (byDay.get(r.date) ?? 0) + c);
+    }
+    const topModels = Array.from(byModel.values()).sort((a, b) => b.costCents - a.costCents).slice(0, 3);
+    const daily = Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, costCents]) => ({ date, costCents }));
+    const projectedMonthCents = (totalCents / daysElapsed) * daysInMonth;
+    return { totalCents, projectedMonthCents, daysElapsed, daysInMonth, topModels, daily };
+  }
+
+  async getLlmSpendByTenantMtd(orgId: string): Promise<{ tenantId: string; tenantName: string; totalCents: number; byModel: { modelName: string; costCents: number }[] }[]> {
+    const now = new Date();
+    const monthStartStr = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
+    const rows = await db.execute(sql`
+      SELECT
+        t.id AS "tenantId",
+        t.name AS "tenantName",
+        m.model_name AS "modelName",
+        COALESCE(SUM(s.cost_cents), 0)::real AS "costCents"
+      FROM tenants t
+      LEFT JOIN llm_spend_daily s ON s.tenant_id = t.id AND s.date >= ${monthStartStr}
+      LEFT JOIN llm_models m ON m.id = s.model_id
+      WHERE t.organization_id = ${orgId}
+      GROUP BY t.id, t.name, m.model_name
+      ORDER BY t.name
+    `);
+    const byTenant = new Map<string, { tenantId: string; tenantName: string; totalCents: number; byModel: { modelName: string; costCents: number }[] }>();
+    for (const r of rows.rows as any[]) {
+      const cur = byTenant.get(r.tenantId) ?? { tenantId: r.tenantId, tenantName: r.tenantName, totalCents: 0, byModel: [] as { modelName: string; costCents: number }[] };
+      const c = Number(r.costCents) || 0;
+      if (r.modelName) {
+        cur.byModel.push({ modelName: r.modelName, costCents: c });
+        cur.totalCents += c;
+      }
+      byTenant.set(r.tenantId, cur);
+    }
+    return Array.from(byTenant.values());
+  }
+
+  async getLlmSpendBreakdown(tenantId: string, opts: { since?: Date; until?: Date; sliceBy: "model" | "agent" | "time" | "surface" }): Promise<{ key: string; label: string; costCents: number; calls: number; inputTokens: number; outputTokens: number }[]> {
+    const since = opts.since ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const until = opts.until ?? new Date();
+    const conditions: SQL[] = [
+      eq(llmCalls.tenantId, tenantId),
+      gte(llmCalls.calledAt, since),
+      sql`${llmCalls.calledAt} <= ${until}`,
+    ];
+    let groupExpr: SQL;
+    let labelExpr: SQL;
+    if (opts.sliceBy === "model") {
+      groupExpr = sql`c.model_id`;
+      labelExpr = sql`COALESCE(m.model_name, 'unknown')`;
+    } else if (opts.sliceBy === "agent") {
+      groupExpr = sql`COALESCE(c.agent_id::text, 'none')`;
+      labelExpr = sql`COALESCE(c.agent_name, 'unattributed')`;
+    } else if (opts.sliceBy === "surface") {
+      groupExpr = sql`COALESCE(c.metadata->>'surface', 'unknown')`;
+      labelExpr = sql`COALESCE(c.metadata->>'surface', 'unknown')`;
+    } else {
+      groupExpr = sql`to_char(date_trunc('day', c.called_at), 'YYYY-MM-DD')`;
+      labelExpr = sql`to_char(date_trunc('day', c.called_at), 'YYYY-MM-DD')`;
+    }
+    const rows = await db.execute(sql`
+      SELECT
+        ${groupExpr} AS "key",
+        ${labelExpr} AS "label",
+        COALESCE(SUM(c.cost_cents), 0)::real AS "costCents",
+        COUNT(*)::int AS "calls",
+        COALESCE(SUM(c.input_tokens), 0)::int AS "inputTokens",
+        COALESCE(SUM(c.output_tokens), 0)::int AS "outputTokens"
+      FROM llm_calls c
+      LEFT JOIN llm_models m ON m.id = c.model_id
+      WHERE c.tenant_id = ${tenantId} AND c.called_at >= ${since} AND c.called_at <= ${until}
+      GROUP BY ${groupExpr}, ${labelExpr}
+      ORDER BY ${opts.sliceBy === "time" ? sql`"key" ASC` : sql`"costCents" DESC`}
+      LIMIT 200
+    `);
+    return (rows.rows as any[]).map(r => ({
+      key: String(r.key ?? ""),
+      label: String(r.label ?? ""),
+      costCents: Number(r.costCents) || 0,
+      calls: Number(r.calls) || 0,
+      inputTokens: Number(r.inputTokens) || 0,
+      outputTokens: Number(r.outputTokens) || 0,
+    }));
+  }
+
+  async getActiveLlmBudgetRules(): Promise<AlertRule[]> {
+    return db.select().from(alertRules)
+      .where(and(eq(alertRules.alertType, "llm_budget"), eq(alertRules.enabled, true)));
+  }
+
+  async evaluateLlmBudgets(): Promise<{ rulesEvaluated: number; alertsCreated: number }> {
+    // Ensure spend rollup is fresh before evaluating thresholds; otherwise a
+    // manual trigger could fire on stale data.
+    await this.rollupLlmSpendDaily({ sinceDays: 2 });
+    const rules = await this.getActiveLlmBudgetRules();
+    let alertsCreated = 0;
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const monthStartStr = monthStart.toISOString().slice(0, 10);
+    const periodKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+
+    for (const rule of rules) {
+      const budget = rule.budgetCents ?? 0;
+      if (budget <= 0) continue;
+      const thresholds = (rule.thresholdPercents && rule.thresholdPercents.length > 0)
+        ? rule.thresholdPercents
+        : [50, 80, 100];
+
+      const conds: SQL[] = [
+        eq(llmSpendDaily.tenantId, rule.tenantId),
+        gte(llmSpendDaily.date, monthStartStr),
+      ];
+      if (rule.modelId) conds.push(eq(llmSpendDaily.modelId, rule.modelId));
+      const [agg] = await db.select({ total: sql<number>`COALESCE(SUM(${llmSpendDaily.costCents}), 0)::real` })
+        .from(llmSpendDaily)
+        .where(and(...conds));
+      const spent = Number(agg?.total ?? 0);
+      const pct = (spent / budget) * 100;
+
+      const last = (rule.lastTriggeredThresholds ?? {}) as Record<string, number[]>;
+      const fired = new Set(last[periodKey] ?? []);
+
+      const sortedThresholds = [...thresholds].sort((a, b) => a - b);
+      const overBudget = pct >= 100;
+      const newlyFired: number[] = [];
+
+      for (const t of sortedThresholds) {
+        if (pct >= t && !fired.has(t)) {
+          newlyFired.push(t);
+          fired.add(t);
+        }
+      }
+      if (overBudget && pct > 100 && !fired.has(101)) {
+        const lastOverage = Math.floor(pct / 10) * 10;
+        if (lastOverage >= 110 && !fired.has(lastOverage)) {
+          newlyFired.push(lastOverage);
+          fired.add(lastOverage);
+        }
+      }
+
+      for (const t of newlyFired) {
+        const severity = t >= 100 ? "critical" : t >= 80 ? "high" : "medium";
+        const tenant = await this.getTenant(rule.tenantId);
+        const dollarsSpent = (spent / 100).toFixed(2);
+        const dollarsBudget = (budget / 100).toFixed(2);
+        const scopeLabel = rule.modelId ? ` (model scope)` : "";
+        const title = t >= 100
+          ? `LLM budget exceeded${scopeLabel}: ${pct.toFixed(0)}% of $${dollarsBudget}`
+          : `LLM budget at ${t}%${scopeLabel}: $${dollarsSpent} of $${dollarsBudget}`;
+        await this.createAlert({
+          tenantId: rule.tenantId,
+          ruleId: rule.id,
+          alertType: "llm_budget",
+          severity,
+          title,
+          message: `${tenant?.name ?? "Tenant"} has spent $${dollarsSpent} of the $${dollarsBudget} monthly LLM budget (${pct.toFixed(1)}%).`,
+          streamKey: `llm_budget:${rule.id}`,
+          payload: {
+            ruleId: rule.id,
+            ruleName: rule.name,
+            thresholdPercent: t,
+            spentCents: spent,
+            budgetCents: budget,
+            percent: pct,
+            periodKey,
+            modelId: rule.modelId ?? null,
+            channels: rule.channels ?? [],
+          },
+        });
+        alertsCreated++;
+      }
+
+      if (newlyFired.length > 0) {
+        const updated: Record<string, number[]> = { ...last, [periodKey]: Array.from(fired).sort((a, b) => a - b) };
+        await db.update(alertRules).set({ lastTriggeredThresholds: updated }).where(eq(alertRules.id, rule.id));
+      }
+    }
+    return { rulesEvaluated: rules.length, alertsCreated };
   }
 }
 

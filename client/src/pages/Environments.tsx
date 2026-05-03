@@ -6,11 +6,12 @@ import { Building2, Cloud, Server, Database, ArrowRight, Activity, AlertTriangle
 import { Link, useLocation, Redirect } from "wouter";
 import { useAllSystems, useGlobalStats } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { MspLlmSpendTile } from "@/components/MspLlmSpendTile";
 
 const systemIcons: Record<string, any> = { m365: Cloud, gws: Database, opentext: Server };
 
 export default function Environments() {
-  const { isMsp, orgTenants, setActiveTenantId, isLoading: loadingOrg } = useActiveTenant();
+  const { isMsp, orgTenants, setActiveTenantId, activeOrgId, isLoading: loadingOrg } = useActiveTenant();
   const { data: systems, isLoading: loadingSystems } = useAllSystems();
   const { data: stats, isLoading: loadingStats } = useGlobalStats();
   const [, setLocation] = useLocation();
@@ -98,6 +99,8 @@ export default function Environments() {
           </CardContent>
         </Card>
       </div>
+
+      {activeOrgId && <MspLlmSpendTile orgId={activeOrgId} />}
 
       <h3 className="text-xl font-semibold mb-4">Customer Environments</h3>
       <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">

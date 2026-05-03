@@ -74,11 +74,35 @@ export const alertRules = pgTable("alert_rules", {
   threshold: integer("threshold").notNull(),
   enabled: boolean("enabled").notNull().default(true),
   channels: jsonb("channels").$type<{ type: string; target: string }[]>().default([]),
+  alertType: text("alert_type").notNull().default("threshold"),
+  budgetCents: integer("budget_cents"),
+  thresholdPercents: integer("threshold_percents").array(),
+  modelId: varchar("model_id"),
+  periodStart: timestamp("period_start"),
+  lastTriggeredThresholds: jsonb("last_triggered_thresholds").$type<Record<string, number[]>>().default({}),
 });
 
 export const insertAlertRuleSchema = createInsertSchema(alertRules).omit({ id: true });
 export type InsertAlertRule = z.infer<typeof insertAlertRuleSchema>;
 export type AlertRule = typeof alertRules.$inferSelect;
+
+export const llmSpendDaily = pgTable("llm_spend_daily", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  modelId: varchar("model_id").notNull().references(() => llmModels.id),
+  date: text("date").notNull(),
+  callCount: integer("call_count").notNull().default(0),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  costCents: real("cost_cents").notNull().default(0),
+  computedAt: timestamp("computed_at").notNull().defaultNow(),
+}, (table) => ({
+  uqSpendDay: uniqueIndex("uq_llm_spend_tenant_model_date").on(table.tenantId, table.modelId, table.date),
+}));
+
+export const insertLlmSpendDailySchema = createInsertSchema(llmSpendDaily).omit({ id: true, computedAt: true });
+export type InsertLlmSpendDaily = z.infer<typeof insertLlmSpendDailySchema>;
+export type LlmSpendDaily = typeof llmSpendDaily.$inferSelect;
 
 export const metrics = pgTable("metrics", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

@@ -7,6 +7,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell,
 } from "recharts";
 import { useMetrics, useMetricsSummary, useLatestMetrics, useLatestUsageReport, useServiceHealth, useAnomalyCount, useAlerts } from "@/lib/api";
+import { LlmSpendWidget } from "@/components/LlmSpendWidget";
 import { Link } from "wouter";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { isAnomalyAlertPayload, type Alert } from "@shared/schema";
@@ -120,6 +121,10 @@ export default function Dashboard() {
         count={anomalyCount?.count || 0}
         alerts={(anomalyAlerts || []).filter((a) => !a.acknowledged).slice(0, 4)}
       />
+
+      <div className="mt-6">
+        <LlmSpendWidget tenantId={tenantId} />
+      </div>
 
       <M365InsightsSection
         siteUsage={siteUsage}
