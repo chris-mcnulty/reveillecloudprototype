@@ -187,6 +187,7 @@ export function useUpdateAnomalyStreamConfig() {
     },
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["/api/tenants", vars.tenantId, "anomaly", "configs"] });
+      qc.invalidateQueries({ queryKey: ["/api/tenants", vars.tenantId, "anomaly", "baselines-summary"] });
     },
   });
 }
@@ -273,6 +274,26 @@ export function useUpdateAnomalyNotificationSettings() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["/api/tenants", vars.tenantId, "anomaly", "notifications"] });
     },
+  });
+}
+
+export interface BaselineStreamSummary {
+  streamKey: string;
+  label: string;
+  unit: string;
+  category: string;
+  higherIsWorse: boolean;
+  enabled: boolean;
+  sensitivity: number;
+  baseline: MetricBaselinePoint | null;
+}
+
+export function useBaselineStreams(tenantId: string | null) {
+  return useQuery<BaselineStreamSummary[]>({
+    queryKey: ["/api/tenants", tenantId, "anomaly", "baselines-summary"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/anomaly/baselines`),
+    enabled: !!tenantId,
+    refetchInterval: 60000,
   });
 }
 

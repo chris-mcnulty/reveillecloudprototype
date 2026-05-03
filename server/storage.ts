@@ -92,6 +92,7 @@ export interface IStorage {
 
   upsertMetricBaseline(data: InsertMetricBaseline): Promise<MetricBaseline>;
   getLatestMetricBaseline(tenantId: string, streamKey: string): Promise<MetricBaseline | undefined>;
+  getLatestMetricBaselinesByTenant(tenantId: string): Promise<MetricBaseline[]>;
   getMetricBaselineHistory(tenantId: string, streamKey: string, since?: Date, limit?: number): Promise<MetricBaseline[]>;
 
   getAnomalyStreamConfigs(tenantId: string): Promise<AnomalyStreamConfig[]>;
@@ -734,6 +735,36 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(metricBaselines.windowStart))
       .limit(1);
     return row;
+  }
+
+  async getLatestMetricBaselinesByTenant(tenantId: string): Promise<MetricBaseline[]> {
+    const result = await db.execute(sql`
+      SELECT DISTINCT ON (stream_key)
+        id, tenant_id, stream_key, window_start, mean, stddev, p50, p95,
+        sample_count, current, z_score, computed_at
+      FROM metric_baselines
+      WHERE tenant_id = ${tenantId}
+      ORDER BY stream_key, window_start DESC
+    `);
+    type RawRow = {
+      id: string; tenant_id: string; stream_key: string; window_start: string | Date;
+      mean: number; stddev: number; p50: number; p95: number; sample_count: number;
+      current: number | null; z_score: number | null; computed_at: string | Date;
+    };
+    return (result.rows as unknown as RawRow[]).map(r => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      streamKey: r.stream_key,
+      windowStart: r.window_start instanceof Date ? r.window_start : new Date(r.window_start),
+      mean: Number(r.mean),
+      stddev: Number(r.stddev),
+      p50: Number(r.p50),
+      p95: Number(r.p95),
+      sampleCount: Number(r.sample_count),
+      current: r.current == null ? null : Number(r.current),
+      zScore: r.z_score == null ? null : Number(r.z_score),
+      computedAt: r.computed_at instanceof Date ? r.computed_at : new Date(r.computed_at),
+    }));
   }
 
   async getMetricBaselineHistory(tenantId: string, streamKey: string, since?: Date, limit = 168): Promise<MetricBaseline[]> {

@@ -29,6 +29,7 @@ import KnownAgents from "@/pages/KnownAgents";
 import EntraSignIns from "@/pages/EntraSignIns";
 import SpEmbedded from "@/pages/SpEmbedded";
 import Benchmarking from "@/pages/Benchmarking";
+import Baselines from "@/pages/Baselines";
 
 function Router() {
   return (
@@ -38,6 +39,7 @@ function Router() {
       <Route path="/tenants" component={Tenants}/>
       <Route path="/alerts" component={Alerts}/>
       <Route path="/performance" component={Performance}/>
+      <Route path="/baselines" component={Baselines}/>
       <Route path="/service-health" component={ServiceHealth}/>
       <Route path="/usage-reports" component={UsageReports}/>
       <Route path="/audit-log" component={AuditLog}/>

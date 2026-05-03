@@ -16,6 +16,7 @@ import {
   HardDrive,
   Brain,
   Bot,
+  TrendingUp,
 } from "lucide-react";
 import {
   Tooltip,
@@ -38,6 +39,7 @@ export function Sidebar() {
   const navItems = [
     { href: "/", icon: Home, label: "Dashboard" },
     { href: "/performance", icon: Activity, label: "Performance" },
+    { href: "/baselines", icon: TrendingUp, label: "Baselines" },
     { href: "/service-health", icon: ShieldCheck, label: "Service Health" },
     { href: "/alerts", icon: AlertCircle, label: "Alerts" },
     { href: "/usage-reports", icon: FileBarChart, label: "Usage Reports" },

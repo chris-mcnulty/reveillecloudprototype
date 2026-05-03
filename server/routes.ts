@@ -313,6 +313,31 @@ export async function registerRoutes(
     res.json(cfg);
   });
 
+  app.get("/api/tenants/:tenantId/anomaly/baselines", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const [latest, configs] = await Promise.all([
+      storage.getLatestMetricBaselinesByTenant(tenantId),
+      storage.getAnomalyStreamConfigs(tenantId),
+    ]);
+    const cfgByKey = new Map(configs.map(c => [c.streamKey, c]));
+    const baselineByKey = new Map(latest.map(b => [b.streamKey, b]));
+    const merged = STREAM_DEFINITIONS.map(def => {
+      const b = baselineByKey.get(def.key);
+      const c = cfgByKey.get(def.key);
+      return {
+        streamKey: def.key,
+        label: def.label,
+        unit: def.unit,
+        category: def.category,
+        higherIsWorse: def.higherIsWorse,
+        enabled: c ? c.enabled : true,
+        sensitivity: c ? c.sensitivity : DEFAULT_SENSITIVITY,
+        baseline: b ?? null,
+      };
+    });
+    res.json(merged);
+  });
+
   app.get("/api/tenants/:tenantId/anomaly/notifications", async (req, res) => {
     const tenantId = req.params.tenantId;
     const settings = await storage.getAnomalyNotificationSettings(tenantId);
