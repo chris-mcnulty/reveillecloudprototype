@@ -6,8 +6,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useServiceHealth, useServiceHealthIncidents } from "@/lib/api";
 import { useActiveTenant } from "@/lib/tenant-context";
+import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
+import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, ShieldCheck, AlertTriangle, AlertCircle, Clock, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 function statusBadge(status: string) {
   const s = status?.toLowerCase() || "";
@@ -36,13 +38,24 @@ function timeAgo(dateStr: string | null) {
 
 export default function ServiceHealth() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const { orgTenants } = useActiveTenant();
+  const { orgTenants, activeOrgId, organization } = useActiveTenant();
+  const orgId = organization?.id ?? activeOrgId;
+  const queryClient = useQueryClient();
 
   const { data: activeIncidents, isLoading: loadingActive, isError: errorActive, error: activeError } = useServiceHealth();
   const { data: allIncidents, isLoading: loadingAll, isError: errorAll, error: allError } = useServiceHealthIncidents(
     undefined,
     statusFilter !== "all" ? statusFilter : undefined
   );
+
+  const tenantIds = useMemo(() => orgTenants.map((t) => t.id), [orgTenants]);
+
+  const handleLive = useCallback((event: LiveEvent) => {
+    if (event.type !== "service_health.changed") return;
+    queryClient.invalidateQueries({ queryKey: ["/api/service-health"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/service-health/incidents"] });
+  }, [queryClient]);
+  useLiveStream(orgId, tenantIds, ["service_health.changed"], handleLive);
 
   const incidents = allIncidents || [];
   const active = activeIncidents || [];

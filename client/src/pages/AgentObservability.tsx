@@ -2162,6 +2162,8 @@ function CopilotModelsTab({ tenantId, onDrillDown }: { tenantId: string | null; 
 
 function McpServersTab({ tenantId }: { tenantId: string | null }) {
   const queryClient = useQueryClient();
+  const { activeOrgId, organization } = useActiveTenant();
+  const orgId = organization?.id ?? activeOrgId;
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [toolCallFilter, setToolCallFilter] = useState<string>("all");
   const [showRegisterDialog, setShowRegisterDialog] = useState(false);
@@ -2210,7 +2212,7 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
       return res.json();
     },
     enabled: !!tenantId,
-    refetchInterval: 30000,
+    refetchInterval: 90000,
   });
 
   const { data: servers = [] } = useQuery<McpServerData[]>({
@@ -2222,7 +2224,7 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
       return res.json();
     },
     enabled: !!tenantId,
-    refetchInterval: 15000,
+    refetchInterval: 90000,
   });
 
   const { data: toolCalls = [] } = useQuery<McpToolCallData[]>({
@@ -2237,8 +2239,34 @@ function McpServersTab({ tenantId }: { tenantId: string | null }) {
       return res.json();
     },
     enabled: !!tenantId && !!expandedServer,
-    refetchInterval: 15000,
+    refetchInterval: 90000,
   });
+
+  const handleMcpLive = useCallback((event: LiveEvent) => {
+    if (event.type !== "mcp_tool_call.recorded") return;
+    const data = event.data as { call?: McpToolCallData; serverId?: string } | undefined;
+    const call = data?.call;
+    if (!call?.id) return;
+    if (tenantId && event.tenantId && event.tenantId !== tenantId) return;
+    if (toolCallFilter !== "all" && call.status !== toolCallFilter) {
+      queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers/stats", tenantId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers", tenantId] });
+      return;
+    }
+    if (expandedServer && data?.serverId === expandedServer) {
+      queryClient.setQueryData<McpToolCallData[] | undefined>(
+        ["/api/mcp-servers/tool-calls", tenantId, expandedServer, toolCallFilter],
+        (prev) => {
+          if (!prev) return prev;
+          if (prev.find((c) => c.id === call.id)) return prev;
+          return [call, ...prev].slice(0, 30);
+        },
+      );
+    }
+    queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers/stats", tenantId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers", tenantId] });
+  }, [queryClient, tenantId, expandedServer, toolCallFilter]);
+  useLiveStream(orgId, [tenantId], ["mcp_tool_call.recorded"], handleMcpLive);
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/mcp-servers"] });
