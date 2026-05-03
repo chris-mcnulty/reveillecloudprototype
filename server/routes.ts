@@ -6,6 +6,7 @@ import { exportAgentTraces, exportEntraSignIns, exportLlmCalls, exportAlerts, ex
 import { runDigest, computeNextRunAt } from "./digests/runner";
 import { gatherDigestData, renderDigestHtml, renderDigestPdf } from "./digests/render";
 import type { DigestSection } from "./digests/render";
+import { renderBenchmarkingPdf, type BenchmarkPdfMetric } from "./digests/renderBenchmarking";
 import { validateTeamsWebhookUrl } from "./digests/delivery";
 import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
@@ -847,6 +848,110 @@ export async function registerRoutes(
       generatedAt: new Date().toISOString(),
       ...data,
     });
+  });
+
+  app.get("/api/benchmarking/export.pdf", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    const windowParam = ((req.query.window as string) || "7d").toLowerCase();
+    const colsParam = (req.query.cols as string | undefined) || "";
+    const windowMap: Record<string, number> = {
+      "24h": 24 * 60 * 60 * 1000,
+      "7d": 7 * 24 * 60 * 60 * 1000,
+      "30d": 30 * 24 * 60 * 60 * 1000,
+      "90d": 90 * 24 * 60 * 60 * 1000,
+    };
+    const windowOptionLabels: Record<string, string> = {
+      "24h": "Last 24 hours",
+      "7d": "Last 7 days",
+      "30d": "Last 30 days",
+      "90d": "Last 90 days",
+    };
+    if (!orgId) return res.status(400).json({ message: "orgId query parameter is required" });
+    if (!(windowParam in windowMap)) {
+      return res.status(400).json({ message: "window must be one of 24h, 7d, 30d, 90d" });
+    }
+    const windowMs = windowMap[windowParam];
+    const org = await storage.getOrganization(orgId);
+    if (!org) return res.status(404).json({ message: "Organization not found" });
+    if (org.mode !== "msp") {
+      return res.status(403).json({ message: "Benchmarking is only available for MSP organizations" });
+    }
+
+    const matrix = await storage.getBenchmarkingMatrix(org.id, windowMs);
+
+    // Metric catalog mirrors client/src/pages/Benchmarking.tsx (METRIC_CONFIG)
+    type MetricDef = BenchmarkPdfMetric & {
+      format: (v: number) => string;
+      windowSource: "selector" | "fixed";
+      fixedWindowKey?: string;
+    };
+    const allMetrics: MetricDef[] = [
+      { key: "latencyP95", label: "Synthetic latency p95", helpText: "Lower is better", lowerIsBetter: true, windowLabel: "", format: v => (v > 0 ? `${Math.round(v)}ms` : "—"), windowSource: "selector" },
+      { key: "alertCount", label: "Alerts", helpText: "Lower is better", lowerIsBetter: true, windowLabel: "", format: v => `${Math.round(v)}`, windowSource: "selector" },
+      { key: "agentErrorRate", label: "Agent error rate", helpText: "Lower is better", lowerIsBetter: true, windowLabel: "", format: v => `${v.toFixed(1)}%`, windowSource: "selector" },
+      { key: "copilotUsers", label: "Copilot active users", helpText: "Higher is better", lowerIsBetter: false, windowLabel: "", format: v => `${Math.round(v)}`, windowSource: "fixed", fixedWindowKey: "28d" },
+      { key: "llmSpend", label: "LLM spend", helpText: "Lower is better", lowerIsBetter: true, windowLabel: "", format: v => `$${(v / 100).toFixed(2)}`, windowSource: "fixed", fixedWindowKey: "mtd" },
+      { key: "riskySignIns", label: "High-risk sign-ins", helpText: "Lower is better", lowerIsBetter: true, windowLabel: "", format: v => `${Math.round(v)}`, windowSource: "fixed", fixedWindowKey: "7d" },
+    ];
+    const requestedKeys = colsParam
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    const validKeys = new Set(allMetrics.map(m => m.key));
+    const seen = new Set<string>();
+    const selectedKeys = colsParam
+      ? requestedKeys.filter(k => validKeys.has(k) && !seen.has(k) && (seen.add(k), true))
+      : allMetrics.map(m => m.key);
+    const metrics = (selectedKeys.length > 0 ? selectedKeys : allMetrics.map(m => m.key))
+      .map(k => allMetrics.find(m => m.key === k)!)
+      .filter(Boolean);
+
+    const headerWindowLabel = (m: MetricDef): string => {
+      const fromServer = matrix.metricWindows[m.key]?.label;
+      if (fromServer) return fromServer;
+      if (m.windowSource === "fixed") {
+        const k = m.fixedWindowKey;
+        return k === "mtd" ? "MTD" : (k || "").toUpperCase();
+      }
+      return windowParam.toUpperCase();
+    };
+
+    const pdfMetrics = metrics.map(m => ({
+      key: m.key,
+      label: m.label,
+      helpText: m.helpText,
+      windowLabel: headerWindowLabel(m),
+      lowerIsBetter: m.lowerIsBetter,
+    }));
+
+    const rows = matrix.tenants.map(t => ({
+      tenantId: t.tenantId,
+      tenantName: t.tenantName,
+      cells: Object.fromEntries(
+        metrics.map(m => {
+          const cell = t.metrics[m.key];
+          if (!cell) return [m.key, { display: "—", rawValue: null, delta: null }];
+          return [m.key, { display: m.format(cell.value), rawValue: cell.value, delta: cell.delta }];
+        }),
+      ),
+    }));
+
+    try {
+      const pdf = await renderBenchmarkingPdf({
+        organizationName: org.name,
+        windowLabel: windowOptionLabels[windowParam] || windowParam.toUpperCase(),
+        generatedAt: new Date(),
+        metrics: pdfMetrics,
+        rows,
+      });
+      const filename = `benchmarking_${org.name.replace(/[^a-z0-9]+/gi, "_")}_${windowParam}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.send(pdf);
+    } catch (err) {
+      console.error("benchmarking pdf export failed", err);
+      res.status(500).json({ message: "Failed to render PDF" });
+    }
   });
 
   app.get("/api/agent-traces", async (req, res) => {

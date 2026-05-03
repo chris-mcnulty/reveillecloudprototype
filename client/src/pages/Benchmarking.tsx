@@ -162,6 +162,7 @@ export default function Benchmarking() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [windowSel, setWindowSel] = useState<string>("7d");
+  const [isExporting, setIsExporting] = useState(false);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() => {
     const saved = localStorage.getItem(COLS_STORAGE_KEY);
     if (saved) {
@@ -259,8 +260,37 @@ export default function Benchmarking() {
     );
   };
 
-  const exportPdf = () => {
-    window.print();
+  const exportPdf = async () => {
+    if (!orgIdToUse || !data) return;
+    setIsExporting(true);
+    try {
+      const cols = visibleMetrics.map(m => m.key).join(",");
+      const url = `/api/benchmarking/export.pdf?orgId=${encodeURIComponent(orgIdToUse)}&window=${encodeURIComponent(windowSel)}&cols=${encodeURIComponent(cols)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      const orgSlug = (data.orgName || "benchmark").replace(/[^a-z0-9]+/gi, "_");
+      a.download = `benchmarking_${orgSlug}_${windowSel}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objUrl);
+      toast({ title: "PDF exported", description: `Branded benchmark PDF downloaded for ${data.orgName}.` });
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not generate PDF",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const toggleCol = (key: string) => {
@@ -325,8 +355,9 @@ export default function Benchmarking() {
           <Button variant="outline" size="sm" onClick={copyAsTable} data-testid="button-copy" disabled={!data || tenants.length === 0}>
             <Copy className="h-4 w-4 mr-1.5" /> Copy as table
           </Button>
-          <Button variant="outline" size="sm" onClick={exportPdf} data-testid="button-export-pdf" disabled={!data || tenants.length === 0}>
-            <FileDown className="h-4 w-4 mr-1.5" /> Export PDF
+          <Button variant="outline" size="sm" onClick={exportPdf} data-testid="button-export-pdf" disabled={!data || tenants.length === 0 || isExporting}>
+            {isExporting ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <FileDown className="h-4 w-4 mr-1.5" />}
+            {isExporting ? "Exporting…" : "Export PDF"}
           </Button>
         </div>
       </div>
