@@ -1778,6 +1778,11 @@ function CopilotModelsTab({ tenantId, onDrillDown }: { tenantId: string | null; 
     },
   });
 
+  const anyModelNamePopulated = useMemo(
+    () => (stats?.byModel ?? []).some((m) => !!m.modelName),
+    [stats]
+  );
+
   const sortedModels = useMemo(() => {
     if (!stats?.byModel) return [];
     const arr = [...stats.byModel];
@@ -2059,10 +2064,10 @@ function CopilotModelsTab({ tenantId, onDrillDown }: { tenantId: string | null; 
                               <div className="flex flex-col">
                                 <span data-testid={`text-model-label-${m.modelLabel}`}>{m.modelLabel}</span>
                                 {m.modelName ? (
-                                  <span className="text-[11px] text-muted-foreground">model: {m.modelName}</span>
-                                ) : (
+                                  <span className="text-[11px] text-muted-foreground" data-testid={`text-model-name-${m.modelLabel}`}>model: {m.modelName}</span>
+                                ) : !anyModelNamePopulated ? (
                                   <span className="text-[11px] text-muted-foreground italic">model name not yet exposed by Graph</span>
-                                )}
+                                ) : null}
                               </div>
                             </TableCell>
                             <TableCell data-testid={`text-model-calls-${m.modelLabel}`}>{m.calls.toLocaleString()}</TableCell>

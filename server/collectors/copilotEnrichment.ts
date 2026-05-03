@@ -1,13 +1,28 @@
 // Future-proof candidate paths for a Copilot model identifier in Graph beta
 // interactionHistory. Graph does not currently expose this; populate any new
 // path here and run the backfill to apply it to historical rows.
+//
+// When Microsoft confirms an official path, ADD (don't replace) it here so
+// previously-collected rows that used a now-deprecated preview path still
+// resolve. The scheduled backfill (every 6h, see scheduler.ts) and the
+// POST /api/admin/copilot-models/backfill endpoint will pick up new paths
+// without code changes for new tenants beyond this list.
 const MODEL_NAME_PATHS: ((raw: any) => string | null)[] = [
   (r) => r?.modelInfo?.name ?? null,
   (r) => r?.modelInfo?.modelName ?? null,
+  (r) => r?.modelInfo?.id ?? null,
   (r) => r?.metadata?.modelName ?? null,
   (r) => r?.metadata?.modelId ?? null,
+  (r) => r?.metadata?.model ?? null,
   (r) => r?.attribution?.modelName ?? null,
+  (r) => r?.attribution?.model?.name ?? null,
   (r) => r?.body?.modelInfo?.name ?? null,
+  (r) => r?.aiModel?.name ?? null,
+  (r) => r?.aiModel?.id ?? null,
+  (r) => r?.model?.name ?? null,
+  (r) => r?.model?.id ?? null,
+  (r) => (typeof r?.model === "string" ? r.model : null),
+  (r) => (typeof r?.modelName === "string" ? r.modelName : null),
 ];
 
 const SURFACE_FROM_APP_DISPLAY_NAME: Record<string, string> = {
