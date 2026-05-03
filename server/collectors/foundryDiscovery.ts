@@ -7,6 +7,8 @@ export interface FoundryDiscoveryResult {
   accountsScanned: number;
   subscriptionsScanned: number;
   metricsCollected: number;
+  throttledCallsTotal: number;
+  throttledByDeployment: Array<{ deploymentId: string; deploymentName: string; throttledCalls: number; windowHours: number }>;
   needsConsent: boolean;
   consentReason: string | null;
   errors: string[];
@@ -205,7 +207,7 @@ async function collectWindowSnapshot(
   deployment: FoundryDeployment,
   window: MetricWindow,
   llmModel: LlmModel | null,
-): Promise<{ ok: boolean; error?: string; status?: number }> {
+): Promise<{ ok: boolean; error?: string; status?: number; throttledCalls?: number }> {
   // Required by the task contract: ProcessedPromptTokens, GeneratedTokens, TotalCalls, Ratelimit.
   const tokenMetrics = await fetchMetrics(
     token,
@@ -262,7 +264,7 @@ async function collectWindowSnapshot(
     rawMetrics,
   });
 
-  return { ok: true };
+  return { ok: true, throttledCalls };
 }
 
 export async function collectFoundryDiscovery(tenantId: string): Promise<FoundryDiscoveryResult> {
@@ -271,6 +273,8 @@ export async function collectFoundryDiscovery(tenantId: string): Promise<Foundry
     accountsScanned: 0,
     subscriptionsScanned: 0,
     metricsCollected: 0,
+    throttledCallsTotal: 0,
+    throttledByDeployment: [],
     needsConsent: false,
     consentReason: null,
     errors: [],
@@ -402,10 +406,14 @@ export async function collectFoundryDiscovery(tenantId: string): Promise<Foundry
 
   for (const deployment of allDeployments) {
     const llmModel = deployment.llmModelId ? (await storage.getLlmModel(deployment.llmModelId)) ?? null : null;
+    let depThrottled24h: number | null = null;
 
     for (const window of METRIC_WINDOWS) {
       try {
         const snap = await collectWindowSnapshot(token, deployment, window, llmModel);
+        if (snap.ok && window.hours === 24 && typeof snap.throttledCalls === "number") {
+          depThrottled24h = snap.throttledCalls;
+        }
         if (!snap.ok) {
           if (snap.status === 401 || snap.status === 403) {
             if (!result.needsConsent) {
@@ -423,6 +431,16 @@ export async function collectFoundryDiscovery(tenantId: string): Promise<Foundry
         const msg = err instanceof Error ? err.message : String(err);
         result.errors.push(`Metrics ${window.hours}h for ${deployment.deploymentName}: ${msg}`);
       }
+    }
+
+    if (depThrottled24h != null && depThrottled24h > 0) {
+      result.throttledCallsTotal += depThrottled24h;
+      result.throttledByDeployment.push({
+        deploymentId: deployment.id,
+        deploymentName: deployment.deploymentName,
+        throttledCalls: depThrottled24h,
+        windowHours: 24,
+      });
     }
   }
 

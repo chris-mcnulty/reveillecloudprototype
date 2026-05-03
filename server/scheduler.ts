@@ -779,17 +779,33 @@ async function runFoundryDiscoveryJob(): Promise<void> {
 
       try {
         const result = await collectFoundryDiscovery(tenant.id);
+        let throttleAlertsCreated = 0;
+        let throttleRulesEvaluated = 0;
+        if (!result.needsConsent && result.deploymentsDiscovered > 0) {
+          try {
+            const evalResult = await storage.evaluateFoundryThrottleRules(tenant.id);
+            throttleAlertsCreated = evalResult.alertsCreated;
+            throttleRulesEvaluated = evalResult.rulesEvaluated;
+          } catch (evalErr) {
+            const msg = evalErr instanceof Error ? evalErr.message : String(evalErr);
+            result.errors.push(`Throttle rule eval: ${msg}`);
+          }
+        }
         const status = result.needsConsent ? "failed" : "completed";
         await trackJobComplete(jobRunId, status, {
           deploymentsDiscovered: result.deploymentsDiscovered,
           accountsScanned: result.accountsScanned,
           subscriptionsScanned: result.subscriptionsScanned,
           metricsCollected: result.metricsCollected,
+          throttledCallsTotal: result.throttledCallsTotal,
+          throttledByDeployment: result.throttledByDeployment,
+          throttleRulesEvaluated,
+          throttleAlertsCreated,
           needsConsent: result.needsConsent,
           consentReason: result.consentReason,
           errors: result.errors,
         }, result.errors.length ? result.errors.join("; ") : undefined);
-        console.log(`[Scheduler] Foundry discovery for ${tenant.name}: ${result.deploymentsDiscovered} deployments, ${result.metricsCollected} metric snapshots${result.needsConsent ? " (needs consent)" : ""}`);
+        console.log(`[Scheduler] Foundry discovery for ${tenant.name}: ${result.deploymentsDiscovered} deployments, ${result.metricsCollected} metric snapshots, ${result.throttledCallsTotal.toFixed(0)} throttled calls (${throttleRulesEvaluated} rules → ${throttleAlertsCreated} alerts)${result.needsConsent ? " (needs consent)" : ""}`);
       } catch (err: any) {
         await trackJobComplete(jobRunId, "failed", undefined, err.message);
         console.error(`[Scheduler] Foundry discovery failed for ${tenant.name}:`, err.message);

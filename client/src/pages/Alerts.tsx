@@ -26,8 +26,11 @@ export default function Alerts() {
   const { activeTenantId, activeOrgId, organization } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
   const [filter, setFilter] = useState<AlertFilter>("all");
-  const filterParams = filter === "all" ? undefined : { alertType: filter };
-  const { data: alertList, isLoading } = useAlerts(activeTenantId ?? undefined, filterParams);
+  // Always fetch the full set of alerts and filter client-side so badge
+  // counts stay accurate regardless of the active filter, and so the
+  // "Threshold" view captures every non-anomaly alert type
+  // (threshold, llm_budget, foundry_throttle, ...).
+  const { data: alertList, isLoading } = useAlerts(activeTenantId ?? undefined);
   const ackMutation = useAcknowledgeAlert();
   const queryClient = useQueryClient();
 
@@ -36,16 +39,15 @@ export default function Alerts() {
     const alert = event.data as AlertType;
     if (!alert?.id) return;
     if (activeTenantId && alert.tenantId !== activeTenantId) return;
-    if (filterParams?.alertType && alert.alertType !== filterParams.alertType) return;
     queryClient.setQueriesData<AlertType[] | undefined>(
-      { queryKey: ["/api/alerts", activeTenantId ?? undefined, filterParams?.alertType, undefined] },
+      { queryKey: ["/api/alerts", activeTenantId ?? undefined, undefined, undefined] },
       (prev) => {
         if (!prev) return prev;
         if (prev.find((a) => a.id === alert.id)) return prev;
         return [alert, ...prev];
       },
     );
-  }, [queryClient, activeTenantId, filterParams?.alertType]);
+  }, [queryClient, activeTenantId]);
   useLiveStream(orgId, [activeTenantId], ["alert.created"], handleLive);
 
   const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
@@ -63,9 +65,14 @@ export default function Alerts() {
     );
   }
 
-  const alerts: Alert[] = alertList || [];
-  const anomalyCount = alerts.filter((a) => a.alertType === "anomaly").length;
-  const thresholdCount = alerts.filter((a) => a.alertType !== "anomaly").length;
+  const allAlerts: Alert[] = alertList || [];
+  const anomalyCount = allAlerts.filter((a) => a.alertType === "anomaly").length;
+  const thresholdCount = allAlerts.filter((a) => a.alertType !== "anomaly").length;
+  const alerts: Alert[] = filter === "anomaly"
+    ? allAlerts.filter((a) => a.alertType === "anomaly")
+    : filter === "threshold"
+      ? allAlerts.filter((a) => a.alertType !== "anomaly")
+      : allAlerts;
 
   return (
     <Shell>

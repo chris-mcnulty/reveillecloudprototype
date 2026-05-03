@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil } from "lucide-react";
+import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil, Gauge } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { useAnomalyStreamConfigs, useUpdateAnomalyStreamConfig, useTriggerJob, useAlertRules, useCreateAlertRule, useUpdateAlertRule, useDeleteAlertRule, useLlmModels, type AnomalyStreamConfigUI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -96,6 +96,8 @@ export default function AlertRulesConfig() {
       </Card>
 
       {activeTenantId && <LlmBudgetRulesSection tenantId={activeTenantId} />}
+
+      {activeTenantId && <FoundryThrottleRulesSection tenantId={activeTenantId} />}
 
       <div className="grid gap-6">
         <Card>
@@ -506,6 +508,255 @@ function BudgetRuleRow({
           <Pencil className="h-4 w-4" />
         </Button>
         <Button variant="ghost" size="icon" onClick={onDelete} data-testid={`button-delete-budget-${rule.id}`}>
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function FoundryThrottleRulesSection({ tenantId }: { tenantId: string }) {
+  const { data: rules } = useAlertRules(tenantId);
+  const createMut = useCreateAlertRule();
+  const updateMut = useUpdateAlertRule();
+  const deleteMut = useDeleteAlertRule();
+  const triggerMut = useTriggerJob();
+  const { toast } = useToast();
+
+  const [name, setName] = useState("");
+  const [threshold, setThreshold] = useState<string>("10");
+  const [channels, setChannels] = useState<string>("");
+
+  const throttleRules = (rules || []).filter((r) => r.alertType === "foundry_throttle");
+
+  function parseChannels(input: string): { type: string; target: string }[] {
+    return input
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const idx = entry.indexOf(":");
+        if (idx <= 0) return { type: "email", target: entry };
+        return { type: entry.slice(0, idx).trim(), target: entry.slice(idx + 1).trim() };
+      })
+      .filter((c) => c.target.length > 0);
+  }
+
+  function submit() {
+    const trimmed = name.trim();
+    const thresholdNum = parseInt(threshold, 10);
+    if (!trimmed) {
+      toast({ title: "Name required", variant: "destructive" });
+      return;
+    }
+    if (!Number.isFinite(thresholdNum) || thresholdNum <= 0) {
+      toast({ title: "Threshold must be > 0", variant: "destructive" });
+      return;
+    }
+    createMut.mutate(
+      {
+        tenantId,
+        name: trimmed,
+        metric: "foundry_throttled_calls_per_hour",
+        condition: "gt",
+        threshold: thresholdNum,
+        enabled: true,
+        alertType: "foundry_throttle",
+        channels: parseChannels(channels),
+      },
+      {
+        onSuccess: () => {
+          toast({ title: "Throttle rule created", description: `${trimmed} · ${thresholdNum} calls/hour` });
+          setName("");
+          setThreshold("10");
+          setChannels("");
+        },
+        onError: (e: any) => toast({ title: "Create failed", description: e?.message, variant: "destructive" }),
+      },
+    );
+  }
+
+  return (
+    <Card className="mb-6" data-testid="card-foundry-throttle-rules">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Gauge className="h-5 w-5 text-rose-500" />
+            Foundry Deployment Throttling
+          </CardTitle>
+          <CardDescription>
+            Alerts when an Azure AI Foundry deployment exceeds a threshold of HTTP 429 (rate-limited) calls per hour. Evaluated after each Foundry discovery sweep.
+          </CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            triggerMut.mutate("foundryDiscovery", {
+              onSuccess: () => toast({ title: "Foundry discovery triggered", description: "Throttle rules will evaluate after metrics are persisted." }),
+              onError: (e: any) => toast({ title: "Trigger failed", description: e?.message, variant: "destructive" }),
+            })
+          }
+          disabled={triggerMut.isPending}
+          data-testid="button-trigger-foundry-discovery"
+        >
+          <RefreshCw className={`h-4 w-4 mr-2 ${triggerMut.isPending ? "animate-spin" : ""}`} />
+          Run discovery now
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="grid gap-4 md:grid-cols-3 bg-muted/30 p-4 rounded-lg border">
+          <div className="space-y-2">
+            <Label htmlFor="throttle-name">Rule name</Label>
+            <Input
+              id="throttle-name"
+              placeholder="Foundry throttling alert"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              data-testid="input-throttle-name"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="throttle-amount">Throttled calls / hour</Label>
+            <Input
+              id="throttle-amount"
+              type="number"
+              min="1"
+              step="1"
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+              data-testid="input-throttle-threshold"
+            />
+            <p className="text-xs text-muted-foreground">Avg HTTP 429 rate over the last 24h, expressed per hour.</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="throttle-channels">Notify channels</Label>
+            <Input
+              id="throttle-channels"
+              placeholder="email:ops@acme.com, teams:#it-ops"
+              value={channels}
+              onChange={(e) => setChannels(e.target.value)}
+              data-testid="input-throttle-channels"
+            />
+          </div>
+          <div className="md:col-span-3 flex justify-end">
+            <Button onClick={submit} disabled={createMut.isPending} data-testid="button-create-throttle-rule">
+              {createMut.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+              Add throttling rule
+            </Button>
+          </div>
+        </div>
+
+        {throttleRules.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center" data-testid="text-no-throttle-rules">
+            No throttling rules yet. Create one above to be alerted when a Foundry deployment starts hitting its rate limit.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {throttleRules.map((rule) => (
+              <ThrottleRuleRow
+                key={rule.id}
+                rule={rule}
+                onToggle={(enabled) =>
+                  updateMut.mutate(
+                    { id: rule.id, enabled },
+                    {
+                      onSuccess: () => toast({ title: enabled ? "Rule enabled" : "Rule disabled" }),
+                      onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+                    },
+                  )
+                }
+                onSave={(patch) =>
+                  updateMut.mutate(
+                    { id: rule.id, ...patch },
+                    {
+                      onSuccess: () => toast({ title: "Rule updated" }),
+                      onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+                    },
+                  )
+                }
+                onDelete={() =>
+                  deleteMut.mutate(rule.id, {
+                    onSuccess: () => toast({ title: "Rule deleted" }),
+                    onError: (e: any) => toast({ title: "Delete failed", description: e?.message, variant: "destructive" }),
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ThrottleRuleRow({
+  rule,
+  onToggle,
+  onSave,
+  onDelete,
+}: {
+  rule: AlertRule;
+  onToggle: (enabled: boolean) => void;
+  onSave: (patch: { name?: string; threshold?: number; channels?: { type: string; target: string }[] }) => void;
+  onDelete: () => void;
+}) {
+  const channelSummary = (rule.channels ?? []).map((c) => `${c.type}:${c.target}`).join(", ");
+
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(rule.name);
+  const [editThreshold, setEditThreshold] = useState<string>(String(rule.threshold ?? 10));
+  const [editChannels, setEditChannels] = useState<string>(channelSummary);
+
+  function saveEdits() {
+    const t = parseInt(editThreshold, 10);
+    if (!editName.trim() || !Number.isFinite(t) || t <= 0) return;
+    const parsedChannels = editChannels
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const idx = entry.indexOf(":");
+        if (idx <= 0) return { type: "email", target: entry };
+        return { type: entry.slice(0, idx).trim(), target: entry.slice(idx + 1).trim() };
+      })
+      .filter((c) => c.target.length > 0);
+    onSave({ name: editName.trim(), threshold: t, channels: parsedChannels });
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div className="grid gap-3 md:grid-cols-3 py-3 border-b last:border-0 bg-muted/20 px-3 rounded" data-testid={`row-throttle-rule-edit-${rule.id}`}>
+        <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Name" data-testid={`input-edit-throttle-name-${rule.id}`} />
+        <Input type="number" min="1" step="1" value={editThreshold} onChange={(e) => setEditThreshold(e.target.value)} placeholder="Calls/hour" data-testid={`input-edit-throttle-threshold-${rule.id}`} />
+        <Input value={editChannels} onChange={(e) => setEditChannels(e.target.value)} placeholder="email:..., teams:..." data-testid={`input-edit-throttle-channels-${rule.id}`} />
+        <div className="md:col-span-3 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setEditing(false)} data-testid={`button-cancel-edit-throttle-${rule.id}`}>Cancel</Button>
+          <Button size="sm" onClick={saveEdits} data-testid={`button-save-edit-throttle-${rule.id}`}>Save</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between py-3 border-b last:border-0" data-testid={`row-throttle-rule-${rule.id}`}>
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <Switch checked={rule.enabled} onCheckedChange={onToggle} data-testid={`switch-throttle-${rule.id}`} />
+        <div className="min-w-0">
+          <p className="font-medium text-sm" data-testid={`text-throttle-name-${rule.id}`}>{rule.name}</p>
+          <p className="text-xs text-muted-foreground">
+            {rule.threshold} HTTP 429 calls/hour
+            {channelSummary ? ` · → ${channelSummary}` : " · in-app only"}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge variant="outline">{rule.enabled ? "Active" : "Paused"}</Badge>
+        <Button variant="ghost" size="icon" onClick={() => setEditing(true)} data-testid={`button-edit-throttle-${rule.id}`}>
+          <Pencil className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={onDelete} data-testid={`button-delete-throttle-${rule.id}`}>
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>

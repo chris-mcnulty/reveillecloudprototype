@@ -265,6 +265,8 @@ export interface IStorage {
   getLlmSpendBreakdown(tenantId: string, opts: { since?: Date; until?: Date; sliceBy: "model" | "agent" | "time" | "surface" }): Promise<{ key: string; label: string; costCents: number; calls: number; inputTokens: number; outputTokens: number }[]>;
   getActiveLlmBudgetRules(): Promise<AlertRule[]>;
   evaluateLlmBudgets(): Promise<{ rulesEvaluated: number; alertsCreated: number }>;
+  getActiveFoundryThrottleRules(tenantId?: string): Promise<AlertRule[]>;
+  evaluateFoundryThrottleRules(tenantId?: string): Promise<{ rulesEvaluated: number; alertsCreated: number }>;
 
   createSavedView(data: InsertSavedView): Promise<SavedView>;
   updateSavedView(id: string, data: Partial<InsertSavedView>): Promise<SavedView | undefined>;
@@ -3771,6 +3773,87 @@ export class DatabaseStorage implements IStorage {
       if (newlyFired.length > 0) {
         const updated: Record<string, number[]> = { ...last, [periodKey]: Array.from(fired).sort((a, b) => a - b) };
         await db.update(alertRules).set({ lastTriggeredThresholds: updated }).where(eq(alertRules.id, rule.id));
+      }
+    }
+    return { rulesEvaluated: rules.length, alertsCreated };
+  }
+
+  async getActiveFoundryThrottleRules(tenantId?: string): Promise<AlertRule[]> {
+    const conds: SQL[] = [
+      eq(alertRules.alertType, "foundry_throttle"),
+      eq(alertRules.enabled, true),
+    ];
+    if (tenantId) conds.push(eq(alertRules.tenantId, tenantId));
+    return db.select().from(alertRules).where(and(...conds));
+  }
+
+  async evaluateFoundryThrottleRules(tenantId?: string): Promise<{ rulesEvaluated: number; alertsCreated: number }> {
+    const rules = await this.getActiveFoundryThrottleRules(tenantId);
+    let alertsCreated = 0;
+    const dedupSince = new Date(Date.now() - 60 * 60 * 1000);
+
+    for (const rule of rules) {
+      const threshold = rule.threshold ?? 0;
+      if (threshold <= 0) continue;
+
+      const latest = await this.getLatestFoundryUsageByDeployment(rule.tenantId, 24);
+      const deploymentIds = Object.keys(latest);
+      if (deploymentIds.length === 0) continue;
+
+      for (const deploymentId of deploymentIds) {
+        const snap = latest[deploymentId];
+        if (!snap || !snap.windowHours) continue;
+        const throttled = Number(snap.throttledCalls ?? 0);
+        if (!Number.isFinite(throttled) || throttled <= 0) continue;
+        const perHour = throttled / snap.windowHours;
+        if (perHour < threshold) continue;
+
+        const streamKey = `foundry_throttle:${rule.id}:${deploymentId}`;
+        const recent = await db.select().from(alerts)
+          .where(and(
+            eq(alerts.tenantId, rule.tenantId),
+            eq(alerts.alertType, "foundry_throttle"),
+            eq(alerts.ruleId, rule.id),
+            eq(alerts.streamKey, streamKey),
+            gte(alerts.timestamp, dedupSince),
+          ))
+          .limit(1);
+        if (recent.length > 0) continue;
+
+        const deployment = await this.getFoundryDeployment(deploymentId);
+        const depLabel = deployment
+          ? `${deployment.deploymentName} (${deployment.accountName})`
+          : deploymentId;
+        const totalCalls = Number(snap.totalCalls ?? 0);
+        const throttlePct = totalCalls > 0 ? (throttled / totalCalls) * 100 : 0;
+        const severity = perHour >= threshold * 4 ? "critical" : perHour >= threshold * 2 ? "high" : "warning";
+
+        await this.createAlert({
+          tenantId: rule.tenantId,
+          ruleId: rule.id,
+          alertType: "foundry_throttle",
+          severity,
+          title: `Foundry deployment throttling: ${depLabel}`,
+          message: `${depLabel} is throttling at ~${perHour.toFixed(1)} HTTP 429 calls/hour over the last 24h (${throttled.toFixed(0)} total, ${throttlePct.toFixed(1)}% of ${totalCalls.toFixed(0)} calls). Threshold: ${threshold}/hour.`,
+          streamKey,
+          payload: {
+            ruleId: rule.id,
+            ruleName: rule.name,
+            deploymentId,
+            deploymentName: deployment?.deploymentName ?? null,
+            accountName: deployment?.accountName ?? null,
+            modelName: deployment?.modelName ?? null,
+            throttledCalls: throttled,
+            totalCalls,
+            throttledPerHour: perHour,
+            throttledPercent: throttlePct,
+            windowHours: snap.windowHours,
+            windowEnd: snap.windowEnd,
+            threshold,
+            channels: rule.channels ?? [],
+          },
+        });
+        alertsCreated++;
       }
     }
     return { rulesEvaluated: rules.length, alertsCreated };
