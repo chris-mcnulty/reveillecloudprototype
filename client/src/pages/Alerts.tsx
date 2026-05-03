@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { BellRing, CheckCircle2, AlertOctagon, Loader2, Activity, Filter } from "lucide-react";
-import { useAlerts, useAcknowledgeAlert, useMetricBaselineHistory } from "@/lib/api";
+import { useAlerts, useAcknowledgeAlert, useMetricBaselineHistory, useAlertContext, type AnomalyContextItem } from "@/lib/api";
 import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
@@ -185,6 +185,9 @@ export default function Alerts() {
                 {isAnomaly && alert.tenantId && alert.streamKey && anomalyPayload && (
                   <AnomalyMiniChart tenantId={alert.tenantId} streamKey={alert.streamKey} payload={anomalyPayload} />
                 )}
+                {isAnomaly && anomalyPayload && (
+                  <PossibleCausesPanel alertId={alert.id} />
+                )}
               </CardContent>
             </Card>
           );
@@ -198,6 +201,79 @@ export default function Alerts() {
         )}
       </div>
     </Shell>
+  );
+}
+
+function PossibleCausesPanel({ alertId }: { alertId: string }) {
+  const { data, isLoading } = useAlertContext(alertId);
+
+  if (isLoading) {
+    return (
+      <div className="mt-3 text-xs text-muted-foreground" data-testid={`causes-loading-${alertId}`}>
+        Looking for related changes...
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  const kindLabel: Record<AnomalyContextItem["kind"], string> = {
+    admin_audit: "Admin",
+    service_health: "M365 Health",
+    tenant_audit: "Tenant Config",
+  };
+  const kindClass: Record<AnomalyContextItem["kind"], string> = {
+    admin_audit: "border-blue-500 text-blue-600",
+    service_health: "border-rose-500 text-rose-600",
+    tenant_audit: "border-violet-500 text-violet-600",
+  };
+
+  const fmtDelta = (m: number) => {
+    const abs = Math.abs(m);
+    const sign = m === 0 ? "" : m > 0 ? "+" : "−";
+    if (abs < 60) return `${sign}${abs}m`;
+    return `${sign}${(abs / 60).toFixed(1)}h`;
+  };
+
+  return (
+    <div className="mt-4 border rounded-md p-3" data-testid={`causes-panel-${alertId}`}>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-medium">Possible causes</p>
+        <p className="text-xs text-muted-foreground" data-testid={`causes-count-${alertId}`}>
+          {data.counts.total === 0
+            ? "No related changes in ±2h"
+            : `${data.counts.total} change${data.counts.total === 1 ? "" : "s"} near this anomaly`}
+        </p>
+      </div>
+      {data.counts.total === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No admin actions, M365 health incidents, or tenant config changes were recorded within ±2h of this window.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {data.items.slice(0, 8).map((item) => (
+            <li
+              key={`${item.kind}-${item.id}`}
+              className="flex items-start justify-between gap-2 text-xs"
+              data-testid={`cause-item-${item.kind}-${item.id}`}
+            >
+              <div className="flex items-start gap-2 min-w-0">
+                <Badge variant="outline" className={`shrink-0 ${kindClass[item.kind]}`}>
+                  {kindLabel[item.kind]}
+                </Badge>
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{item.title}</div>
+                  {item.detail && <div className="text-muted-foreground truncate">{item.detail}</div>}
+                </div>
+              </div>
+              <span className="font-mono text-muted-foreground whitespace-nowrap">{fmtDelta(item.deltaMinutes)}</span>
+            </li>
+          ))}
+          {data.items.length > 8 && (
+            <li className="text-xs text-muted-foreground">+{data.items.length - 8} more</li>
+          )}
+        </ul>
+      )}
+    </div>
   );
 }
 

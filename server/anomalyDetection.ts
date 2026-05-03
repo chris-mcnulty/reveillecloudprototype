@@ -334,6 +334,105 @@ export async function detectForStream(tenantId: string, streamKey: StreamKey): P
   return { streamKey, computed: true, action: { kind: "fired", isFollowup, zScore } };
 }
 
+export interface AnomalyContextItem {
+  kind: "admin_audit" | "service_health" | "tenant_audit";
+  id: string;
+  timestamp: string;
+  title: string;
+  detail?: string;
+  deltaMinutes: number;
+}
+
+export interface AnomalyContext {
+  alertId: string;
+  windowStart: string;
+  windowEnd: string;
+  items: AnomalyContextItem[];
+  counts: { adminAudit: number; serviceHealth: number; tenantAudit: number; total: number };
+}
+
+const CORRELATION_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+export async function computeAnomalyContext(alert: Alert): Promise<AnomalyContext | null> {
+  if (alert.alertType !== "anomaly" || !isAnomalyAlertPayload(alert.payload)) return null;
+  const payload = alert.payload;
+  const windowStartMs = new Date(payload.windowStart).getTime();
+  const windowEndMs = windowStartMs + 60 * 60 * 1000;
+  const fromMs = windowStartMs - CORRELATION_WINDOW_MS;
+  const toMs = windowEndMs + CORRELATION_WINDOW_MS;
+  const fromDate = new Date(fromMs);
+  const toDate = new Date(toMs);
+  const anchorMs = (windowStartMs + windowEndMs) / 2;
+
+  const items: AnomalyContextItem[] = [];
+
+  if (alert.tenantId) {
+    const adminEntries = await storage.getAdminAuditLogInRange(alert.tenantId, fromDate, toDate);
+    for (const e of adminEntries) {
+      const ts = e.timestamp ? new Date(e.timestamp).getTime() : 0;
+      if (!ts) continue;
+      const target = e.targetType ? `${e.targetType}${e.targetId ? `:${e.targetId}` : ""}` : "";
+      items.push({
+        kind: "admin_audit",
+        id: e.id,
+        timestamp: new Date(ts).toISOString(),
+        title: e.action,
+        detail: target || undefined,
+        deltaMinutes: Math.round((ts - anchorMs) / 60000),
+      });
+    }
+
+    const tenantAudit = await storage.getAuditLogEntriesInRange(alert.tenantId, fromDate, toDate);
+    for (const e of tenantAudit) {
+      const ts = e.timestamp ? new Date(e.timestamp).getTime() : 0;
+      if (!ts) continue;
+      const isConfigChange = /^(Set|Update|Add|Remove|Delete|Create|Modify|Change)/i.test(e.operation);
+      if (!isConfigChange) continue;
+      items.push({
+        kind: "tenant_audit",
+        id: e.id,
+        timestamp: new Date(ts).toISOString(),
+        title: e.operation,
+        detail: e.userEmail || e.userId || undefined,
+        deltaMinutes: Math.round((ts - anchorMs) / 60000),
+      });
+    }
+  }
+
+  const incidents = await storage.getServiceHealthIncidentsInRange(alert.tenantId ?? undefined, fromDate, toDate);
+  for (const inc of incidents) {
+    const candidates = [inc.startDateTime, inc.lastUpdatedAt, inc.collectedAt]
+      .filter((d): d is Date => d != null)
+      .map(d => new Date(d).getTime());
+    if (candidates.length === 0) continue;
+    const ts = candidates.find(t => t >= fromMs && t <= toMs);
+    if (!ts) continue;
+    items.push({
+      kind: "service_health",
+      id: inc.id,
+      timestamp: new Date(ts).toISOString(),
+      title: inc.title,
+      detail: `${inc.service} · ${inc.status}`,
+      deltaMinutes: Math.round((ts - anchorMs) / 60000),
+    });
+  }
+
+  items.sort((a, b) => Math.abs(a.deltaMinutes) - Math.abs(b.deltaMinutes));
+
+  return {
+    alertId: alert.id,
+    windowStart: new Date(windowStartMs).toISOString(),
+    windowEnd: new Date(windowEndMs).toISOString(),
+    items,
+    counts: {
+      adminAudit: items.filter(i => i.kind === "admin_audit").length,
+      serviceHealth: items.filter(i => i.kind === "service_health").length,
+      tenantAudit: items.filter(i => i.kind === "tenant_audit").length,
+      total: items.length,
+    },
+  };
+}
+
 export interface AnomalyRunResult {
   tenants: number;
   streamsEvaluated: number;

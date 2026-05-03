@@ -6,7 +6,7 @@ import { Clock, FileUp, Globe, TrendingDown, TrendingUp, AlertTriangle, Loader2,
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell,
 } from "recharts";
-import { useMetrics, useMetricsSummary, useLatestMetrics, useLatestUsageReport, useServiceHealth, useAnomalyCount, useAlerts } from "@/lib/api";
+import { useMetrics, useMetricsSummary, useLatestMetrics, useLatestUsageReport, useServiceHealth, useAnomalyCount, useAlerts, useAlertContext } from "@/lib/api";
 import { LlmSpendWidget } from "@/components/LlmSpendWidget";
 import { Link } from "wouter";
 import { useActiveTenant } from "@/lib/tenant-context";
@@ -252,6 +252,7 @@ function AnomaliesWidget({ count, alerts }: { count: number; alerts: Alert[] }) 
                     <Activity className="h-3 w-3 text-amber-500" />
                     <span className="font-medium">{label}</span>
                     <Badge variant={a.severity === "critical" ? "destructive" : "secondary"} className="text-xs">{a.severity}</Badge>
+                    <AnomalyCorrelationBadge alertId={a.id} />
                   </div>
                   <div className="text-xs text-muted-foreground font-mono">
                     {zStr} · {timeStr}
@@ -263,6 +264,20 @@ function AnomaliesWidget({ count, alerts }: { count: number; alerts: Alert[] }) 
         </CardContent>
       )}
     </Card>
+  );
+}
+
+function AnomalyCorrelationBadge({ alertId }: { alertId: string }) {
+  const { data } = useAlertContext(alertId);
+  if (!data || data.counts.total === 0) return null;
+  return (
+    <Badge
+      variant="outline"
+      className="text-xs border-amber-500 text-amber-600"
+      data-testid={`badge-anomaly-correlation-${alertId}`}
+    >
+      {data.counts.total} change{data.counts.total === 1 ? "" : "s"} near this anomaly
+    </Badge>
   );
 }
 

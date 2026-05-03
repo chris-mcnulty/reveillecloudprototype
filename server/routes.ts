@@ -12,7 +12,7 @@ import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDis
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
 import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
-import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY } from "./anomalyDetection";
+import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY, computeAnomalyContext } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
 import { collectFoundryDiscovery } from "./collectors/foundryDiscovery";
@@ -258,6 +258,14 @@ export async function registerRoutes(
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
     const alert = await storage.createAlert(parsed.data);
     res.status(201).json(alert);
+  });
+
+  app.get("/api/alerts/:id/context", async (req, res) => {
+    const alert = await storage.getAlertById(req.params.id);
+    if (!alert) return res.status(404).json({ message: "Alert not found" });
+    const context = await computeAnomalyContext(alert);
+    if (!context) return res.status(400).json({ message: "Alert is not an anomaly with payload" });
+    res.json(context);
   });
 
   app.patch("/api/alerts/:id/acknowledge", async (req, res) => {

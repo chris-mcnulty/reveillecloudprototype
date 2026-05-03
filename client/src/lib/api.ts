@@ -213,6 +213,32 @@ export function useMetricBaselineHistory(tenantId: string | null, streamKey: str
   });
 }
 
+export interface AnomalyContextItem {
+  kind: "admin_audit" | "service_health" | "tenant_audit";
+  id: string;
+  timestamp: string;
+  title: string;
+  detail?: string;
+  deltaMinutes: number;
+}
+
+export interface AnomalyContextResponse {
+  alertId: string;
+  windowStart: string;
+  windowEnd: string;
+  items: AnomalyContextItem[];
+  counts: { adminAudit: number; serviceHealth: number; tenantAudit: number; total: number };
+}
+
+export function useAlertContext(alertId: string | null, enabled = true) {
+  return useQuery<AnomalyContextResponse>({
+    queryKey: ["/api/alerts", alertId, "context"],
+    queryFn: () => fetchJson(`/api/alerts/${alertId}/context`),
+    enabled: !!alertId && enabled,
+    staleTime: 60000,
+  });
+}
+
 export function useAnomalyCount(tenantId: string | null, hours = 24) {
   return useQuery<{ count: number; sinceHours: number }>({
     queryKey: ["/api/tenants", tenantId, "anomaly", "count", hours],

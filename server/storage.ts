@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, gte, gt, asc, sql, ilike, type SQL } from "drizzle-orm";
+import { eq, desc, and, gte, gt, lte, asc, sql, ilike, or, type SQL } from "drizzle-orm";
 import { liveEvents } from "./events";
 import { extractCopilotEnrichment } from "./collectors/copilotEnrichment";
 import {
@@ -42,7 +42,6 @@ import {
   foundryUsageSnapshots, type FoundryUsageSnapshot, type InsertFoundryUsageSnapshot,
   foundryPricingOverrides, type FoundryPricingOverride, type InsertFoundryPricingOverride,
 } from "@shared/schema";
-import { or } from "drizzle-orm";
 
 export interface IStorage {
   getOrganizations(): Promise<Organization[]>;
@@ -85,6 +84,7 @@ export interface IStorage {
   acknowledgeAlert(id: string): Promise<Alert | undefined>;
   updateAlertPayload(id: string, payload: Record<string, unknown>): Promise<Alert | undefined>;
   getLatestAnomalyAlertForStream(tenantId: string, streamKey: string): Promise<Alert | undefined>;
+  getAlertById(id: string): Promise<Alert | undefined>;
   getAnomalyAlertCount(tenantId: string, since: Date): Promise<number>;
 
   upsertMetricBaseline(data: InsertMetricBaseline): Promise<MetricBaseline>;
@@ -125,6 +125,9 @@ export interface IStorage {
 
   createAdminAuditEntry(entry: InsertAdminAuditLog): Promise<AdminAuditLog>;
   getAdminAuditLog(tenantId?: string, since?: Date, limit?: number): Promise<AdminAuditLog[]>;
+  getAdminAuditLogInRange(tenantId: string, from: Date, to: Date): Promise<AdminAuditLog[]>;
+  getAuditLogEntriesInRange(tenantId: string, from: Date, to: Date): Promise<AuditLogEntry[]>;
+  getServiceHealthIncidentsInRange(tenantId: string | undefined, from: Date, to: Date): Promise<ServiceHealthIncident[]>;
 
   upsertPowerPlatformEnvironment(data: InsertPowerPlatformEnvironment): Promise<PowerPlatformEnvironment>;
   getPowerPlatformEnvironments(tenantId: string): Promise<PowerPlatformEnvironment[]>;
@@ -662,6 +665,11 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  async getAlertById(id: string): Promise<Alert | undefined> {
+    const [row] = await db.select().from(alerts).where(eq(alerts.id, id)).limit(1);
+    return row;
+  }
+
   async getAnomalyAlertCount(tenantId: string, since: Date): Promise<number> {
     const [row] = await db.select({ count: sql<number>`count(*)` }).from(alerts)
       .where(and(eq(alerts.tenantId, tenantId), eq(alerts.alertType, "anomaly"), gte(alerts.timestamp, since)));
@@ -932,6 +940,41 @@ export class DatabaseStorage implements IStorage {
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(adminAuditLog.timestamp))
       .limit(limit);
+  }
+
+  async getAdminAuditLogInRange(tenantId: string, from: Date, to: Date): Promise<AdminAuditLog[]> {
+    return db.select().from(adminAuditLog)
+      .where(and(
+        eq(adminAuditLog.tenantId, tenantId),
+        gte(adminAuditLog.timestamp, from),
+        lte(adminAuditLog.timestamp, to),
+      ))
+      .orderBy(desc(adminAuditLog.timestamp));
+  }
+
+  async getAuditLogEntriesInRange(tenantId: string, from: Date, to: Date): Promise<AuditLogEntry[]> {
+    return db.select().from(auditLogEntries)
+      .where(and(
+        eq(auditLogEntries.tenantId, tenantId),
+        gte(auditLogEntries.timestamp, from),
+        lte(auditLogEntries.timestamp, to),
+      ))
+      .orderBy(desc(auditLogEntries.timestamp));
+  }
+
+  async getServiceHealthIncidentsInRange(tenantId: string | undefined, from: Date, to: Date): Promise<ServiceHealthIncident[]> {
+    const tenantClause = tenantId
+      ? or(eq(serviceHealthIncidents.tenantId, tenantId), sql`${serviceHealthIncidents.tenantId} IS NULL`)
+      : undefined;
+    const inWindow = sql`(
+      (${serviceHealthIncidents.startDateTime} BETWEEN ${from} AND ${to})
+      OR (${serviceHealthIncidents.lastUpdatedAt} BETWEEN ${from} AND ${to})
+      OR (${serviceHealthIncidents.collectedAt} BETWEEN ${from} AND ${to})
+    )`;
+    const where = tenantClause ? and(tenantClause, inWindow) : inWindow;
+    return db.select().from(serviceHealthIncidents)
+      .where(where)
+      .orderBy(desc(serviceHealthIncidents.startDateTime));
   }
 
   async upsertPowerPlatformEnvironment(data: InsertPowerPlatformEnvironment): Promise<PowerPlatformEnvironment> {
