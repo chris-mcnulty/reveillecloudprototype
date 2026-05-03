@@ -348,13 +348,15 @@ function LlmBudgetRulesSection({ tenantId }: { tenantId: string }) {
             <Label htmlFor="budget-channels">Notify channels</Label>
             <Input
               id="budget-channels"
-              placeholder="email:ops@acme.com, teams:#it-ops, webhook:https://..."
+              placeholder="email:ops@acme.com, teams:https://acme.webhook.office.com/..., webhook:https://..."
               value={channels}
               onChange={(e) => setChannels(e.target.value)}
               data-testid="input-budget-channels"
             />
             <p className="text-xs text-muted-foreground">
-              Comma-separated <code>type:target</code> pairs (email, teams, webhook). Empty = in-app only.
+              Comma-separated <code>type:target</code> pairs. <code>email</code> = address;{" "}
+              <code>teams</code> = incoming webhook URL (https://*.webhook.office.com/...);{" "}
+              <code>webhook</code> = HTTPS URL. Empty = in-app only.
             </p>
           </div>
           <div className="md:col-span-4 flex justify-end">

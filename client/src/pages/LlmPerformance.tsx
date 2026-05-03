@@ -188,7 +188,7 @@ function StatusDot({ status }: { status: string }) {
 
 export default function LlmPerformance() {
   const queryClient = useQueryClient();
-  const { activeTenantId, activeOrgId, organization } = useActiveTenant();
+  const { activeTenantId, setActiveTenantId, activeOrgId, organization, orgTenants } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
   const { since: windowSince } = useUrlWindow();
   const [agentFilter, setAgentFilter] = useState<string>("all");
@@ -207,6 +207,17 @@ export default function LlmPerformance() {
     if (m) setExpandedModelId(m);
     if (c) setHighlightCallId(c);
   }, []);
+
+  useEffect(() => {
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    const params = new URLSearchParams(search);
+    const t = params.get("tenant");
+    if (!t || orgTenants.length === 0) return;
+    const match = orgTenants.find(ot => ot.id === t);
+    if (match && match.id !== activeTenantId) {
+      setActiveTenantId(match.id);
+    }
+  }, [orgTenants, activeTenantId, setActiveTenantId]);
 
   const { data: pinnedCall } = useQuery<LlmCall>({
     queryKey: ["/api/llm-calls/by-id", activeTenantId, highlightCallId],

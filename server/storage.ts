@@ -2,6 +2,7 @@ import { db } from "./db";
 import { eq, desc, and, gte, gt, lte, asc, sql, ilike, or, type SQL } from "drizzle-orm";
 import { liveEvents } from "./events";
 import { extractCopilotEnrichment } from "./collectors/copilotEnrichment";
+import { sendBudgetAlertNotifications } from "./notifications/budgetAlerts";
 import {
   organizations, type Organization, type InsertOrganization,
   tenants, type Tenant, type InsertTenant,
@@ -3608,7 +3609,12 @@ export class DatabaseStorage implements IStorage {
         const title = t >= 100
           ? `LLM budget exceeded${scopeLabel}: ${pct.toFixed(0)}% of $${dollarsBudget}`
           : `LLM budget at ${t}%${scopeLabel}: $${dollarsSpent} of $${dollarsBudget}`;
-        await this.createAlert({
+        let modelLabel: string | null = null;
+        if (rule.modelId) {
+          const [m] = await db.select().from(llmModels).where(eq(llmModels.id, rule.modelId));
+          modelLabel = m ? (m.displayName || m.modelName) : null;
+        }
+        const createdAlert = await this.createAlert({
           tenantId: rule.tenantId,
           ruleId: rule.id,
           alertType: "llm_budget",
@@ -3629,6 +3635,41 @@ export class DatabaseStorage implements IStorage {
           },
         });
         alertsCreated++;
+
+        const channels = (rule.channels ?? []) as { type: string; target: string }[];
+        if (channels.length > 0) {
+          try {
+            const results = await sendBudgetAlertNotifications({
+              alert: createdAlert,
+              rule,
+              tenant,
+              thresholdPercent: t,
+              spentCents: spent,
+              budgetCents: budget,
+              percent: pct,
+              modelLabel,
+            });
+            const failures = results.filter(r => !r.delivered);
+            if (failures.length > 0) {
+              console.warn(
+                `[LlmBudget] Notification delivery issues for rule ${rule.id} threshold ${t}%:`,
+                failures.map(f => `${f.channel}:${f.target} (${f.message})`).join("; "),
+              );
+            }
+            const enriched = {
+              ...((createdAlert.payload as Record<string, unknown>) ?? {}),
+              notifications: results.map(r => ({
+                channel: r.channel,
+                target: r.target,
+                delivered: r.delivered,
+                message: r.message,
+              })),
+            };
+            await this.updateAlertPayload(createdAlert.id, enriched);
+          } catch (err) {
+            console.error(`[LlmBudget] Failed to dispatch notifications for rule ${rule.id}:`, err);
+          }
+        }
       }
 
       if (newlyFired.length > 0) {
