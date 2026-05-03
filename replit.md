@@ -1,30 +1,27 @@
 # Reveille Cloud - SharePoint Online Performance Monitoring Collector
 
 ## Overview
-Reveille Cloud is a multi-tenant SaaS platform designed to monitor SharePoint Online performance for customer tenants. It offers synthetic transaction testing, passive telemetry collection, alerting, and provides MSP-level visibility. The platform aims to ensure optimal SharePoint performance, detect issues proactively, and offer comprehensive insights into M365 usage and health.
+Reveille Cloud is a multi-tenant SaaS platform for monitoring SharePoint Online performance. It provides proactive issue detection, synthetic transaction testing, passive telemetry collection, alerting, and comprehensive insights into M365 usage and health, aiming to ensure optimal SharePoint performance and offer MSP-level visibility.
 
 ## User Preferences
 I prefer that the agent focuses on completing the current task efficiently. If there are multiple ways to achieve a goal, suggest the most straightforward and maintainable approach first. Provide clear, concise explanations for any significant architectural decisions or code changes. Prioritize the use of existing libraries and patterns over introducing new ones unless there's a clear benefit. I expect the agent to ask for confirmation before making any large-scale changes or introducing new features.
 
 ## System Architecture
-The application uses a modern web stack with **React**, **Vite**, **TailwindCSS**, and **shadcn/ui** for the frontend, and an **Express.js (TypeScript)** backend. **PostgreSQL** is the database, managed with **Drizzle ORM**. Routing is handled by **wouter** on the frontend and **Express** for the API.
+The application uses a modern web stack with React, Vite, TailwindCSS, and shadcn/ui for the frontend, and an Express.js (TypeScript) backend with PostgreSQL and Drizzle ORM. Routing is managed by wouter and Express.
 
 Key architectural decisions include:
-- **Multi-tenant Design**: Supports "standard" customer organizations and "msp" organizations with different UI modes and tenant management capabilities.
-- **Data Models**: Centralized schema for organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, admin audit logs, and Azure AI Foundry deployments / usage snapshots). Anomaly detection adds two tables — `metricBaselines` (hourly rolling-window stats per tenant×stream: mean/stddev/p50/p95/sampleCount/current/zScore) and `anomalyStreamConfigs` (per-tenant×stream sensitivity 1–6, default 3, with enabled flag) — and extends `alerts` with `alertType` (`threshold` default vs `anomaly`), `streamKey`, and a `payload` JSON column carrying anomaly metadata (current/mean/stddev/zScore/sensitivity/state/followupCount).
-- **SharePoint Integration**: Utilizes the Microsoft Graph API, enhanced by the Replit SharePoint connector for delegated authentication in synthetic tests and Azure AD multi-tenant app registration with client credentials for server-side collectors.
-- **Automated Scheduler**: An adapted multi-tenant scheduler handles various job types (synthetic tests, service health, audit logs, Graph reports, site structure, Copilot interactions, Azure AI Foundry discovery) with independent intervals, staggered execution, and persistence of job runs.
-- **Passive Data Collectors**:
-    - **Graph Reports**: Collects 11 types of M365 usage reports (SharePoint, OneDrive, Cross-M365 workloads).
-    - **Service Health**: Monitors M365 service health for SharePoint/OneDrive/M365 incidents and generates alerts.
-    - **Audit Logs**: Collects audit data from multiple sources including Office 365 Management Activity API, Graph Directory Audits, Graph Sign-Ins, and site analytics with a cascading fallback mechanism.
-    - **Site Structure**: Enumerates SharePoint subsites, lists/libraries, drives, M365 Groups, and tenant users.
-    - **Copilot Interactions**: Gathers Copilot prompt/response history via Graph API, organizing them into conversation threads and prompt-response pairs.
-    - **Foundry Discovery**: Hourly enumeration of Cognitive Services / OpenAI deployments via Azure Resource Manager and Azure Monitor token metrics into `foundry_deployments` / `foundry_usage_snapshots`. Surfaces an RBAC consent prompt on 401/403.
-- **Azure AD Multi-Tenant App Registration**: Enables server-side collectors to acquire per-tenant tokens using client credentials flow, supporting admin consent and managing required Graph and Office 365 Management API permissions.
-- **Agent Observability**: Features detailed tracing for agent invocations and tool calls, providing insights into the performance and behavior of integrated agents and Copilot interactions.
+- **Multi-tenant Design**: Supports "standard" customer organizations and "msp" organizations with distinct UI modes and tenant management.
+- **Data Models**: A centralized schema manages organizations, tenants, monitored systems, synthetic tests, alerts, metrics, and various collector-specific data (usage reports, service health incidents, audit logs, Copilot interactions, Entra Sign-ins, MCP servers, admin audit logs, and Azure AI Foundry deployments/usage snapshots). Anomaly detection extends alerts and introduces `metricBaselines` and `anomalyStreamConfigs`.
+- **SharePoint Integration**: Leverages Microsoft Graph API, supplemented by the Replit SharePoint connector for delegated authentication and Azure AD multi-tenant app registration for server-side collectors.
+- **Automated Scheduler**: A multi-tenant scheduler orchestrates various job types (synthetic tests, service health, audit logs, Graph reports, site structure, Copilot interactions, Azure AI Foundry discovery) with independent intervals and staggered execution.
+- **Passive Data Collectors**: Collects M365 usage reports, monitors service health, gathers audit logs from multiple sources, enumerates SharePoint site structures, and collects Copilot interaction history and Azure AI Foundry deployment usage.
+- **Azure AD Multi-Tenant App Registration**: Facilitates server-side collectors in acquiring per-tenant tokens using client credentials flow, supporting admin consent and managing required Graph and Office 365 Management API permissions.
+- **Anomaly Detection**: Implemented for key performance streams (e.g., synthetic latency, agent error rate), utilizing 7-day hourly baselines and Z-score calculations to generate critical or warning alerts based on sensitivity.
+- **Agent Observability**: Provides detailed tracing for agent invocations and tool calls, including a Copilot Models leaderboard for performance analysis.
 - **Admin Audit Logging**: All mutating API operations are logged for administrative oversight.
 - **Branding**: Reveille Cloud branding with custom logo assets.
+- **Query Performance & Indexes**: Extensive use of covering indexes and SQL aggregation rewrites (e.g., CTEs for agent health summaries, `COUNT(*) OVER()` for pagination) to optimize database query performance, targeting p95 < 200ms.
+- **Foundry Cost Allocation**: Enables tracking and allocation of costs for Azure AI Foundry deployments based on usage and pricing overrides.
 
 ## Key Data Models
 - **organizations**: Top-level entities (mode: "standard" for customers, "msp" for managed service providers). Controls UI mode.
@@ -291,25 +288,17 @@ Database index strategy targeting p95 < 200ms on hot list endpoints. Indexes are
 - Synozur Orbit (competitive intelligence): https://github.com/chris-mcnulty/synozur-orbit — has multi-tenant task scheduler pattern used as basis for Reveille scheduler
 
 ## External Dependencies
-- **Microsoft Graph API**: Core for SharePoint integration, M365 reports, service health, audit logs, Copilot interactions, and Entra Sign-ins.
-- **Office 365 Management Activity API**: Used for detailed SharePoint audit events (`ActivityFeed.Read` permission).
-- **Azure Resource Manager + Azure Monitor**: Used by the Foundry discovery collector to enumerate Cognitive Services / OpenAI deployments and pull token usage metrics. Required RBAC for the discovery service principal: Reader on the subscription, Monitoring Reader on each Cognitive Services account.
-- **Replit SharePoint connector**: Used for delegated authentication in synthetic tests.
-- **PostgreSQL**: Primary database for data storage.
-- **Drizzle ORM**: ORM for interacting with PostgreSQL.
-- **node-postgres**: PostgreSQL client for Node.js.
-- **Express.js**: Web application framework for the backend API.
-- **React**: Frontend JavaScript library.
+- **Microsoft Graph API**: For SharePoint integration, M365 reports, service health, audit logs, Copilot interactions, and Entra Sign-ins.
+- **Office 365 Management Activity API**: For detailed SharePoint audit events.
+- **Azure Resource Manager + Azure Monitor**: For Foundry discovery and token usage metrics.
+- **Replit SharePoint connector**: For delegated authentication in synthetic tests.
+- **PostgreSQL**: Primary database.
+- **Drizzle ORM**: ORM for PostgreSQL.
+- **node-postgres**: PostgreSQL client.
+- **Express.js**: Backend web framework.
+- **React**: Frontend library.
 - **Vite**: Frontend build tool.
-- **TailwindCSS**: Utility-first CSS framework.
+- **TailwindCSS**: CSS framework.
 - **shadcn/ui**: UI component library.
-- **Recharts**: Charting library for data visualization.
-- **wouter**: Small routing library for React.
-
-## Foundry Cost Allocation (Task #23)
-- `foundry_pricing_overrides` table: per-deployment input/output $/Mtok overrides.
-- `GET /api/tenants/:id/foundry/cost-allocation?windowHours=24|168|720` — joins authoritative `foundry_usage_snapshots` (latest per windowHours) with `llm_calls` aggregated over [now-windowHours, now] grouped by (model, agent, platform). Pricing precedence: override > llmModels rate. Per-agent share prorated by tokens; remainder = unallocated.
-- `GET/PUT/DELETE /api/tenants/:id/foundry/pricing-overrides[/:deploymentId]`.
-- `GET /api/tenants/:id/exports/foundry-cost-allocation?format=csv|xlsx`.
-- UI: `/llm-performance` → "Cost allocation" tab — window selector, totals, per-deployment expandable agent rows, "Edit pricing" dialog, CSV export.
-- Business unit proxy: `knownAgents.platform`.
+- **Recharts**: Charting library.
+- **wouter**: Frontend routing library.
