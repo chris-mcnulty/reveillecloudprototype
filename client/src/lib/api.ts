@@ -239,6 +239,43 @@ export function useAlertContext(alertId: string | null, enabled = true) {
   });
 }
 
+export interface AnomalyNotificationSettingsUI {
+  tenantId: string;
+  emailEnabled: boolean;
+  emailRecipients: string[];
+  emailSeverities: string[];
+  teamsEnabled: boolean;
+  teamsWebhookUrl: string | null;
+  teamsSeverities: string[];
+}
+
+export function useAnomalyNotificationSettings(tenantId: string | null) {
+  return useQuery<AnomalyNotificationSettingsUI>({
+    queryKey: ["/api/tenants", tenantId, "anomaly", "notifications"],
+    queryFn: () => fetchJson(`/api/tenants/${tenantId}/anomaly/notifications`),
+    enabled: !!tenantId,
+  });
+}
+
+export function useUpdateAnomalyNotificationSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenantId, ...patch }: { tenantId: string } & Partial<AnomalyNotificationSettingsUI>) => {
+      return fetch(`/api/tenants/${tenantId}/anomaly/notifications`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).then(async r => {
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      });
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["/api/tenants", vars.tenantId, "anomaly", "notifications"] });
+    },
+  });
+}
+
 export function useAnomalyCount(tenantId: string | null, hours = 24) {
   return useQuery<{ count: number; sinceHours: number }>({
     queryKey: ["/api/tenants", tenantId, "anomaly", "count", hours],

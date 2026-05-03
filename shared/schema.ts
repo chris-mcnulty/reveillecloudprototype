@@ -208,6 +208,24 @@ export const insertAnomalyStreamConfigSchema = createInsertSchema(anomalyStreamC
 export type InsertAnomalyStreamConfig = z.infer<typeof insertAnomalyStreamConfigSchema>;
 export type AnomalyStreamConfig = typeof anomalyStreamConfigs.$inferSelect;
 
+export const anomalyNotificationSettings = pgTable("anomaly_notification_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  emailEnabled: boolean("email_enabled").notNull().default(false),
+  emailRecipients: text("email_recipients").array().notNull().default(sql`ARRAY[]::text[]`),
+  emailSeverities: text("email_severities").array().notNull().default(sql`ARRAY['critical']::text[]`),
+  teamsEnabled: boolean("teams_enabled").notNull().default(false),
+  teamsWebhookUrl: text("teams_webhook_url"),
+  teamsSeverities: text("teams_severities").array().notNull().default(sql`ARRAY['warning','critical']::text[]`),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  uqTenant: uniqueIndex("uq_anomaly_notify_tenant").on(table.tenantId),
+}));
+
+export const insertAnomalyNotificationSettingsSchema = createInsertSchema(anomalyNotificationSettings).omit({ id: true, updatedAt: true });
+export type InsertAnomalyNotificationSettings = z.infer<typeof insertAnomalyNotificationSettingsSchema>;
+export type AnomalyNotificationSettings = typeof anomalyNotificationSettings.$inferSelect;
+
 export const testRuns = pgTable("test_runs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   testId: varchar("test_id").notNull().references(() => syntheticTests.id),

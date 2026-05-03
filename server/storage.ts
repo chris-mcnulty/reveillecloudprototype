@@ -37,6 +37,7 @@ import {
   savedViews, type SavedView, type InsertSavedView,
   metricBaselines, type MetricBaseline, type InsertMetricBaseline,
   anomalyStreamConfigs, type AnomalyStreamConfig, type InsertAnomalyStreamConfig,
+  anomalyNotificationSettings, type AnomalyNotificationSettings, type InsertAnomalyNotificationSettings,
   scheduledDigests, type ScheduledDigest, type InsertScheduledDigest,
   scheduledDigestRuns, type ScheduledDigestRun, type InsertScheduledDigestRun,
   foundryDeployments, type FoundryDeployment, type InsertFoundryDeployment,
@@ -95,6 +96,9 @@ export interface IStorage {
   getAnomalyStreamConfigs(tenantId: string): Promise<AnomalyStreamConfig[]>;
   getAnomalyStreamConfig(tenantId: string, streamKey: string): Promise<AnomalyStreamConfig | undefined>;
   upsertAnomalyStreamConfig(data: InsertAnomalyStreamConfig): Promise<AnomalyStreamConfig>;
+
+  getAnomalyNotificationSettings(tenantId: string): Promise<AnomalyNotificationSettings | undefined>;
+  upsertAnomalyNotificationSettings(data: InsertAnomalyNotificationSettings): Promise<AnomalyNotificationSettings>;
 
   getGlobalStats(): Promise<{ totalTenants: number; activeIncidents: number; totalTests24h: number }>;
 
@@ -543,6 +547,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(metrics).where(eq(metrics.tenantId, id));
     await db.delete(metricBaselines).where(eq(metricBaselines.tenantId, id));
     await db.delete(anomalyStreamConfigs).where(eq(anomalyStreamConfigs.tenantId, id));
+    await db.delete(anomalyNotificationSettings).where(eq(anomalyNotificationSettings.tenantId, id));
     const tests = await db.select({ id: syntheticTests.id }).from(syntheticTests).where(eq(syntheticTests.tenantId, id));
     for (const t of tests) {
       await db.delete(testRuns).where(eq(testRuns.testId, t.id));
@@ -753,6 +758,31 @@ export class DatabaseStorage implements IStorage {
       .onConflictDoUpdate({
         target: [anomalyStreamConfigs.tenantId, anomalyStreamConfigs.streamKey],
         set: { enabled: data.enabled, sensitivity: data.sensitivity, updatedAt: new Date() },
+      })
+      .returning();
+    return upserted;
+  }
+
+  async getAnomalyNotificationSettings(tenantId: string): Promise<AnomalyNotificationSettings | undefined> {
+    const [row] = await db.select().from(anomalyNotificationSettings)
+      .where(eq(anomalyNotificationSettings.tenantId, tenantId));
+    return row;
+  }
+
+  async upsertAnomalyNotificationSettings(data: InsertAnomalyNotificationSettings): Promise<AnomalyNotificationSettings> {
+    const [upserted] = await db.insert(anomalyNotificationSettings)
+      .values({ ...data, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: anomalyNotificationSettings.tenantId,
+        set: {
+          emailEnabled: data.emailEnabled ?? false,
+          emailRecipients: data.emailRecipients ?? [],
+          emailSeverities: data.emailSeverities ?? ["critical"],
+          teamsEnabled: data.teamsEnabled ?? false,
+          teamsWebhookUrl: data.teamsWebhookUrl ?? null,
+          teamsSeverities: data.teamsSeverities ?? ["warning", "critical"],
+          updatedAt: new Date(),
+        },
       })
       .returning();
     return upserted;

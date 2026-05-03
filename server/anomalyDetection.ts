@@ -2,6 +2,7 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { sql } from "drizzle-orm";
 import { isAnomalyAlertPayload, type Alert, type AnomalyAlertPayload } from "@shared/schema";
+import { sendDigestEmail, sendTeamsAdaptiveCard, type AdaptiveCardPayload } from "./digests/delivery";
 
 export type StreamKey =
   | "synthetic.latency"
@@ -331,6 +332,23 @@ export async function detectForStream(tenantId: string, streamKey: StreamKey): P
     payload: payload as unknown as Record<string, unknown>,
   });
 
+  // Fan out to email + Teams per tenant notification settings.
+  await deliverAnomalyNotifications({
+    tenantId,
+    tenantName: tenant?.name,
+    title,
+    message,
+    severity,
+    streamLabel: def.label,
+    current: latestSample.value,
+    mean: stats.mean,
+    zScore,
+    unit: def.unit,
+    isFollowup,
+  }).catch(err => {
+    console.error(`[Anomaly] Notification fan-out failed for ${tenantId}/${streamKey}:`, err);
+  });
+
   return { streamKey, computed: true, action: { kind: "fired", isFollowup, zScore } };
 }
 
@@ -431,6 +449,136 @@ export async function computeAnomalyContext(alert: Alert): Promise<AnomalyContex
       total: items.length,
     },
   };
+}
+
+interface AnomalyNotificationContext {
+  tenantId: string;
+  tenantName?: string;
+  title: string;
+  message: string;
+  severity: "info" | "warning" | "critical";
+  streamLabel: string;
+  current: number;
+  mean: number;
+  zScore: number;
+  unit: string;
+  isFollowup: boolean;
+}
+
+function getAlertsLink(): string {
+  const base = process.env.PUBLIC_BASE_URL || "https://reveille.local";
+  return `${base.replace(/\/$/, "")}/alerts`;
+}
+
+function severityColor(severity: "info" | "warning" | "critical"): string {
+  if (severity === "critical") return "Attention";
+  if (severity === "warning") return "Warning";
+  return "Accent";
+}
+
+function buildEmailHtml(ctx: AnomalyNotificationContext): string {
+  const link = getAlertsLink();
+  const valueStr = formatValue(ctx.current, ctx.unit);
+  const meanStr = formatValue(ctx.mean, ctx.unit);
+  const followupBadge = ctx.isFollowup
+    ? `<p style="margin:0 0 12px 0;padding:6px 10px;background:#fff3cd;border-left:3px solid #f59e0b;font-size:13px;color:#92400e;"><strong>Anomaly still active</strong> &mdash; this is a 4-hour follow-up notification.</p>`
+    : "";
+  return `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;color:#111;max-width:640px;margin:0 auto;padding:20px;">
+    <h2 style="margin:0 0 8px 0;color:${ctx.severity === "critical" ? "#b91c1c" : ctx.severity === "warning" ? "#b45309" : "#1d4ed8"};">${ctx.title}</h2>
+    ${followupBadge}
+    <p style="margin:0 0 16px 0;font-size:14px;color:#333;">${ctx.message}</p>
+    <table style="border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px;">
+      <tr><td style="padding:6px 8px;background:#f5f5f5;width:160px;">Stream</td><td style="padding:6px 8px;">${ctx.streamLabel}</td></tr>
+      <tr><td style="padding:6px 8px;background:#f5f5f5;">Current value</td><td style="padding:6px 8px;">${valueStr}</td></tr>
+      <tr><td style="padding:6px 8px;background:#f5f5f5;">Baseline mean</td><td style="padding:6px 8px;">${meanStr}</td></tr>
+      <tr><td style="padding:6px 8px;background:#f5f5f5;">Z-score</td><td style="padding:6px 8px;">${ctx.zScore.toFixed(2)}</td></tr>
+      <tr><td style="padding:6px 8px;background:#f5f5f5;">Severity</td><td style="padding:6px 8px;text-transform:capitalize;">${ctx.severity}</td></tr>
+    </table>
+    <p style="margin:0;"><a href="${link}" style="background:#2563eb;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px;font-size:14px;">View in Alerts</a></p>
+  </body></html>`;
+}
+
+function buildAnomalyAdaptiveCard(ctx: AnomalyNotificationContext): AdaptiveCardPayload {
+  const link = getAlertsLink();
+  const valueStr = formatValue(ctx.current, ctx.unit);
+  const meanStr = formatValue(ctx.mean, ctx.unit);
+  const facts: Array<{ title: string; value: string }> = [
+    { title: "Stream", value: ctx.streamLabel },
+    { title: "Current", value: valueStr },
+    { title: "Baseline mean", value: meanStr },
+    { title: "Z-score", value: ctx.zScore.toFixed(2) },
+    { title: "Severity", value: ctx.severity },
+  ];
+  if (ctx.tenantName) facts.unshift({ title: "Tenant", value: ctx.tenantName });
+
+  const body: Array<Record<string, unknown>> = [
+    {
+      type: "TextBlock",
+      text: ctx.isFollowup ? `Anomaly still active: ${ctx.streamLabel}` : `Anomaly detected: ${ctx.streamLabel}`,
+      weight: "Bolder",
+      size: "Medium",
+      color: severityColor(ctx.severity),
+      wrap: true,
+    },
+  ];
+  if (ctx.isFollowup) {
+    body.push({
+      type: "TextBlock",
+      text: "4-hour follow-up — this anomaly has not recovered.",
+      isSubtle: true,
+      wrap: true,
+      spacing: "None",
+    });
+  }
+  body.push({ type: "TextBlock", text: ctx.message, wrap: true, spacing: "Small" });
+  body.push({ type: "FactSet", facts });
+
+  return {
+    type: "message",
+    attachments: [
+      {
+        contentType: "application/vnd.microsoft.card.adaptive",
+        content: {
+          type: "AdaptiveCard",
+          $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+          version: "1.4",
+          body,
+          actions: [
+            { type: "Action.OpenUrl", title: "View in Alerts", url: link },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+async function deliverAnomalyNotifications(ctx: AnomalyNotificationContext): Promise<void> {
+  const settings = await storage.getAnomalyNotificationSettings(ctx.tenantId);
+  if (!settings) return;
+
+  const subjectPrefix = ctx.isFollowup ? "[Anomaly still active]" : "[Anomaly]";
+
+  if (settings.emailEnabled && settings.emailRecipients.length > 0
+      && (settings.emailSeverities ?? []).includes(ctx.severity)) {
+    const html = buildEmailHtml(ctx);
+    const result = await sendDigestEmail({
+      recipients: settings.emailRecipients,
+      subject: `${subjectPrefix} ${ctx.title}`,
+      html,
+    });
+    if (!result.delivered) {
+      console.warn(`[Anomaly] Email not delivered for tenant=${ctx.tenantId}: ${result.message}`);
+    }
+  }
+
+  if (settings.teamsEnabled && settings.teamsWebhookUrl
+      && (settings.teamsSeverities ?? []).includes(ctx.severity)) {
+    const card = buildAnomalyAdaptiveCard(ctx);
+    const result = await sendTeamsAdaptiveCard(settings.teamsWebhookUrl, card);
+    if (!result.delivered) {
+      console.warn(`[Anomaly] Teams not delivered for tenant=${ctx.tenantId}: ${result.message}`);
+    }
+  }
 }
 
 export interface AnomalyRunResult {

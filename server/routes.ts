@@ -312,6 +312,63 @@ export async function registerRoutes(
     res.json(cfg);
   });
 
+  app.get("/api/tenants/:tenantId/anomaly/notifications", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const settings = await storage.getAnomalyNotificationSettings(tenantId);
+    if (!settings) {
+      return res.json({
+        tenantId,
+        emailEnabled: false,
+        emailRecipients: [],
+        emailSeverities: ["critical"],
+        teamsEnabled: false,
+        teamsWebhookUrl: null,
+        teamsSeverities: ["warning", "critical"],
+      });
+    }
+    res.json(settings);
+  });
+
+  app.put("/api/tenants/:tenantId/anomaly/notifications", async (req, res) => {
+    const tenantId = req.params.tenantId;
+    const VALID_SEVERITIES = ["info", "warning", "critical"];
+    const body = req.body ?? {};
+    const emailRecipients: string[] = Array.isArray(body.emailRecipients)
+      ? body.emailRecipients.map((s: unknown) => String(s).trim()).filter((s: string) => s.includes("@"))
+      : [];
+    const emailSeverities: string[] = Array.isArray(body.emailSeverities)
+      ? body.emailSeverities.filter((s: unknown) => typeof s === "string" && VALID_SEVERITIES.includes(s as string))
+      : ["critical"];
+    const teamsSeverities: string[] = Array.isArray(body.teamsSeverities)
+      ? body.teamsSeverities.filter((s: unknown) => typeof s === "string" && VALID_SEVERITIES.includes(s as string))
+      : ["warning", "critical"];
+    const teamsWebhookUrl = typeof body.teamsWebhookUrl === "string" && body.teamsWebhookUrl.trim().length > 0
+      ? body.teamsWebhookUrl.trim()
+      : null;
+    if (teamsWebhookUrl) {
+      const check = validateTeamsWebhookUrl(teamsWebhookUrl);
+      if (!check.ok) return res.status(400).json({ message: check.error });
+    }
+    const settings = await storage.upsertAnomalyNotificationSettings({
+      tenantId,
+      emailEnabled: !!body.emailEnabled,
+      emailRecipients,
+      emailSeverities,
+      teamsEnabled: !!body.teamsEnabled,
+      teamsWebhookUrl,
+      teamsSeverities,
+    });
+    await logAdminAction(tenantId, "anomalyNotifications.updated", "anomalyNotificationSettings", settings.id, {
+      emailEnabled: settings.emailEnabled,
+      emailRecipientCount: settings.emailRecipients.length,
+      emailSeverities: settings.emailSeverities,
+      teamsEnabled: settings.teamsEnabled,
+      teamsConfigured: !!settings.teamsWebhookUrl,
+      teamsSeverities: settings.teamsSeverities,
+    });
+    res.json(settings);
+  });
+
   app.get("/api/tenants/:tenantId/anomaly/baselines/:streamKey", async (req, res) => {
     const { tenantId, streamKey } = req.params;
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 168;

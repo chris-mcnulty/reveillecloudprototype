@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil, Gauge } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
-import { useAnomalyStreamConfigs, useUpdateAnomalyStreamConfig, useTriggerJob, useAlertRules, useCreateAlertRule, useUpdateAlertRule, useDeleteAlertRule, useLlmModels, type AnomalyStreamConfigUI } from "@/lib/api";
+import { useAnomalyStreamConfigs, useUpdateAnomalyStreamConfig, useTriggerJob, useAlertRules, useCreateAlertRule, useUpdateAlertRule, useDeleteAlertRule, useLlmModels, useAnomalyNotificationSettings, useUpdateAnomalyNotificationSettings, type AnomalyStreamConfigUI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import type { AlertRule } from "@shared/schema";
 
@@ -94,6 +94,8 @@ export default function AlertRulesConfig() {
           )}
         </CardContent>
       </Card>
+
+      {activeTenantId && <AnomalyNotificationsSection key={activeTenantId} tenantId={activeTenantId} />}
 
       {activeTenantId && <LlmBudgetRulesSection tenantId={activeTenantId} />}
 
@@ -185,6 +187,178 @@ export default function AlertRulesConfig() {
         </Card>
       </div>
     </Shell>
+  );
+}
+
+const SEVERITY_OPTIONS: Array<{ value: "info" | "warning" | "critical"; label: string }> = [
+  { value: "info", label: "Info" },
+  { value: "warning", label: "Warning" },
+  { value: "critical", label: "Critical" },
+];
+
+function AnomalyNotificationsSection({ tenantId }: { tenantId: string }) {
+  const { data: settings, isLoading } = useAnomalyNotificationSettings(tenantId);
+  const saveMut = useUpdateAnomalyNotificationSettings();
+  const { toast } = useToast();
+
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [emailRecipients, setEmailRecipients] = useState<string>("");
+  const [emailSeverities, setEmailSeverities] = useState<string[]>(["critical"]);
+  const [teamsEnabled, setTeamsEnabled] = useState(false);
+  const [teamsWebhookUrl, setTeamsWebhookUrl] = useState<string>("");
+  const [teamsSeverities, setTeamsSeverities] = useState<string[]>(["warning", "critical"]);
+  useEffect(() => {
+    if (!settings) return;
+    setEmailEnabled(settings.emailEnabled);
+    setEmailRecipients((settings.emailRecipients || []).join(", "));
+    setEmailSeverities(settings.emailSeverities || ["critical"]);
+    setTeamsEnabled(settings.teamsEnabled);
+    setTeamsWebhookUrl(settings.teamsWebhookUrl || "");
+    setTeamsSeverities(settings.teamsSeverities || ["warning", "critical"]);
+  }, [settings, tenantId]);
+
+  function toggleSev(list: string[], setList: (v: string[]) => void, sev: string) {
+    setList(list.includes(sev) ? list.filter(s => s !== sev) : [...list, sev]);
+  }
+
+  function handleSave() {
+    const recipients = emailRecipients.split(",").map(s => s.trim()).filter(Boolean);
+    const invalid = recipients.filter(r => !r.includes("@"));
+    if (emailEnabled && recipients.length === 0) {
+      toast({ title: "At least one email recipient required", variant: "destructive" });
+      return;
+    }
+    if (invalid.length > 0) {
+      toast({ title: "Invalid email", description: invalid.join(", "), variant: "destructive" });
+      return;
+    }
+    if (teamsEnabled && !teamsWebhookUrl.trim()) {
+      toast({ title: "Teams webhook URL required", variant: "destructive" });
+      return;
+    }
+    saveMut.mutate(
+      {
+        tenantId,
+        emailEnabled,
+        emailRecipients: recipients,
+        emailSeverities,
+        teamsEnabled,
+        teamsWebhookUrl: teamsWebhookUrl.trim() || null,
+        teamsSeverities,
+      },
+      {
+        onSuccess: () => toast({ title: "Notification settings saved" }),
+        onError: (e: any) => toast({ title: "Save failed", description: e?.message || "Unknown error", variant: "destructive" }),
+      },
+    );
+  }
+
+  return (
+    <Card className="mb-6" data-testid="card-anomaly-notifications">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertCircle className="h-5 w-5 text-blue-500" />
+          Anomaly Alert Notifications
+        </CardTitle>
+        <CardDescription>
+          Choose which severities deliver to email and Microsoft Teams when an anomaly fires. Re-fires (after 4h) are clearly labeled as &ldquo;Anomaly still active&rdquo;.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <>
+            <div className="border rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Mail className="h-4 w-4 text-muted-foreground" />
+                  <Label className="text-sm font-medium">Email</Label>
+                </div>
+                <Switch checked={emailEnabled} onCheckedChange={setEmailEnabled} data-testid="switch-anomaly-email" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="anomaly-email-recipients" className="text-xs">Recipients (comma-separated)</Label>
+                <Input
+                  id="anomaly-email-recipients"
+                  placeholder="ops@acme.com, oncall@acme.com"
+                  value={emailRecipients}
+                  onChange={(e) => setEmailRecipients(e.target.value)}
+                  disabled={!emailEnabled}
+                  data-testid="input-anomaly-email-recipients"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs">Deliver these severities</Label>
+                <div className="flex gap-2">
+                  {SEVERITY_OPTIONS.map(opt => (
+                    <Button
+                      key={opt.value}
+                      type="button"
+                      size="sm"
+                      variant={emailSeverities.includes(opt.value) ? "default" : "outline"}
+                      onClick={() => toggleSev(emailSeverities, setEmailSeverities, opt.value)}
+                      disabled={!emailEnabled}
+                      data-testid={`button-anomaly-email-sev-${opt.value}`}
+                    >
+                      {opt.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="border rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                  <Label className="text-sm font-medium">Microsoft Teams</Label>
+                </div>
+                <Switch checked={teamsEnabled} onCheckedChange={setTeamsEnabled} data-testid="switch-anomaly-teams" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="anomaly-teams-webhook" className="text-xs">Incoming webhook URL</Label>
+                <Input
+                  id="anomaly-teams-webhook"
+                  placeholder="https://<tenant>.webhook.office.com/..."
+                  value={teamsWebhookUrl}
+                  onChange={(e) => setTeamsWebhookUrl(e.target.value)}
+                  disabled={!teamsEnabled}
+                  data-testid="input-anomaly-teams-webhook"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs">Deliver these severities</Label>
+                <div className="flex gap-2">
+                  {SEVERITY_OPTIONS.map(opt => (
+                    <Button
+                      key={opt.value}
+                      type="button"
+                      size="sm"
+                      variant={teamsSeverities.includes(opt.value) ? "default" : "outline"}
+                      onClick={() => toggleSev(teamsSeverities, setTeamsSeverities, opt.value)}
+                      disabled={!teamsEnabled}
+                      data-testid={`button-anomaly-teams-sev-${opt.value}`}
+                    >
+                      {opt.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button onClick={handleSave} disabled={saveMut.isPending} data-testid="button-save-anomaly-notifications">
+                {saveMut.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                Save notification settings
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
