@@ -2390,6 +2390,24 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
+  app.get("/api/saved-views/:id/count", async (req, res) => {
+    const view = await storage.getSavedView(req.params.id);
+    if (!view) return res.status(404).json({ message: "Not found" });
+    const orgId = (req.query.orgId as string | undefined) || view.orgId;
+    const userId = getRequestUserId(req);
+    if (!canAccessSavedView(view, orgId, userId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const tenantId = req.query.tenantId as string | undefined;
+    if (!tenantId) return res.status(400).json({ message: "tenantId required" });
+    try {
+      const count = await storage.countSavedViewMatches(view.pageKey, tenantId, view.filtersJson || {});
+      res.json({ count, pageKey: view.pageKey });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.delete("/api/saved-views/:id", async (req, res) => {
     const existing = await storage.getSavedView(req.params.id);
     if (!existing) return res.status(404).json({ message: "Not found" });

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, BookmarkPlus, Check, ChevronDown, Copy, Lock, Mail, Send, Share2, Trash2, Users } from "lucide-react";
@@ -62,8 +63,9 @@ export function SavedViews<TFilters extends Record<string, any>>({
   className,
 }: SavedViewsProps<TFilters>) {
   const queryClient = useQueryClient();
-  const { activeOrgId, organization } = useActiveTenant();
+  const { activeOrgId, activeTenantId, organization } = useActiveTenant();
   const orgId = activeOrgId || organization?.id || null;
+  const [menuOpen, setMenuOpen] = useState(false);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
@@ -181,6 +183,40 @@ export function SavedViews<TFilters extends Record<string, any>>({
     return JSON.stringify({ ...defaultFilters, ...activeView.filtersJson }) !== JSON.stringify(currentFilters);
   }, [activeView, currentFilters, defaultFilters]);
 
+  const countQueries = useQueries({
+    queries: views.map(v => ({
+      queryKey: ["/api/saved-views/count", v.id, activeTenantId],
+      enabled: menuOpen && !!activeTenantId,
+      staleTime: 30_000,
+      queryFn: async () => {
+        const params = new URLSearchParams();
+        params.set("tenantId", activeTenantId!);
+        const res = await authedFetch(`/api/saved-views/${v.id}/count?${params.toString()}`);
+        if (!res.ok) throw new Error(await res.text());
+        return (await res.json()) as { count: number };
+      },
+    })),
+  });
+  const countByViewId = useMemo(() => {
+    const map = new Map<string, { count?: number; loading: boolean; error: boolean }>();
+    views.forEach((v, i) => {
+      const q = countQueries[i];
+      map.set(v.id, {
+        count: (q?.data as { count: number } | undefined)?.count,
+        loading: !!q?.isLoading,
+        error: !!q?.isError,
+      });
+    });
+    return map;
+  }, [views, countQueries]);
+
+  const handleMenuOpenChange = (open: boolean) => {
+    setMenuOpen(open);
+    if (open) {
+      countQueries.forEach(q => q?.refetch?.());
+    }
+  };
+
   const userViews = views.filter(v => v.scope === "user" && !v.isSystem);
   const orgViews = views.filter(v => v.scope === "org" && !v.isSystem);
   const systemViews = views.filter(v => v.isSystem);
@@ -245,7 +281,7 @@ export function SavedViews<TFilters extends Record<string, any>>({
 
   return (
     <div className={`flex items-center gap-2 ${className || ""}`} data-testid={`saved-views-${pageKey}`}>
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={handleMenuOpenChange}>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" data-testid={`button-views-${pageKey}`}>
             <Bookmark className="h-3.5 w-3.5 mr-1.5" />
@@ -265,6 +301,7 @@ export function SavedViews<TFilters extends Record<string, any>>({
                   isActive={activeViewId === v.id}
                   onSelect={() => applyView(v)}
                   onDelete={() => deleteMutation.mutate(v.id)}
+                  countInfo={countByViewId.get(v.id)}
                 />
               ))}
               <DropdownMenuSeparator />
@@ -282,6 +319,7 @@ export function SavedViews<TFilters extends Record<string, any>>({
                   isActive={activeViewId === v.id}
                   onSelect={() => applyView(v)}
                   onDelete={() => deleteMutation.mutate(v.id)}
+                  countInfo={countByViewId.get(v.id)}
                 />
               ))}
               <DropdownMenuSeparator />
@@ -298,6 +336,7 @@ export function SavedViews<TFilters extends Record<string, any>>({
                   view={v}
                   isActive={activeViewId === v.id}
                   onSelect={() => applyView(v)}
+                  countInfo={countByViewId.get(v.id)}
                 />
               ))}
               <DropdownMenuSeparator />
@@ -441,12 +480,49 @@ function ViewItem({
   isActive,
   onSelect,
   onDelete,
+  countInfo,
 }: {
   view: SavedView;
   isActive: boolean;
   onSelect: () => void;
   onDelete?: () => void;
+  countInfo?: { count?: number; loading: boolean; error: boolean };
 }) {
+  const renderCount = () => {
+    if (!countInfo) return null;
+    if (countInfo.loading && countInfo.count === undefined) {
+      return (
+        <span
+          className="text-[10px] text-muted-foreground tabular-nums shrink-0"
+          data-testid={`view-count-loading-${view.id}`}
+        >
+          …
+        </span>
+      );
+    }
+    if (countInfo.error) {
+      return (
+        <span
+          className="text-[10px] text-muted-foreground tabular-nums shrink-0"
+          data-testid={`view-count-error-${view.id}`}
+          title="Could not load count"
+        >
+          —
+        </span>
+      );
+    }
+    if (countInfo.count === undefined) return null;
+    const display = countInfo.count > 999 ? "999+" : String(countInfo.count);
+    return (
+      <Badge
+        variant={countInfo.count > 0 ? "secondary" : "outline"}
+        className="ml-1 text-[10px] px-1.5 py-0 tabular-nums shrink-0"
+        data-testid={`view-count-${view.id}`}
+      >
+        {display}
+      </Badge>
+    );
+  };
   return (
     <DropdownMenuItem
       onSelect={(e) => {
@@ -461,6 +537,7 @@ function ViewItem({
         <span className="truncate">{view.name}</span>
         {view.isSystem && <Lock className="h-3 w-3 text-muted-foreground shrink-0" />}
       </span>
+      {renderCount()}
       {onDelete && !view.isSystem && (
         <button
           type="button"

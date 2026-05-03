@@ -267,7 +267,6 @@ export interface IStorage {
   getSavedView(id: string): Promise<SavedView | undefined>;
   listSavedViewsForUser(orgId: string, userId: string, pageKey?: string): Promise<SavedView[]>;
 
-
   getBenchmarkingMatrix(orgId: string, selectedWindowMs: number): Promise<{
     metricWindows: Record<string, { ms: number; label: string }>;
     tenants: Array<{
@@ -299,6 +298,8 @@ export interface IStorage {
   getFoundryUsageSnapshots(tenantId: string, opts?: { deploymentId?: string; since?: Date; limit?: number; windowHours?: number }): Promise<FoundryUsageSnapshot[]>;
   getLatestFoundryUsageByDeployment(tenantId: string, windowHours?: number): Promise<Record<string, FoundryUsageSnapshot>>;
   getLatestFoundryUsageByWindow(deploymentId: string): Promise<Record<number, FoundryUsageSnapshot>>;
+
+  countSavedViewMatches(pageKey: string, tenantId: string, filtersJson: Record<string, any>): Promise<number>;
 }
 
 export type LlmCallWithModel = LlmCall & {
@@ -3345,6 +3346,84 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return { rulesEvaluated: rules.length, alertsCreated };
+  }
+
+  async countSavedViewMatches(pageKey: string, tenantId: string, filtersJson: Record<string, any>): Promise<number> {
+    const f = filtersJson || {};
+    const datePresetCutoff = (preset: string | undefined): Date | null => {
+      if (preset === "today") return new Date(Date.now() - 24 * 60 * 60 * 1000);
+      if (preset === "this_week") return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      return null;
+    };
+    const runCount = async (table: any, conditions: any[]): Promise<number> => {
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      const [row] = await db.select({ total: sql<number>`count(*)` }).from(table).where(where);
+      return Number(row?.total ?? 0);
+    };
+
+    switch (pageKey) {
+      case "agent-traces": {
+        const conds: any[] = [eq(agentTraces.tenantId, tenantId)];
+        if (f.platformFilter && f.platformFilter !== "all") conds.push(eq(agentTraces.platform, f.platformFilter));
+        if (f.statusFilter && f.statusFilter !== "all") conds.push(eq(agentTraces.status, f.statusFilter));
+        if (f.agentSearch) conds.push(ilike(agentTraces.agentName, `%${f.agentSearch}%`));
+        const cutoff = datePresetCutoff(f.datePreset);
+        if (cutoff) conds.push(gte(agentTraces.startedAt, cutoff));
+        return runCount(agentTraces, conds);
+      }
+      case "entra-signins": {
+        const conds: any[] = [eq(entraSignIns.tenantId, tenantId)];
+        if (f.statusFilter && f.statusFilter !== "all") conds.push(eq(entraSignIns.status, f.statusFilter));
+        if (f.riskFilter && f.riskFilter !== "all") conds.push(eq(entraSignIns.riskLevel, f.riskFilter));
+        if (f.appFilter && f.appFilter !== "all") conds.push(eq(entraSignIns.appDisplayName, f.appFilter));
+        if (f.searchQuery) {
+          const q = `%${f.searchQuery}%`;
+          conds.push(or(
+            ilike(entraSignIns.userPrincipalName, q),
+            ilike(entraSignIns.userDisplayName, q),
+            ilike(entraSignIns.ipAddress, q),
+            ilike(entraSignIns.appDisplayName, q),
+          ));
+        }
+        const cutoff = datePresetCutoff(f.datePreset);
+        if (cutoff) conds.push(gte(entraSignIns.signInAt, cutoff));
+        return runCount(entraSignIns, conds);
+      }
+      case "llm-calls": {
+        const conds: any[] = [eq(llmCalls.tenantId, tenantId)];
+        if (f.agentFilter && f.agentFilter !== "all") conds.push(eq(llmCalls.agentId, f.agentFilter));
+        if (f.errorClass && f.errorClass !== "all") conds.push(eq(llmCalls.errorClass, f.errorClass));
+        const cutoff = datePresetCutoff(f.datePreset);
+        if (cutoff) conds.push(gte(llmCalls.calledAt, cutoff));
+        return runCount(llmCalls, conds);
+      }
+      case "mcp-tool-calls": {
+        const conds: any[] = [eq(mcpToolCalls.tenantId, tenantId)];
+        if (f.toolCallFilter && f.toolCallFilter !== "all") conds.push(eq(mcpToolCalls.status, f.toolCallFilter));
+        return runCount(mcpToolCalls, conds);
+      }
+      case "copilot-sessions": {
+        const conds: any[] = [eq(copilotInteractions.tenantId, tenantId)];
+        if (f.appFilter && f.appFilter !== "all") conds.push(eq(copilotInteractions.appClass, f.appFilter));
+        if (f.userSearch) {
+          const q = `%${f.userSearch}%`;
+          conds.push(or(
+            ilike(copilotInteractions.userName, q),
+            ilike(copilotInteractions.userId, q),
+          ));
+        }
+        if (f.dateFrom) conds.push(gte(copilotInteractions.createdAt, new Date(f.dateFrom)));
+        if (f.dateTo) conds.push(sql`${copilotInteractions.createdAt} <= ${new Date(f.dateTo)}`);
+        const where = and(...conds);
+        const [row] = await db
+          .select({ total: sql<number>`count(distinct ${copilotInteractions.sessionId})` })
+          .from(copilotInteractions)
+          .where(where);
+        return Number(row?.total ?? 0);
+      }
+      default:
+        return 0;
+    }
   }
 }
 
