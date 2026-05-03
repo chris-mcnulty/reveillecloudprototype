@@ -11,7 +11,7 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, triggerCopilotSurfaceEvalNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY, computeAnomalyContext } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
@@ -467,6 +467,9 @@ export async function registerRoutes(
         break;
       case "llmBudgetEval":
         await triggerLlmBudgetEvalNow();
+        break;
+      case "copilotSurfaceEval":
+        await triggerCopilotSurfaceEvalNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });

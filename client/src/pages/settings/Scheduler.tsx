@@ -94,6 +94,12 @@ const JOB_META: Record<string, { label: string; icon: any; interval: string; des
     interval: "Every 30 min",
     description: "Discovers SPE containers and collects access events, security events, and content type statistics",
   },
+  copilotSurfaceEval: {
+    label: "Copilot Surface Evaluation",
+    icon: Activity,
+    interval: "Every 15 min",
+    description: "Evaluates Copilot surface alert rules (P95 latency, empty response rate) and auto-resolves when normal",
+  },
 };
 
 function formatTimeAgo(dateStr: string | null): string {

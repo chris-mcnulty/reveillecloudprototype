@@ -43,6 +43,7 @@ import {
   foundryDeployments, type FoundryDeployment, type InsertFoundryDeployment,
   foundryUsageSnapshots, type FoundryUsageSnapshot, type InsertFoundryUsageSnapshot,
   foundryPricingOverrides, type FoundryPricingOverride, type InsertFoundryPricingOverride,
+  type CopilotSurfaceAlertPayload,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -84,7 +85,7 @@ export interface IStorage {
   getAlerts(tenantId?: string, opts?: { alertType?: string; streamKey?: string; since?: Date }): Promise<Alert[]>;
   createAlert(alert: InsertAlert): Promise<Alert>;
   acknowledgeAlert(id: string): Promise<Alert | undefined>;
-  updateAlertPayload(id: string, payload: Record<string, unknown>): Promise<Alert | undefined>;
+  updateAlertPayload(id: string, payload: Record<string, any>): Promise<Alert | undefined>;
   getLatestAnomalyAlertForStream(tenantId: string, streamKey: string): Promise<Alert | undefined>;
   getAlertById(id: string): Promise<Alert | undefined>;
   getAnomalyAlertCount(tenantId: string, since: Date): Promise<number>;
@@ -167,7 +168,7 @@ export interface IStorage {
     p99LatencyMs: number;
     emptyResponseRate: number;
     byModel: { modelLabel: string; modelName: string | null; calls: number; responseCalls: number; avgLatencyMs: number; p50LatencyMs: number; p95LatencyMs: number; p99LatencyMs: number; emptyResponseRate: number; uniqueUsers: number; surfaceBreakdown: Record<string, number>; capabilityBreakdown: Record<string, number> }[];
-    bySurface: { surface: string; calls: number; avgLatencyMs: number; emptyResponseRate: number }[];
+    bySurface: { surface: string; calls: number; responseCalls: number; avgLatencyMs: number; p95LatencyMs: number; emptyResponseRate: number }[];
     byCapability: { capability: string; calls: number }[];
   }>;
   getCopilotModelLatencyDistribution(tenantId: string, modelLabel: string, since?: Date): Promise<{ bucket: string; count: number }[]>;
@@ -271,6 +272,8 @@ export interface IStorage {
   evaluateLlmBudgets(): Promise<{ rulesEvaluated: number; alertsCreated: number }>;
   getActiveFoundryThrottleRules(tenantId?: string): Promise<AlertRule[]>;
   evaluateFoundryThrottleRules(tenantId?: string): Promise<{ rulesEvaluated: number; alertsCreated: number }>;
+  getActiveCopilotSurfaceRules(): Promise<AlertRule[]>;
+  evaluateCopilotSurfaceAlerts(): Promise<{ rulesEvaluated: number; alertsCreated: number; alertsResolved: number }>;
 
   createSavedView(data: InsertSavedView): Promise<SavedView>;
   updateSavedView(id: string, data: Partial<InsertSavedView>): Promise<SavedView | undefined>;
@@ -681,7 +684,7 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async updateAlertPayload(id: string, payload: Record<string, unknown>): Promise<Alert | undefined> {
+  async updateAlertPayload(id: string, payload: Record<string, any>): Promise<Alert | undefined> {
     const [updated] = await db.update(alerts).set({ payload }).where(eq(alerts.id, id)).returning();
     return updated;
   }
@@ -1446,7 +1449,7 @@ export class DatabaseStorage implements IStorage {
     p99LatencyMs: number;
     emptyResponseRate: number;
     byModel: { modelLabel: string; modelName: string | null; calls: number; responseCalls: number; avgLatencyMs: number; p50LatencyMs: number; p95LatencyMs: number; p99LatencyMs: number; emptyResponseRate: number; uniqueUsers: number; surfaceBreakdown: Record<string, number>; capabilityBreakdown: Record<string, number> }[];
-    bySurface: { surface: string; calls: number; avgLatencyMs: number; emptyResponseRate: number }[];
+    bySurface: { surface: string; calls: number; responseCalls: number; avgLatencyMs: number; p95LatencyMs: number; emptyResponseRate: number }[];
     byCapability: { capability: string; calls: number }[];
   }> {
     const sinceCondition = since ? sql`AND created_at >= ${since.toISOString()}::timestamp` : sql``;
@@ -1546,7 +1549,9 @@ export class DatabaseStorage implements IStorage {
       SELECT
         COALESCE(attributed_surface, 'Unknown') AS surface,
         COUNT(*)::int AS calls,
+        COUNT(*) FILTER (WHERE interaction_type = 'aiResponse')::int AS response_calls,
         COALESCE(AVG(response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS avg_latency,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY response_latency_ms) FILTER (WHERE response_latency_ms IS NOT NULL), 0)::real AS p95,
         CASE
           WHEN COUNT(*) FILTER (WHERE interaction_type = 'aiResponse') = 0 THEN 0
           ELSE COUNT(*) FILTER (WHERE interaction_type = 'aiResponse' AND (body_content IS NULL OR length(trim(body_content)) = 0))::real
@@ -1560,7 +1565,9 @@ export class DatabaseStorage implements IStorage {
     const bySurface = (bySurfaceRows.rows as any[]).map(r => ({
       surface: r.surface,
       calls: Number(r.calls) || 0,
+      responseCalls: Number(r.response_calls) || 0,
       avgLatencyMs: Math.round(Number(r.avg_latency) || 0),
+      p95LatencyMs: Math.round(Number(r.p95) || 0),
       emptyResponseRate: Number(r.empty_rate) || 0,
     }));
 
@@ -3887,6 +3894,131 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return { rulesEvaluated: rules.length, alertsCreated };
+  }
+
+  async getActiveCopilotSurfaceRules(): Promise<AlertRule[]> {
+    return db.select().from(alertRules)
+      .where(and(eq(alertRules.alertType, "copilot_surface"), eq(alertRules.enabled, true)));
+  }
+
+  async evaluateCopilotSurfaceAlerts(): Promise<{ rulesEvaluated: number; alertsCreated: number; alertsResolved: number }> {
+    const rules = await this.getActiveCopilotSurfaceRules();
+    let alertsCreated = 0;
+    let alertsResolved = 0;
+    const windowMinutes = 60;
+    const since = new Date(Date.now() - windowMinutes * 60 * 1000);
+
+    const statsCache = new Map<string, Awaited<ReturnType<typeof this.getCopilotModelStats>>>();
+    const getStats = async (tenantId: string) => {
+      let s = statsCache.get(tenantId);
+      if (!s) {
+        s = await this.getCopilotModelStats(tenantId, since);
+        statsCache.set(tenantId, s);
+      }
+      return s;
+    };
+
+    for (const rule of rules) {
+      const metric = rule.metric as "copilot_p95_latency_ms" | "copilot_empty_response_rate";
+      if (metric !== "copilot_p95_latency_ms" && metric !== "copilot_empty_response_rate") continue;
+
+      const stats = await getStats(rule.tenantId);
+      const surfaceFilter = rule.streamKey && rule.streamKey !== "__all__" ? rule.streamKey : null;
+
+      let observed = 0;
+      let sampleCount = 0;
+      if (surfaceFilter) {
+        const row = stats.bySurface.find(s => s.surface === surfaceFilter);
+        if (row) {
+          sampleCount = row.responseCalls;
+          observed = metric === "copilot_p95_latency_ms" ? row.p95LatencyMs : row.emptyResponseRate * 100;
+        }
+      } else {
+        sampleCount = stats.totalResponses;
+        observed = metric === "copilot_p95_latency_ms" ? stats.p95LatencyMs : stats.emptyResponseRate * 100;
+      }
+
+      const minSamples = metric === "copilot_p95_latency_ms" ? 5 : 10;
+      const streamKey = `copilot_surface:${rule.id}`;
+      const [latest] = await db.select().from(alerts)
+        .where(and(
+          eq(alerts.tenantId, rule.tenantId),
+          eq(alerts.alertType, "copilot_surface"),
+          eq(alerts.streamKey, streamKey),
+        ))
+        .orderBy(desc(alerts.timestamp))
+        .limit(1);
+      const latestPayload = (latest?.payload ?? null) as CopilotSurfaceAlertPayload | null;
+      const isOpen = latestPayload?.state === "open";
+
+      if (sampleCount < minSamples) {
+        if (isOpen && latest) {
+          const resolved: CopilotSurfaceAlertPayload = {
+            ...latestPayload!,
+            state: "resolved",
+            observed,
+            sampleCount,
+            resolvedAt: new Date().toISOString(),
+          };
+          await this.updateAlertPayload(latest.id, resolved);
+          alertsResolved++;
+        }
+        continue;
+      }
+
+      const breached = observed > rule.threshold;
+      const tenant = await this.getTenant(rule.tenantId);
+      const surfaceLabel = surfaceFilter ?? "all surfaces";
+      const formatObserved = metric === "copilot_p95_latency_ms"
+        ? `${Math.round(observed)}ms`
+        : `${observed.toFixed(1)}%`;
+      const formatThreshold = metric === "copilot_p95_latency_ms"
+        ? `${rule.threshold}ms`
+        : `${rule.threshold}%`;
+      const metricLabel = metric === "copilot_p95_latency_ms" ? "P95 latency" : "Empty response rate";
+
+      if (breached && !isOpen) {
+        const severity = metric === "copilot_p95_latency_ms"
+          ? (observed > rule.threshold * 3 ? "critical" : observed > rule.threshold * 1.5 ? "high" : "warning")
+          : (observed > rule.threshold * 2 ? "critical" : observed > rule.threshold * 1.25 ? "high" : "warning");
+        const payload: CopilotSurfaceAlertPayload = {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          metric,
+          surface: surfaceFilter,
+          threshold: rule.threshold,
+          observed,
+          windowMinutes,
+          sampleCount,
+          state: "open",
+          channels: rule.channels ?? [],
+          firstSeenAt: new Date().toISOString(),
+        };
+        await this.createAlert({
+          tenantId: rule.tenantId,
+          ruleId: rule.id,
+          alertType: "copilot_surface",
+          severity,
+          title: `Copilot ${metricLabel} elevated on ${surfaceLabel}`,
+          message: `${tenant?.name ?? "Tenant"}: ${metricLabel} on ${surfaceLabel} is ${formatObserved} (threshold ${formatThreshold}) over the last ${windowMinutes}m across ${sampleCount} samples.`,
+          streamKey,
+          payload: payload as unknown as Record<string, unknown>,
+        });
+        alertsCreated++;
+      } else if (!breached && isOpen && latest) {
+        const resolved: CopilotSurfaceAlertPayload = {
+          ...latestPayload!,
+          state: "resolved",
+          observed,
+          sampleCount,
+          resolvedAt: new Date().toISOString(),
+        };
+        await this.updateAlertPayload(latest.id, resolved);
+        alertsResolved++;
+      }
+    }
+
+    return { rulesEvaluated: rules.length, alertsCreated, alertsResolved };
   }
 
   async countSavedViewMatches(pageKey: string, tenantId: string, filtersJson: Record<string, any>): Promise<number> {

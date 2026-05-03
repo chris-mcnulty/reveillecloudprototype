@@ -81,7 +81,39 @@ export const alertRules = pgTable("alert_rules", {
   modelId: varchar("model_id"),
   periodStart: timestamp("period_start"),
   lastTriggeredThresholds: jsonb("last_triggered_thresholds").$type<Record<string, number[]>>().default({}),
+  streamKey: text("stream_key"),
 });
+
+export interface CopilotSurfaceAlertPayload {
+  ruleId: string;
+  ruleName: string;
+  metric: "copilot_p95_latency_ms" | "copilot_empty_response_rate";
+  surface: string | null;
+  threshold: number;
+  observed: number;
+  windowMinutes: number;
+  sampleCount: number;
+  state: "open" | "resolved";
+  channels: { type: string; target: string }[];
+  firstSeenAt?: string;
+  resolvedAt?: string;
+}
+
+export function isCopilotSurfaceAlertPayload(value: unknown): value is CopilotSurfaceAlertPayload {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.ruleId === "string" &&
+    typeof v.ruleName === "string" &&
+    (v.metric === "copilot_p95_latency_ms" || v.metric === "copilot_empty_response_rate") &&
+    (v.surface === null || typeof v.surface === "string") &&
+    typeof v.threshold === "number" &&
+    typeof v.observed === "number" &&
+    typeof v.windowMinutes === "number" &&
+    typeof v.sampleCount === "number" &&
+    (v.state === "open" || v.state === "resolved")
+  );
+}
 
 export const insertAlertRuleSchema = createInsertSchema(alertRules).omit({ id: true });
 export type InsertAlertRule = z.infer<typeof insertAlertRuleSchema>;

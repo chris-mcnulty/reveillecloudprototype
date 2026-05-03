@@ -3,7 +3,7 @@ import { Shell } from "@/components/layout/Shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { BellRing, CheckCircle2, AlertOctagon, Loader2, Activity, Filter } from "lucide-react";
+import { BellRing, CheckCircle2, AlertOctagon, Loader2, Activity, Filter, Sparkles } from "lucide-react";
 import { useAlerts, useAcknowledgeAlert, useMetricBaselineHistory, useAlertContext, type AnomalyContextItem } from "@/lib/api";
 import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
 import { useQueryClient } from "@tanstack/react-query";
@@ -11,10 +11,10 @@ import { useCallback } from "react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { Link } from "wouter";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceLine } from "recharts";
-import { isAnomalyAlertPayload, type Alert, type Alert as AlertType, type AnomalyAlertPayload } from "@shared/schema";
+import { isAnomalyAlertPayload, isCopilotSurfaceAlertPayload, type Alert, type Alert as AlertType, type AnomalyAlertPayload } from "@shared/schema";
 import { ExportMenu } from "@/components/ExportMenu";
 
-type AlertFilter = "all" | "anomaly" | "threshold";
+type AlertFilter = "all" | "anomaly" | "threshold" | "copilot_surface";
 
 function formatStreamValue(v: number, unit: string): string {
   if (unit === "%") return `${v.toFixed(1)}%`;
@@ -67,12 +67,15 @@ export default function Alerts() {
 
   const allAlerts: Alert[] = alertList || [];
   const anomalyCount = allAlerts.filter((a) => a.alertType === "anomaly").length;
-  const thresholdCount = allAlerts.filter((a) => a.alertType !== "anomaly").length;
+  const copilotSurfaceCount = allAlerts.filter((a) => a.alertType === "copilot_surface").length;
+  const thresholdCount = allAlerts.filter((a) => a.alertType !== "anomaly" && a.alertType !== "copilot_surface").length;
   const alerts: Alert[] = filter === "anomaly"
     ? allAlerts.filter((a) => a.alertType === "anomaly")
-    : filter === "threshold"
-      ? allAlerts.filter((a) => a.alertType !== "anomaly")
-      : allAlerts;
+    : filter === "copilot_surface"
+      ? allAlerts.filter((a) => a.alertType === "copilot_surface")
+      : filter === "threshold"
+        ? allAlerts.filter((a) => a.alertType !== "anomaly" && a.alertType !== "copilot_surface")
+        : allAlerts;
 
   return (
     <Shell>
@@ -129,11 +132,24 @@ export default function Alerts() {
             <Badge variant="secondary" className="ml-2">{thresholdCount}</Badge>
           )}
         </Button>
+        <Button
+          size="sm"
+          variant={filter === "copilot_surface" ? "default" : "outline"}
+          onClick={() => setFilter("copilot_surface")}
+          data-testid="button-filter-copilot-surface"
+        >
+          <Sparkles className="h-3 w-3 mr-1" /> Copilot Surface
+          {filter !== "copilot_surface" && copilotSurfaceCount > 0 && (
+            <Badge variant="secondary" className="ml-2">{copilotSurfaceCount}</Badge>
+          )}
+        </Button>
       </div>
 
       <div className="grid gap-4 mt-4">
         {alerts.map((alert) => {
-          const isActive = !alert.acknowledged;
+          const copilotPayload = isCopilotSurfaceAlertPayload(alert.payload) ? alert.payload : null;
+          const isAutoResolved = copilotPayload?.state === "resolved";
+          const isActive = !alert.acknowledged && !isAutoResolved;
           const severityMap: Record<string, string> = { critical: "High", warning: "Medium", info: "Low" };
           const severity = severityMap[alert.severity] || alert.severity;
           const d = new Date(alert.timestamp!);
@@ -141,6 +157,7 @@ export default function Alerts() {
           const mins = Math.round(diff / 60000);
           const timeStr = mins < 1 ? "Just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)}h ago`;
           const isAnomaly = alert.alertType === "anomaly";
+          const isCopilotSurface = alert.alertType === "copilot_surface";
           const anomalyPayload: AnomalyAlertPayload | null = isAnomalyAlertPayload(alert.payload) ? alert.payload : null;
           const isFollowup = anomalyPayload?.isFollowup === true;
           const isRecovered = anomalyPayload?.state === "recovered";
@@ -150,7 +167,7 @@ export default function Alerts() {
               <CardHeader className="pb-2 flex flex-row items-start justify-between">
                 <div>
                   <CardTitle className="text-lg flex items-center gap-2">
-                    {isAnomaly ? <Activity className="h-5 w-5 text-amber-500" /> : isActive ? <AlertOctagon className="h-5 w-5 text-destructive" /> : <CheckCircle2 className="h-5 w-5 text-emerald-500" />}
+                    {isAnomaly ? <Activity className="h-5 w-5 text-amber-500" /> : isCopilotSurface ? <Sparkles className="h-5 w-5 text-blue-500" /> : isActive ? <AlertOctagon className="h-5 w-5 text-destructive" /> : <CheckCircle2 className="h-5 w-5 text-emerald-500" />}
                     {alert.title}
                   </CardTitle>
                   <CardDescription className="mt-1">{timeStr}</CardDescription>
@@ -169,6 +186,16 @@ export default function Alerts() {
                   {isRecovered && (
                     <Badge variant="outline" className="border-emerald-500 text-emerald-600" data-testid={`badge-recovered-${alert.id}`}>
                       Recovered
+                    </Badge>
+                  )}
+                  {isCopilotSurface && (
+                    <Badge variant="outline" className="border-blue-500 text-blue-600" data-testid={`badge-copilot-surface-${alert.id}`}>
+                      Copilot Surface
+                    </Badge>
+                  )}
+                  {isAutoResolved && (
+                    <Badge variant="outline" className="border-emerald-500 text-emerald-600" data-testid={`badge-auto-resolved-${alert.id}`}>
+                      Auto-resolved
                     </Badge>
                   )}
                   <Badge variant={severity === 'High' ? 'destructive' : 'secondary'}>
@@ -202,7 +229,7 @@ export default function Alerts() {
         {alerts.length === 0 && (
           <Card>
             <CardContent className="flex items-center justify-center py-8 text-muted-foreground">
-              {filter === "anomaly" ? "No anomalies detected." : filter === "threshold" ? "No threshold alerts." : "No alerts recorded."}
+              {filter === "anomaly" ? "No anomalies detected." : filter === "copilot_surface" ? "No Copilot surface alerts." : filter === "threshold" ? "No threshold alerts." : "No alerts recorded."}
             </CardContent>
           </Card>
         )}

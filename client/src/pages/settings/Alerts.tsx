@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil, Gauge } from "lucide-react";
+import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil, Gauge, Sparkles, Zap } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { useAnomalyStreamConfigs, useUpdateAnomalyStreamConfig, useTriggerJob, useAlertRules, useCreateAlertRule, useUpdateAlertRule, useDeleteAlertRule, useLlmModels, useAnomalyNotificationSettings, useUpdateAnomalyNotificationSettings, type AnomalyStreamConfigUI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -100,6 +100,8 @@ export default function AlertRulesConfig() {
       {activeTenantId && <LlmBudgetRulesSection tenantId={activeTenantId} />}
 
       {activeTenantId && <FoundryThrottleRulesSection tenantId={activeTenantId} />}
+
+      {activeTenantId && <CopilotSurfaceRulesSection tenantId={activeTenantId} />}
 
       <div className="grid gap-6">
         <Card>
@@ -931,6 +933,322 @@ function ThrottleRuleRow({
           <Pencil className="h-4 w-4" />
         </Button>
         <Button variant="ghost" size="icon" onClick={onDelete} data-testid={`button-delete-throttle-${rule.id}`}>
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const COPILOT_SURFACES = ["M365 Chat", "Outlook", "Word", "Excel", "PowerPoint", "Teams", "OneNote", "Web Chat", "Loop"];
+
+function CopilotSurfaceRulesSection({ tenantId }: { tenantId: string }) {
+  const { data: rules } = useAlertRules(tenantId);
+  const createMut = useCreateAlertRule();
+  const updateMut = useUpdateAlertRule();
+  const deleteMut = useDeleteAlertRule();
+  const triggerMut = useTriggerJob();
+  const { toast } = useToast();
+
+  const [name, setName] = useState("");
+  const [metric, setMetric] = useState<string>("copilot_p95_latency_ms");
+  const [threshold, setThreshold] = useState<string>("5000");
+  const [surface, setSurface] = useState<string>("__all__");
+  const [channels, setChannels] = useState<string>("");
+
+  const surfaceRules = (rules || []).filter((r) => r.alertType === "copilot_surface");
+
+  function parseChannels(input: string): { type: string; target: string }[] {
+    return input
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const idx = entry.indexOf(":");
+        if (idx <= 0) return { type: "email", target: entry };
+        return { type: entry.slice(0, idx).trim(), target: entry.slice(idx + 1).trim() };
+      })
+      .filter((c) => c.target.length > 0);
+  }
+
+  function metricDefaultThreshold(m: string): string {
+    return m === "copilot_p95_latency_ms" ? "5000" : "10";
+  }
+
+  function submit() {
+    const trimmed = name.trim();
+    const thresholdNum = parseInt(threshold, 10);
+    if (!trimmed) {
+      toast({ title: "Name required", variant: "destructive" });
+      return;
+    }
+    if (!Number.isFinite(thresholdNum) || thresholdNum <= 0) {
+      toast({ title: "Threshold must be > 0", variant: "destructive" });
+      return;
+    }
+    if (metric === "copilot_empty_response_rate" && thresholdNum > 100) {
+      toast({ title: "Empty response rate threshold must be 0-100 (%)", variant: "destructive" });
+      return;
+    }
+    createMut.mutate(
+      {
+        tenantId,
+        name: trimmed,
+        metric,
+        condition: "gt",
+        threshold: thresholdNum,
+        enabled: true,
+        alertType: "copilot_surface",
+        streamKey: surface === "__all__" ? null : surface,
+        channels: parseChannels(channels),
+      },
+      {
+        onSuccess: () => {
+          toast({ title: "Copilot surface rule created", description: `${trimmed} · ${metric === "copilot_p95_latency_ms" ? "P95 latency" : "Empty rate"}` });
+          setName("");
+          setThreshold(metricDefaultThreshold(metric));
+          setSurface("__all__");
+          setChannels("");
+        },
+        onError: (e: any) => toast({ title: "Create failed", description: e?.message, variant: "destructive" }),
+      },
+    );
+  }
+
+  return (
+    <Card className="mb-6" data-testid="card-copilot-surface-rules">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-blue-500" />
+            Copilot Surface Alert Rules
+          </CardTitle>
+          <CardDescription>
+            Get alerted when a Copilot surface gets unusually slow (P95 latency) or empty (empty response rate). Evaluated every 15 minutes against the last hour. Auto-resolves when the metric returns to normal.
+          </CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            triggerMut.mutate("copilotSurfaceEval", {
+              onSuccess: () => toast({ title: "Copilot surface evaluation triggered" }),
+              onError: (e: any) => toast({ title: "Trigger failed", description: e?.message, variant: "destructive" }),
+            })
+          }
+          disabled={triggerMut.isPending}
+          data-testid="button-trigger-copilot-surface"
+        >
+          <RefreshCw className={`h-4 w-4 mr-2 ${triggerMut.isPending ? "animate-spin" : ""}`} />
+          Evaluate now
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="grid gap-4 md:grid-cols-5 bg-muted/30 p-4 rounded-lg border">
+          <div className="space-y-2">
+            <Label htmlFor="copilot-rule-name">Rule name</Label>
+            <Input
+              id="copilot-rule-name"
+              placeholder="M365 Chat slow"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              data-testid="input-copilot-rule-name"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Metric</Label>
+            <Select value={metric} onValueChange={(v) => { setMetric(v); setThreshold(metricDefaultThreshold(v)); }}>
+              <SelectTrigger data-testid="select-copilot-metric">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="copilot_p95_latency_ms">P95 latency (ms)</SelectItem>
+                <SelectItem value="copilot_empty_response_rate">Empty response rate (%)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="copilot-threshold">Threshold</Label>
+            <Input
+              id="copilot-threshold"
+              type="number"
+              min="1"
+              step="1"
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+              data-testid="input-copilot-threshold"
+            />
+            <p className="text-xs text-muted-foreground">
+              {metric === "copilot_p95_latency_ms" ? "ms (e.g. 5000 = 5s)" : "% empty (e.g. 10 = 10%)"}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>Surface</Label>
+            <Select value={surface} onValueChange={setSurface}>
+              <SelectTrigger data-testid="select-copilot-surface">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All surfaces (overall)</SelectItem>
+                {COPILOT_SURFACES.map((s) => (
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="copilot-rule-channels">Notify channels</Label>
+            <Input
+              id="copilot-rule-channels"
+              placeholder="email:ops@acme.com, teams:#it-ops"
+              value={channels}
+              onChange={(e) => setChannels(e.target.value)}
+              data-testid="input-copilot-rule-channels"
+            />
+          </div>
+          <div className="md:col-span-5 flex justify-end">
+            <Button onClick={submit} disabled={createMut.isPending} data-testid="button-create-copilot-rule">
+              {createMut.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+              Add Copilot rule
+            </Button>
+          </div>
+        </div>
+
+        {surfaceRules.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center" data-testid="text-no-copilot-rules">
+            No Copilot surface rules yet. Create one above to be alerted on slowdowns or empty responses.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {surfaceRules.map((rule) => (
+              <CopilotSurfaceRuleRow
+                key={rule.id}
+                rule={rule}
+                onToggle={(enabled) =>
+                  updateMut.mutate(
+                    { id: rule.id, enabled },
+                    {
+                      onSuccess: () => toast({ title: enabled ? "Rule enabled" : "Rule disabled" }),
+                      onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+                    },
+                  )
+                }
+                onSave={(patch) =>
+                  updateMut.mutate(
+                    { id: rule.id, ...patch },
+                    {
+                      onSuccess: () => toast({ title: "Rule updated" }),
+                      onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+                    },
+                  )
+                }
+                onDelete={() =>
+                  deleteMut.mutate(rule.id, {
+                    onSuccess: () => toast({ title: "Rule deleted" }),
+                    onError: (e: any) => toast({ title: "Delete failed", description: e?.message, variant: "destructive" }),
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CopilotSurfaceRuleRow({ rule, onToggle, onSave, onDelete }: {
+  rule: AlertRule;
+  onToggle: (enabled: boolean) => void;
+  onSave: (patch: { name?: string; metric?: string; threshold?: number; streamKey?: string | null; channels?: { type: string; target: string }[] }) => void;
+  onDelete: () => void;
+}) {
+  const metricLabel = rule.metric === "copilot_p95_latency_ms" ? "P95 latency" : "Empty response rate";
+  const thresholdLabel = rule.metric === "copilot_p95_latency_ms" ? `${rule.threshold}ms` : `${rule.threshold}%`;
+  const surfaceLabel = rule.streamKey || "All surfaces";
+  const channelSummary = (rule.channels ?? []).map((c) => `${c.type}:${c.target}`).join(", ");
+
+  const [editing, setEditing] = useState(false);
+  const [editMetric, setEditMetric] = useState<string>(rule.metric);
+  const [editThreshold, setEditThreshold] = useState<string>(String(rule.threshold ?? 0));
+  const [editSurface, setEditSurface] = useState<string>(rule.streamKey || "__all__");
+  const [editChannels, setEditChannels] = useState<string>(channelSummary);
+
+  function saveEdits() {
+    const t = parseInt(editThreshold, 10);
+    if (!Number.isFinite(t) || t <= 0) return;
+    if (editMetric === "copilot_empty_response_rate" && t > 100) return;
+    const parsedChannels = editChannels
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const idx = entry.indexOf(":");
+        if (idx <= 0) return { type: "email", target: entry };
+        return { type: entry.slice(0, idx).trim(), target: entry.slice(idx + 1).trim() };
+      })
+      .filter((c) => c.target.length > 0);
+    onSave({
+      metric: editMetric,
+      threshold: t,
+      streamKey: editSurface === "__all__" ? null : editSurface,
+      channels: parsedChannels,
+    });
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div className="grid gap-3 md:grid-cols-4 py-3 border-b last:border-0 bg-muted/20 px-3 rounded" data-testid={`row-copilot-rule-edit-${rule.id}`}>
+        <Select value={editMetric} onValueChange={setEditMetric}>
+          <SelectTrigger data-testid={`select-edit-copilot-metric-${rule.id}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="copilot_p95_latency_ms">P95 latency (ms)</SelectItem>
+            <SelectItem value="copilot_empty_response_rate">Empty response rate (%)</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input type="number" min="1" step="1" value={editThreshold} onChange={(e) => setEditThreshold(e.target.value)} placeholder="Threshold" data-testid={`input-edit-copilot-threshold-${rule.id}`} />
+        <Select value={editSurface} onValueChange={setEditSurface}>
+          <SelectTrigger data-testid={`select-edit-copilot-surface-${rule.id}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All surfaces</SelectItem>
+            {COPILOT_SURFACES.map((s) => (
+              <SelectItem key={s} value={s}>{s}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input value={editChannels} onChange={(e) => setEditChannels(e.target.value)} placeholder="email:..., teams:..." data-testid={`input-edit-copilot-channels-${rule.id}`} />
+        <div className="md:col-span-4 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setEditing(false)} data-testid={`button-cancel-edit-copilot-${rule.id}`}>Cancel</Button>
+          <Button size="sm" onClick={saveEdits} data-testid={`button-save-edit-copilot-${rule.id}`}>Save</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between py-3 border-b last:border-0" data-testid={`row-copilot-rule-${rule.id}`}>
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <Switch checked={rule.enabled} onCheckedChange={onToggle} data-testid={`switch-copilot-${rule.id}`} />
+        <Zap className="h-4 w-4 text-blue-500 shrink-0" />
+        <div className="min-w-0">
+          <p className="font-medium text-sm" data-testid={`text-copilot-rule-name-${rule.id}`}>{rule.name}</p>
+          <p className="text-xs text-muted-foreground">
+            {metricLabel} &gt; {thresholdLabel} on {surfaceLabel}
+            {channelSummary ? ` · → ${channelSummary}` : " · in-app only"}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge variant="outline">{rule.enabled ? "Active" : "Paused"}</Badge>
+        <Button variant="ghost" size="icon" onClick={() => setEditing(true)} data-testid={`button-edit-copilot-${rule.id}`}>
+          <Pencil className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={onDelete} data-testid={`button-delete-copilot-${rule.id}`}>
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>

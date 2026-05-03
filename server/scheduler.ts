@@ -37,10 +37,12 @@ const jobStatus: Record<string, JobStatus> = {
   foundryDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   llmSpendRollup: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   llmBudgetEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  copilotSurfaceEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 let llmSpendRollupInterval: NodeJS.Timeout | null = null;
 let llmBudgetEvalInterval: NodeJS.Timeout | null = null;
+let copilotSurfaceEvalInterval: NodeJS.Timeout | null = null;
 
 async function runLlmSpendRollupJob(): Promise<void> {
   if (jobStatus.llmSpendRollup.isRunning) return;
@@ -79,6 +81,26 @@ async function runLlmBudgetEvalJob(): Promise<void> {
     jobStatus.llmBudgetEval.isRunning = false;
     jobStatus.llmBudgetEval.activeJobRunId = null;
     jobStatus.llmBudgetEval.lastRun = new Date();
+  }
+}
+
+async function runCopilotSurfaceEvalJob(): Promise<void> {
+  if (jobStatus.copilotSurfaceEval.isRunning) return;
+  jobStatus.copilotSurfaceEval.isRunning = true;
+  const jobRunId = await trackJobStart("copilotSurfaceEval");
+  jobStatus.copilotSurfaceEval.activeJobRunId = jobRunId;
+  try {
+    const result = await storage.evaluateCopilotSurfaceAlerts();
+    await trackJobComplete(jobRunId, "completed", result);
+    console.log(`[Scheduler] Copilot surface eval: ${result.rulesEvaluated} rules, ${result.alertsCreated} alerts created, ${result.alertsResolved} resolved`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await trackJobComplete(jobRunId, "failed", undefined, msg);
+    console.error("[Scheduler] Copilot surface eval failed:", msg);
+  } finally {
+    jobStatus.copilotSurfaceEval.isRunning = false;
+    jobStatus.copilotSurfaceEval.activeJobRunId = null;
+    jobStatus.copilotSurfaceEval.lastRun = new Date();
   }
 }
 
@@ -952,6 +974,10 @@ export function startScheduler(): void {
     runLlmBudgetEvalJob();
   }, 60 * 60 * 1000);
 
+  copilotSurfaceEvalInterval = setInterval(() => {
+    runCopilotSurfaceEvalJob();
+  }, 15 * 60 * 1000);
+
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
       console.error("[Scheduler] Periodic stuck job cleanup error:", err);
@@ -1071,6 +1097,7 @@ export function stopScheduler(): void {
   if (foundryDiscoveryInterval) { clearInterval(foundryDiscoveryInterval); foundryDiscoveryInterval = null; }
   if (llmSpendRollupInterval) { clearInterval(llmSpendRollupInterval); llmSpendRollupInterval = null; }
   if (llmBudgetEvalInterval) { clearInterval(llmBudgetEvalInterval); llmBudgetEvalInterval = null; }
+  if (copilotSurfaceEvalInterval) { clearInterval(copilotSurfaceEvalInterval); copilotSurfaceEvalInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -1142,6 +1169,10 @@ export async function triggerLlmSpendRollupNow(): Promise<void> {
 
 export async function triggerLlmBudgetEvalNow(): Promise<void> {
   runLlmBudgetEvalJob();
+}
+
+export async function triggerCopilotSurfaceEvalNow(): Promise<void> {
+  runCopilotSurfaceEvalJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {

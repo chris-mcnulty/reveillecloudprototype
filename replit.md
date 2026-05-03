@@ -46,7 +46,8 @@ Key architectural decisions include:
 - **entraSignIns**: Microsoft Entra ID sign-in records (per-tenant). Structured columns for user, app, location (geo), status, risk level, conditional access, MFA, device info. Collected from Graph API `/auditLogs/signIns`.
 - **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
 - **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
-- **metricBaselines**, **anomalyStreamConfigs**: Rolling 7-day hourly baselines per tenant×stream and per-stream sensitivity config. New columns on **alerts**: `alertType` ("threshold" | "anomaly"), `streamKey`, `payload` (jsonb).
+- **metricBaselines**, **anomalyStreamConfigs**: Rolling 7-day hourly baselines per tenant×stream and per-stream sensitivity config. New columns on **alerts**: `alertType` ("threshold" | "anomaly" | "copilot_surface" | ...), `streamKey`, `payload` (jsonb).
+- **Copilot Surface Alerts**: `alertRules` rows with `alertType="copilot_surface"`, `metric` either `copilot_p95_latency_ms` (threshold in ms) or `copilot_empty_response_rate` (threshold as integer percent), `streamKey` set to a specific surface label (e.g. "M365 Chat", "Outlook") or `__all__` for global scope, `condition="gt"`. The `copilotSurfaceEval` scheduler job (every 15m) reads the last 60m of `copilotInteractions` per tenant via `getCopilotModelStats`, opens a `copilot_surface` alert (payload.state="open") on breach, and auto-resolves (payload.state="resolved") when the metric returns to normal. Min sample thresholds: 5 for latency, 10 for empty-rate.
 
 ### Anomaly Detection
 `server/anomalyDetection.ts` runs hourly via the scheduler:
