@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, insertScheduledDigestSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall, type FoundryUsageSnapshot } from "@shared/schema";
+import { insertTenantSchema, insertOrganizationSchema, insertMonitoredSystemSchema, insertSyntheticTestSchema, insertAlertRuleSchema, insertMetricSchema, insertAlertSchema, insertAgentTraceSchema, insertAgentTraceSpanSchema, insertMcpServerSchema, insertMcpToolCallSchema, insertEntraSignInSchema, insertLlmModelSchema, insertLlmCallSchema, insertKnownAgentSchema, insertAgentDiscoverySourceSchema, insertSavedViewSchema, insertBenchmarkingViewSchema, type InsertBenchmarkingView, insertScheduledDigestSchema, type InsertAgentTrace, type InsertAgentTraceSpan, type InsertLlmCall, type FoundryUsageSnapshot } from "@shared/schema";
 import { exportAgentTraces, exportEntraSignIns, exportLlmCalls, exportAlerts, exportUsageReports, exportFoundryCostAllocation } from "./exports/datasets";
 import { runDigest, computeNextRunAt } from "./digests/runner";
 import { gatherDigestData, renderDigestHtml, renderDigestPdf } from "./digests/render";
@@ -977,6 +977,113 @@ export async function registerRoutes(
       console.error("benchmarking pdf export failed", err);
       res.status(500).json({ message: "Failed to render PDF" });
     }
+  });
+
+  function slugify(s: string): string {
+    return s.toLowerCase().trim()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 80);
+  }
+
+  async function ensureMspOrg(orgId: string, res: Response) {
+    const org = await storage.getOrganization(orgId);
+    if (!org) {
+      res.status(404).json({ message: "Organization not found" });
+      return null;
+    }
+    if (org.mode !== "msp") {
+      res.status(403).json({ message: "Benchmarking views are only available for MSP organizations" });
+      return null;
+    }
+    return org;
+  }
+
+  app.get("/api/benchmarking/views", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    if (!orgId) return res.status(400).json({ message: "orgId required" });
+    if (!(await ensureMspOrg(orgId, res))) return;
+    const views = await storage.listBenchmarkingViews(orgId);
+    res.json(views);
+  });
+
+  app.post("/api/benchmarking/views", async (req, res) => {
+    const { name, windowKey, visibleColumns, orgId } = req.body || {};
+    if (!orgId || typeof orgId !== "string") {
+      return res.status(400).json({ message: "orgId required" });
+    }
+    if (!(await ensureMspOrg(orgId, res))) return;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ message: "name required" });
+    }
+    const baseSlug = slugify(name);
+    if (!baseSlug) return res.status(400).json({ message: "name must contain alphanumeric characters" });
+    let slug = baseSlug;
+    let suffix = 2;
+    while (await storage.getBenchmarkingViewBySlug(orgId, slug)) {
+      slug = `${baseSlug}-${suffix++}`;
+      if (suffix > 50) return res.status(409).json({ message: "Could not generate unique slug" });
+    }
+    const userIdHeader = req.headers["x-user-id"];
+    const createdBy = Array.isArray(userIdHeader) ? userIdHeader[0] : userIdHeader;
+    const parsed = insertBenchmarkingViewSchema.safeParse({
+      orgId,
+      name: name.trim(),
+      slug,
+      windowKey,
+      visibleColumns,
+      createdBy: createdBy || null,
+    });
+    if (!parsed.success) {
+      return res.status(400).json({ errors: parsed.error.flatten() });
+    }
+    const view = await storage.createBenchmarkingView(parsed.data);
+    await logAdminAction(null, "benchmarkingView.created", "benchmarkingView", view.id, {
+      orgId, name: view.name, slug: view.slug, windowKey: view.windowKey,
+    });
+    res.json(view);
+  });
+
+  app.get("/api/benchmarking/views/:idOrSlug", async (req, res) => {
+    const orgId = req.query.orgId as string | undefined;
+    const { idOrSlug } = req.params;
+    let view = await storage.getBenchmarkingView(idOrSlug);
+    if (!view && orgId) {
+      view = await storage.getBenchmarkingViewBySlug(orgId, idOrSlug);
+    }
+    if (!view) return res.status(404).json({ message: "Not found" });
+    if (orgId && view.orgId !== orgId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    res.json(view);
+  });
+
+  app.patch("/api/benchmarking/views/:id", async (req, res) => {
+    const existing = await storage.getBenchmarkingView(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    const { name, windowKey, visibleColumns } = req.body || {};
+    const patch: Partial<InsertBenchmarkingView> = {};
+    if (typeof name === "string" && name.trim()) {
+      patch.name = name.trim();
+    }
+    if (typeof windowKey === "string") patch.windowKey = windowKey as any;
+    if (Array.isArray(visibleColumns)) patch.visibleColumns = visibleColumns;
+    const merged = { ...existing, ...patch };
+    const parsed = insertBenchmarkingViewSchema.partial().safeParse(patch);
+    if (!parsed.success) return res.status(400).json({ errors: parsed.error.flatten() });
+    const updated = await storage.updateBenchmarkingView(req.params.id, parsed.data);
+    await logAdminAction(null, "benchmarkingView.updated", "benchmarkingView", req.params.id, { changes: parsed.data });
+    res.json(updated);
+  });
+
+  app.delete("/api/benchmarking/views/:id", async (req, res) => {
+    const existing = await storage.getBenchmarkingView(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    await storage.deleteBenchmarkingView(req.params.id);
+    await logAdminAction(null, "benchmarkingView.deleted", "benchmarkingView", req.params.id, { name: existing.name });
+    res.status(204).end();
   });
 
   app.get("/api/agent-traces", async (req, res) => {

@@ -957,3 +957,30 @@ export const insertFoundryPricingOverrideSchema = createInsertSchema(foundryPric
 });
 export type InsertFoundryPricingOverride = z.infer<typeof insertFoundryPricingOverrideSchema>;
 export type FoundryPricingOverride = typeof foundryPricingOverrides.$inferSelect;
+
+export const benchmarkingViews = pgTable("benchmarking_views", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  windowKey: text("window_key").notNull(),
+  visibleColumns: text("visible_columns").array().notNull(),
+  createdBy: varchar("created_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("benchmarking_views_org_slug_idx").on(table.orgId, table.slug),
+]);
+
+export const insertBenchmarkingViewSchema = createInsertSchema(benchmarkingViews, {
+  name: z.string().trim().min(1).max(80),
+  slug: z.string().trim().min(1).max(80).regex(/^[a-z0-9-]+$/),
+  windowKey: z.enum(["24h", "7d", "30d", "90d"]),
+  visibleColumns: z.array(z.string().min(1)).min(1),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertBenchmarkingView = z.infer<typeof insertBenchmarkingViewSchema>;
+export type BenchmarkingView = typeof benchmarkingViews.$inferSelect;

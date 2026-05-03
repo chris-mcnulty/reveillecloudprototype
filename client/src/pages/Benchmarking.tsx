@@ -1,22 +1,45 @@
 import { useState, useEffect, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Redirect, useLocation } from "wouter";
 import { Shell } from "@/components/layout/Shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuCheckboxItem,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useActiveTenant } from "@/lib/tenant-context";
-import { ArrowDown, ArrowUp, Columns3, Copy, FileDown, Loader2, Minus } from "lucide-react";
+import { ArrowDown, ArrowUp, Bookmark, Columns3, Copy, FileDown, Link2, Loader2, Minus, Save, Trash2 } from "lucide-react";
+
+interface BenchmarkingView {
+  id: string;
+  orgId: string;
+  name: string;
+  slug: string;
+  windowKey: string;
+  visibleColumns: string[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 interface MetricCell {
   value: number;
@@ -157,9 +180,16 @@ function quartileFn(values: number[], lowerIsBetter: boolean): (i: number) => "b
   };
 }
 
+function getViewSlugFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("view");
+}
+
 export default function Benchmarking() {
   const { isMsp, organization, activeOrgId, setActiveTenantId, isLoading: orgLoading } = useActiveTenant();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const [windowSel, setWindowSel] = useState<string>("7d");
   const [isExporting, setIsExporting] = useState(false);
@@ -176,11 +206,55 @@ export default function Benchmarking() {
     return new Set(METRIC_CONFIG.map((m) => m.key));
   });
 
+  const [activeViewSlug, setActiveViewSlug] = useState<string | null>(() => getViewSlugFromUrl());
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [newViewName, setNewViewName] = useState("");
+  const [savingView, setSavingView] = useState(false);
+
   useEffect(() => {
     localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(Array.from(visibleCols)));
   }, [visibleCols]);
 
   const orgIdToUse = activeOrgId || organization?.id || null;
+
+  const viewsQuery = useQuery<BenchmarkingView[]>({
+    queryKey: ["/api/benchmarking/views", orgIdToUse],
+    queryFn: async () => {
+      const res = await fetch(`/api/benchmarking/views?orgId=${orgIdToUse}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    enabled: isMsp && !orgLoading && !!orgIdToUse,
+  });
+
+  const views = viewsQuery.data ?? [];
+  const activeView = useMemo(
+    () => (activeViewSlug ? views.find((v) => v.slug === activeViewSlug) ?? null : null),
+    [views, activeViewSlug],
+  );
+
+  useEffect(() => {
+    if (activeView) {
+      setWindowSel(activeView.windowKey);
+      setVisibleCols(new Set(activeView.visibleColumns));
+    }
+  }, [activeView]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const current = params.get("view");
+    if (activeViewSlug) {
+      if (current !== activeViewSlug) {
+        params.set("view", activeViewSlug);
+        window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+      }
+    } else if (current) {
+      params.delete("view");
+      const qs = params.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+    }
+  }, [activeViewSlug]);
 
   const { data, isLoading, isError, error } = useQuery<BenchmarkData>({
     queryKey: ["/api/benchmarking", orgIdToUse, windowSel],
@@ -301,6 +375,74 @@ export default function Benchmarking() {
       if (next.size === 0) next.add(key);
       return next;
     });
+    setActiveViewSlug(null);
+  };
+
+  const handleWindowChange = (value: string) => {
+    setWindowSel(value);
+    setActiveViewSlug(null);
+  };
+
+  const handleSelectView = (slug: string) => {
+    setActiveViewSlug(slug);
+  };
+
+  const handleClearView = () => {
+    setActiveViewSlug(null);
+  };
+
+  const handleSaveView = async () => {
+    const name = newViewName.trim();
+    if (!name || !orgIdToUse) return;
+    setSavingView(true);
+    try {
+      const res = await fetch("/api/benchmarking/views", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orgId: orgIdToUse,
+          name,
+          windowKey: windowSel,
+          visibleColumns: Array.from(visibleCols),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(body || `HTTP ${res.status}`);
+      }
+      const created = (await res.json()) as BenchmarkingView;
+      await queryClient.invalidateQueries({ queryKey: ["/api/benchmarking/views", orgIdToUse] });
+      setActiveViewSlug(created.slug);
+      setSaveDialogOpen(false);
+      setNewViewName("");
+      toast({ title: "View saved", description: `"${created.name}" is now available to your team.` });
+    } catch (err: any) {
+      toast({ title: "Could not save view", description: err.message, variant: "destructive" });
+    } finally {
+      setSavingView(false);
+    }
+  };
+
+  const handleDeleteView = async (view: BenchmarkingView) => {
+    if (!confirm(`Delete view "${view.name}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/benchmarking/views/${view.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(await res.text());
+      if (activeViewSlug === view.slug) setActiveViewSlug(null);
+      await queryClient.invalidateQueries({ queryKey: ["/api/benchmarking/views", orgIdToUse] });
+      toast({ title: "View deleted", description: `"${view.name}" was removed.` });
+    } catch (err: any) {
+      toast({ title: "Could not delete view", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleCopyShareLink = () => {
+    if (!activeViewSlug || typeof window === "undefined") return;
+    const url = `${window.location.origin}${window.location.pathname}?view=${encodeURIComponent(activeViewSlug)}`;
+    navigator.clipboard.writeText(url).then(
+      () => toast({ title: "Link copied", description: url }),
+      () => toast({ title: "Copy failed", description: "Clipboard access denied", variant: "destructive" }),
+    );
   };
 
   return (
@@ -318,7 +460,82 @@ export default function Benchmarking() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Select value={windowSel} onValueChange={setWindowSel}>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" data-testid="button-views">
+                <Bookmark className="h-4 w-4 mr-1.5" />
+                {activeView ? activeView.name : "Views"}
+                {views.length > 0 && !activeView && <span className="ml-1 text-muted-foreground">({views.length})</span>}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Saved views</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {views.length === 0 && (
+                <div className="px-2 py-1.5 text-xs text-muted-foreground" data-testid="text-no-views">
+                  No saved views yet. Adjust the window/columns and click Save view.
+                </div>
+              )}
+              {views.map((v) => (
+                <DropdownMenuItem
+                  key={v.id}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    handleSelectView(v.slug);
+                  }}
+                  className="flex items-center justify-between gap-2"
+                  data-testid={`view-${v.slug}`}
+                >
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <span className="text-sm truncate">{v.name}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {v.windowKey.toUpperCase()} · {v.visibleColumns.length} cols
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="opacity-60 hover:opacity-100 hover:text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteView(v);
+                    }}
+                    data-testid={`delete-view-${v.slug}`}
+                    aria-label={`Delete ${v.name}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </DropdownMenuItem>
+              ))}
+              {activeView && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => handleClearView()} data-testid="clear-view">
+                    Clear active view
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSaveDialogOpen(true)}
+            data-testid="button-save-view"
+            disabled={!orgIdToUse}
+          >
+            <Save className="h-4 w-4 mr-1.5" /> Save view
+          </Button>
+          {activeView && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCopyShareLink}
+              data-testid="button-share-view"
+            >
+              <Link2 className="h-4 w-4 mr-1.5" /> Share link
+            </Button>
+          )}
+          <Select value={windowSel} onValueChange={handleWindowChange}>
             <SelectTrigger className="w-[170px]" data-testid="select-window">
               <SelectValue />
             </SelectTrigger>
@@ -361,6 +578,51 @@ export default function Benchmarking() {
           </Button>
         </div>
       </div>
+
+      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+        <DialogContent data-testid="dialog-save-view">
+          <DialogHeader>
+            <DialogTitle>Save benchmarking view</DialogTitle>
+            <DialogDescription>
+              Capture the current window and visible columns as a named view your whole team can open by URL.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="view-name">Name</Label>
+            <Input
+              id="view-name"
+              data-testid="input-view-name"
+              placeholder="e.g. Security review"
+              value={newViewName}
+              onChange={(e) => setNewViewName(e.target.value)}
+              maxLength={80}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newViewName.trim() && !savingView) {
+                  e.preventDefault();
+                  handleSaveView();
+                }
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              Window: <span className="font-medium">{windowSel.toUpperCase()}</span> · Columns:{" "}
+              <span className="font-medium">{visibleCols.size}/{METRIC_CONFIG.length}</span>
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSaveDialogOpen(false)} disabled={savingView}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveView}
+              disabled={!newViewName.trim() || savingView}
+              data-testid="button-confirm-save-view"
+            >
+              {savingView ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+              Save view
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="hidden print:block mb-4">
         <h2 className="text-2xl font-bold">{data?.orgName} — Cross-Tenant Benchmark</h2>

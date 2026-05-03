@@ -35,6 +35,7 @@ import {
   llmCalls, type LlmCall, type InsertLlmCall,
   llmSpendDaily, type LlmSpendDaily, type InsertLlmSpendDaily,
   savedViews, type SavedView, type InsertSavedView,
+  benchmarkingViews, type BenchmarkingView, type InsertBenchmarkingView,
   metricBaselines, type MetricBaseline, type InsertMetricBaseline,
   anomalyStreamConfigs, type AnomalyStreamConfig, type InsertAnomalyStreamConfig,
   anomalyNotificationSettings, type AnomalyNotificationSettings, type InsertAnomalyNotificationSettings,
@@ -281,6 +282,13 @@ export interface IStorage {
   deleteSavedView(id: string): Promise<void>;
   getSavedView(id: string): Promise<SavedView | undefined>;
   listSavedViewsForUser(orgId: string, userId: string, pageKey?: string): Promise<SavedView[]>;
+
+  listBenchmarkingViews(orgId: string): Promise<BenchmarkingView[]>;
+  getBenchmarkingView(id: string): Promise<BenchmarkingView | undefined>;
+  getBenchmarkingViewBySlug(orgId: string, slug: string): Promise<BenchmarkingView | undefined>;
+  createBenchmarkingView(data: InsertBenchmarkingView): Promise<BenchmarkingView>;
+  updateBenchmarkingView(id: string, data: Partial<InsertBenchmarkingView>): Promise<BenchmarkingView | undefined>;
+  deleteBenchmarkingView(id: string): Promise<void>;
 
   getBenchmarkingMatrix(orgId: string, selectedWindowMs: number): Promise<{
     metricWindows: Record<string, { ms: number; label: string }>;
@@ -3035,6 +3043,40 @@ export class DatabaseStorage implements IStorage {
       ? and(ownership, eq(savedViews.pageKey, pageKey))
       : ownership;
     return db.select().from(savedViews).where(where).orderBy(desc(savedViews.isSystem), desc(savedViews.createdAt));
+  }
+
+  async listBenchmarkingViews(orgId: string): Promise<BenchmarkingView[]> {
+    return db.select().from(benchmarkingViews)
+      .where(eq(benchmarkingViews.orgId, orgId))
+      .orderBy(asc(benchmarkingViews.name));
+  }
+
+  async getBenchmarkingView(id: string): Promise<BenchmarkingView | undefined> {
+    const [view] = await db.select().from(benchmarkingViews).where(eq(benchmarkingViews.id, id));
+    return view;
+  }
+
+  async getBenchmarkingViewBySlug(orgId: string, slug: string): Promise<BenchmarkingView | undefined> {
+    const [view] = await db.select().from(benchmarkingViews)
+      .where(and(eq(benchmarkingViews.orgId, orgId), eq(benchmarkingViews.slug, slug)));
+    return view;
+  }
+
+  async createBenchmarkingView(data: InsertBenchmarkingView): Promise<BenchmarkingView> {
+    const [created] = await db.insert(benchmarkingViews).values(data).returning();
+    return created;
+  }
+
+  async updateBenchmarkingView(id: string, data: Partial<InsertBenchmarkingView>): Promise<BenchmarkingView | undefined> {
+    const [updated] = await db.update(benchmarkingViews)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(benchmarkingViews.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteBenchmarkingView(id: string): Promise<void> {
+    await db.delete(benchmarkingViews).where(eq(benchmarkingViews.id, id));
   }
 
   async getBenchmarkingMatrix(orgId: string, selectedWindowMs: number): Promise<{
