@@ -28,6 +28,7 @@ import logoUrlDark from "@assets/Reveille_Icon_V1_White_1772142521711.png";
 import logoFullUrl from "@assets/Reveille_Logo_PNG_1772142435910.png";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { useLiveStreamStatus } from "@/lib/liveStream";
+import { useUnreadAlertCount, clearUnread } from "@/lib/alertNotifications";
 
 function LiveIndicator() {
   const status = useLiveStreamStatus();
@@ -52,6 +53,36 @@ function LiveIndicator() {
       </span>
       <span className="font-medium tracking-tight">{s.label}</span>
     </div>
+  );
+}
+
+function NotificationBell() {
+  const [location] = useLocation();
+  const count = useUnreadAlertCount();
+  const isOnAlerts = location === "/alerts";
+  const display = count > 99 ? "99+" : String(count);
+  return (
+    <Link href="/alerts">
+      <Button
+        variant="outline"
+        size="icon"
+        className="relative h-8 w-8 rounded-full"
+        onClick={() => clearUnread()}
+        data-testid="button-notifications"
+        aria-label={count > 0 ? `${count} unread alert${count === 1 ? "" : "s"}` : "Notifications"}
+      >
+        <Bell className="h-4 w-4" />
+        {!isOnAlerts && count > 0 && (
+          <span
+            className="absolute -top-1 -right-1 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-destructive text-destructive-foreground text-[10px] font-semibold leading-none flex items-center justify-center"
+            data-testid="badge-unread-alerts"
+          >
+            {display}
+          </span>
+        )}
+        <span className="sr-only">Notifications</span>
+      </Button>
+    </Link>
   );
 }
 
@@ -187,11 +218,8 @@ export function Header() {
         </form>
         <LiveIndicator />
         <ThemeToggle />
-        <Button variant="outline" size="icon" className="relative h-8 w-8 rounded-full">
-          <Bell className="h-4 w-4" />
-          <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-destructive"></span>
-          <span className="sr-only">Toggle notifications</span>
-        </Button>
+        <NotificationBell />
+        
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="secondary" size="icon" className="rounded-full">

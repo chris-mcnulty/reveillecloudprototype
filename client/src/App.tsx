@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TenantProvider } from "@/lib/tenant-context";
+import { AlertNotificationsListener } from "@/components/AlertNotificationsListener";
 import NotFound from "@/pages/not-found";
 import Environments from "@/pages/Environments";
 import Dashboard from "@/pages/Dashboard";
@@ -69,6 +70,7 @@ function App() {
         <TenantProvider>
           <TooltipProvider>
             <Toaster />
+            <AlertNotificationsListener />
             <Router />
           </TooltipProvider>
         </TenantProvider>
