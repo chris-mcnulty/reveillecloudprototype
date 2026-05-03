@@ -254,7 +254,37 @@ Database index strategy targeting p95 < 200ms on hot list endpoints. Indexes are
 - **Agent health summary** (4 agents, real data): single CTE, **3–25 ms** (verified at runtime via `/api/agent-health`).
 - Agent traces list → seq scan on the empty dev table (1 row); will use `agent_traces_tenant_started_status_idx` once populated.
 
-Re-run `EXPLAIN (ANALYZE, BUFFERS)` against the production DB to validate p95 targets after schema deploy.
+### Production EXPLAIN ANALYZE validation (Task #11, captured 2026-05-03 against the prod read replica)
+
+**Schema gap finding.** The production database (`neondb`, PG 16.12) is materially behind dev — it does NOT yet contain the Task #8 schema changes. Specifically:
+
+- Missing tables: `llm_calls`, `known_agents`, `foundry_deployments`, `foundry_usage_snapshots`, `foundry_pricing_overrides`, `metric_baselines`, `anomaly_stream_configs`, `agent_trace_spans` is present but `mcp_servers` is the only related new MCP table that exists alongside it; admin/anomaly/foundry/llm/known-agents tables not yet deployed.
+- Missing indexes: of the 38 covering indexes declared in `shared/schema.ts`, only `entra_sign_ins_tenant_signin_idx` (the legacy `(tenant_id, sign_in_id)` upsert index) is present. Every new `*_tenant_*_idx` from Task #8 (metrics_tenant_timestamp_idx, alerts_tenant_timestamp_idx, audit_log_entries_tenant_timestamp_idx, agent_traces_tenant_started_status_idx, copilot_interactions_*_idx, mcp_tool_calls_*_idx, entra_sign_ins_tenant_signin_at_idx, etc.) is **absent in prod**. They will be applied by the Replit Publish flow on the next deploy (the supported path; do not hand-roll a migration script).
+- Data volumes (prod): `audit_log_entries=0`, `copilot_interactions=0`, `entra_sign_ins=0`, `metrics=0`, `llm_calls=<table missing>`, `mcp_tool_calls=122` (split 61/61 across 2 tenants), `agent_traces=12`, `alerts=3`. There is no production-scale data to plan against — most hot tables have **fewer rows than dev**.
+
+**EXPLAIN (ANALYZE, BUFFERS) plans actually captured (sample tenant `b757b737-210b-4d7d-a2f5-1a48c43d61b2`):**
+
+| Endpoint query | Plan | Rows | Exec time |
+|---|---|---|---|
+| `agent_traces` list (LIMIT 50) | Seq Scan + quicksort top-N | 12 | **0.07 ms** (Buffers: hit=4) |
+| `mcp_tool_calls` list (LIMIT 50) | Seq Scan + quicksort top-N | 50/61 | **0.10 ms** (Buffers: hit=9) |
+| `audit_log_entries` list (LIMIT 200) | Seq Scan + quicksort top-N | 0 | **0.07 ms** (Buffers: hit=3) |
+| `copilot_interactions` list (LIMIT 50) | Seq Scan + quicksort top-N | 0 | **0.06 ms** (Buffers: hit=3) |
+| `entra_sign_ins` list (LIMIT 50) | Index Scan on `entra_sign_ins_tenant_signin_idx` | 0 | **0.06 ms** (Buffers: hit=5) |
+| `metrics` list (LIMIT 100) | Seq Scan + quicksort top-N | 0 | **0.07 ms** (Buffers: hit=3) |
+| `alerts` list (LIMIT 50) | Seq Scan + quicksort top-N | 0/3 | **0.07 ms** (Buffers: hit=4) |
+| `llm_calls` list | n/a — table not in prod | — | — |
+
+**Interpretation.** Every captured plan is well under the 200 ms p95 budget (sub-millisecond, in fact), but this is **not a meaningful production-scale validation** — the planner is choosing Seq Scan because the tables are empty or near-empty, exactly as on dev. We cannot verify "the new indexes are actually picked by the planner under production-scale Synozur data" because (a) the new indexes do not exist in prod yet and (b) production-scale data does not exist in prod yet (collectors have not run because the Azure AD app/admin consent has not been wired up against the prod deploy).
+
+**No tuning required at this time.** The only index currently doing work in prod (`entra_sign_ins_tenant_signin_idx`) is the legacy upsert index, and no planner is picking a sub-optimal index because there is effectively only one choice per table. Once schema is deployed via Publish and the collectors backfill real Synozur data into prod, this section MUST be re-captured: same 7 hot list endpoints, plus `llm_calls` and `agent_health` once those tables are populated.
+
+**Next-step checklist for future re-validation (do not run before Publish):**
+1. Verify all 38 indexes from `shared/schema.ts` are present via `SELECT indexname FROM pg_indexes WHERE schemaname='public'`.
+2. Re-run `EXPLAIN (ANALYZE, BUFFERS)` for each of: copilot interactions list (with and without `sessionId`/`userId` filters), entra sign-ins list, agent traces list, llm calls list, mcp tool calls list, audit log entries list, agent-health summary CTE.
+3. Confirm Index Scan / Index Only Scan plans on the `_tenant_*_at_idx` covering indexes (NOT `_tenant_user_idx` or unique upsert indexes) for the unfiltered `ORDER BY ts DESC LIMIT N` case.
+4. Confirm warm execution time + planning time < 200 ms on the largest tenant (Synozur ≈ 100K+ audit rows expected).
+5. Update the table above with real numbers and remove the schema-gap caveat.
 
 ## External References
 - **Zenith** (M365 reporting & governance app): https://github.com/chris-mcnulty/synozur-zenith — Chris's app for reporting on and governing M365
