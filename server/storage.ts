@@ -281,7 +281,8 @@ export interface IStorage {
     }>;
   }>;
 
-  getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number }): Promise<SlowestLlmHop[]>;
+  getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number; agentId?: string }): Promise<SlowestLlmHop[]>;
+  getAgentLlmSummary(tenantId: string, agentId: string, opts?: { hopsLimit?: number }): Promise<AgentLlmSummary>;
   backfillLlmCallTraceLinks(opts?: { tenantId?: string; toleranceMs?: number; dryRun?: boolean }): Promise<{ scanned: number; matched: number; updated: number; ambiguous: number }>;
 
   createScheduledDigest(data: InsertScheduledDigest): Promise<ScheduledDigest>;
@@ -370,6 +371,26 @@ export type LlmCallWithModel = LlmCall & {
   deploymentName: string | null;
   endpoint: string | null;
 };
+
+export interface AgentLlmRollup {
+  windowHours: number;
+  totalCalls: number;
+  successCount: number;
+  errorCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostCents: number;
+  avgDurationMs: number;
+  avgTtftMs: number;
+}
+
+export interface AgentLlmSummary {
+  agentId: string;
+  window24h: AgentLlmRollup;
+  window7d: AgentLlmRollup;
+  slowestHops24h: SlowestLlmHop[];
+  topModels7d: { modelId: string; modelName: string | null; provider: string | null; calls: number; totalTokens: number; costCents: number; avgDurationMs: number }[];
+}
 
 export interface SlowestLlmHop {
   callId: string;
@@ -2405,9 +2426,10 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number }): Promise<SlowestLlmHop[]> {
+  async getSlowestLlmHops(tenantId: string, opts?: { since?: Date; limit?: number; agentId?: string }): Promise<SlowestLlmHop[]> {
     const since = opts?.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
     const limit = opts?.limit ?? 10;
+    const agentFilter = opts?.agentId ? sql`AND lc.agent_id = ${opts.agentId}` : sql``;
     const rows = await db.execute(sql`
       SELECT lc.id AS call_id, lc.tenant_id, lc.trace_id, lc.span_id, lc.agent_id, lc.agent_name,
              lc.model_id, lc.duration_ms, lc.ttft_ms, lc.tokens_per_sec,
@@ -2422,6 +2444,7 @@ export class DatabaseStorage implements IStorage {
       WHERE lc.tenant_id = ${tenantId}
         AND lc.called_at >= ${since}
         AND lc.duration_ms IS NOT NULL
+        ${agentFilter}
       ORDER BY lc.duration_ms DESC NULLS LAST
       LIMIT ${limit}
     `);
@@ -2450,6 +2473,79 @@ export class DatabaseStorage implements IStorage {
       traceAgentName: r.trace_agent_name ?? null,
       tracePlatform: r.trace_platform ?? null,
     }));
+  }
+
+  async getAgentLlmSummary(tenantId: string, agentId: string, opts?: { hopsLimit?: number }): Promise<AgentLlmSummary> {
+    const hopsLimit = opts?.hopsLimit ?? 5;
+    const now = Date.now();
+    const since24h = new Date(now - 24 * 60 * 60 * 1000);
+    const since7d = new Date(now - 7 * 24 * 60 * 60 * 1000);
+
+    const computeRollup = async (since: Date, windowHours: number): Promise<AgentLlmRollup> => {
+      const rows = await db.execute(sql`
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'success')::int AS successes,
+          COUNT(*) FILTER (WHERE status = 'error')::int AS errors,
+          COALESCE(SUM(input_tokens), 0)::int AS input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int AS output_tokens,
+          COALESCE(SUM(cost_cents), 0)::real AS cost_cents,
+          COALESCE(AVG(duration_ms), 0)::real AS avg_duration,
+          COALESCE(AVG(ttft_ms), 0)::real AS avg_ttft
+        FROM llm_calls
+        WHERE tenant_id = ${tenantId} AND agent_id = ${agentId} AND called_at >= ${since}
+      `);
+      const r = (rows.rows as any[])[0] || {};
+      return {
+        windowHours,
+        totalCalls: Number(r.total) || 0,
+        successCount: Number(r.successes) || 0,
+        errorCount: Number(r.errors) || 0,
+        totalInputTokens: Number(r.input_tokens) || 0,
+        totalOutputTokens: Number(r.output_tokens) || 0,
+        totalCostCents: Number(r.cost_cents) || 0,
+        avgDurationMs: Number(r.avg_duration) || 0,
+        avgTtftMs: Number(r.avg_ttft) || 0,
+      };
+    };
+
+    const [window24h, window7d, slowestHops24h, modelRows] = await Promise.all([
+      computeRollup(since24h, 24),
+      computeRollup(since7d, 24 * 7),
+      this.getSlowestLlmHops(tenantId, { since: since24h, limit: hopsLimit, agentId }),
+      db.execute(sql`
+        SELECT
+          lc.model_id,
+          lm.model_name,
+          lm.provider,
+          COUNT(*)::int AS calls,
+          COALESCE(SUM(COALESCE(lc.input_tokens, 0) + COALESCE(lc.output_tokens, 0)), 0)::int AS total_tokens,
+          COALESCE(SUM(lc.cost_cents), 0)::real AS cost_cents,
+          COALESCE(AVG(lc.duration_ms), 0)::real AS avg_duration
+        FROM llm_calls lc
+        LEFT JOIN llm_models lm ON lm.id = lc.model_id
+        WHERE lc.tenant_id = ${tenantId} AND lc.agent_id = ${agentId} AND lc.called_at >= ${since7d}
+        GROUP BY lc.model_id, lm.model_name, lm.provider
+        ORDER BY cost_cents DESC, calls DESC
+        LIMIT 5
+      `),
+    ]);
+
+    return {
+      agentId,
+      window24h,
+      window7d,
+      slowestHops24h,
+      topModels7d: (modelRows.rows as any[]).map(r => ({
+        modelId: String(r.model_id),
+        modelName: r.model_name ?? null,
+        provider: r.provider ?? null,
+        calls: Number(r.calls) || 0,
+        totalTokens: Number(r.total_tokens) || 0,
+        costCents: Number(r.cost_cents) || 0,
+        avgDurationMs: Number(r.avg_duration) || 0,
+      })),
+    };
   }
 
   async backfillLlmCallTraceLinks(opts?: { tenantId?: string; toleranceMs?: number; dryRun?: boolean }): Promise<{ scanned: number; matched: number; updated: number; ambiguous: number }> {

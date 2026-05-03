@@ -2876,7 +2876,11 @@ export default function AgentObservability() {
   const { activeTenantId, activeOrgId, organization } = useActiveTenant();
   const orgId = organization?.id ?? activeOrgId;
   const { since: windowSince } = useUrlWindow();
-  const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
+  const [expandedTraceId, setExpandedTraceId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("trace");
+  });
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [agentSearch, setAgentSearch] = useState("");

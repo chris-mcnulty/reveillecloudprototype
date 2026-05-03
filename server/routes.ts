@@ -1737,12 +1737,25 @@ export async function registerRoutes(
   });
 
   app.get("/api/tenants/:tenantId/llm-models/slowest-hops", async (req, res) => {
-    const { since, limit } = req.query as any;
+    const { since, limit, agentId } = req.query as any;
     const hops = await storage.getSlowestLlmHops(req.params.tenantId, {
       since: since ? new Date(since) : undefined,
       limit: limit ? parseInt(limit, 10) : 10,
+      agentId: agentId || undefined,
     });
     res.json(hops);
+  });
+
+  app.get("/api/tenants/:tenantId/known-agents/:agentId/llm-summary", async (req, res) => {
+    const agent = await storage.getKnownAgent(req.params.agentId);
+    if (!agent || agent.tenantId !== req.params.tenantId) {
+      return res.status(404).json({ error: "Agent not found" });
+    }
+    const { hopsLimit } = req.query as any;
+    const summary = await storage.getAgentLlmSummary(req.params.tenantId, req.params.agentId, {
+      hopsLimit: hopsLimit ? parseInt(hopsLimit, 10) : 5,
+    });
+    res.json(summary);
   });
 
   app.post("/api/tenants/:tenantId/llm-calls/backfill-trace-links", async (req, res) => {

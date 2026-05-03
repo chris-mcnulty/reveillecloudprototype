@@ -204,8 +204,10 @@ export default function LlmPerformance() {
     const params = new URLSearchParams(search);
     const m = params.get("modelId");
     const c = params.get("callId");
+    const a = params.get("agent");
     if (m) setExpandedModelId(m);
     if (c) setHighlightCallId(c);
+    if (a) setAgentFilter(a);
   }, []);
 
   useEffect(() => {
