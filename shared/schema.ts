@@ -775,6 +775,7 @@ export const llmCalls = pgTable("llm_calls", {
   tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
   modelId: varchar("model_id").notNull().references(() => llmModels.id),
   agentId: varchar("agent_id").references(() => knownAgents.id),
+  skillId: varchar("skill_id"),
   traceId: varchar("trace_id").references(() => agentTraces.id),
   spanId: varchar("span_id").references(() => agentTraceSpans.id),
   agentName: text("agent_name"),
@@ -801,11 +802,91 @@ export const llmCalls = pgTable("llm_calls", {
   index("llm_calls_model_called_idx").on(table.modelId, table.calledAt.desc()),
   index("llm_calls_tenant_agent_called_idx").on(table.tenantId, table.agentId, table.calledAt.desc()),
   index("llm_calls_trace_span_idx").on(table.traceId, table.spanId),
+  index("llm_calls_skill_called_idx").on(table.skillId, table.calledAt.desc()),
 ]);
 
 export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
 export type InsertLlmCall = z.infer<typeof insertLlmCallSchema>;
 export type LlmCall = typeof llmCalls.$inferSelect;
+
+// Skill.md files discovered in OneDrive (Coworker-style) or SharePoint Agent
+// Assets libraries. One row per unique file; updates in place when the file
+// is re-seen at the same (driveId, itemId).
+export const skillDefinitions = pgTable("skill_definitions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  source: text("source").notNull(), // "onedrive" | "sharepoint_agent_assets" | "manual"
+  driveId: text("drive_id"),
+  itemId: text("item_id"),
+  siteId: text("site_id"),
+  libraryName: text("library_name"),
+  parentPath: text("parent_path"),
+  ownerUserId: text("owner_user_id"),
+  ownerUserPrincipalName: text("owner_user_principal_name"),
+  name: text("name").notNull(),
+  displayName: text("display_name"),
+  version: text("version"),
+  description: text("description"),
+  webUrl: text("web_url"),
+  contentHash: text("content_hash"),
+  sizeBytes: integer("size_bytes"),
+  frontmatter: jsonb("frontmatter").$type<Record<string, any>>(),
+  tags: text("tags").array(),
+  parseStatus: text("parse_status").notNull().default("ok"), // "ok" | "invalid" | "no_frontmatter"
+  parseError: text("parse_error"),
+  status: text("status").notNull().default("active"), // "active" | "missing" | "deprecated"
+  fileLastModifiedAt: timestamp("file_last_modified_at"),
+  fileLastModifiedBy: text("file_last_modified_by"),
+  discoveredAt: timestamp("discovered_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("skill_definitions_tenant_drive_item_idx").on(table.tenantId, table.driveId, table.itemId),
+  index("skill_definitions_tenant_source_idx").on(table.tenantId, table.source),
+  index("skill_definitions_tenant_status_idx").on(table.tenantId, table.status),
+  index("skill_definitions_tenant_hash_idx").on(table.tenantId, table.contentHash),
+  index("skill_definitions_tenant_seen_idx").on(table.tenantId, table.lastSeenAt.desc()),
+]);
+
+export const insertSkillDefinitionSchema = createInsertSchema(skillDefinitions).omit({
+  id: true,
+  discoveredAt: true,
+  lastSeenAt: true,
+  updatedAt: true,
+});
+export type InsertSkillDefinition = z.infer<typeof insertSkillDefinitionSchema>;
+export type SkillDefinition = typeof skillDefinitions.$inferSelect;
+
+// One row per skill load / match / invocation / failure. Written by collectors
+// (audit-log correlation) or by the LLM recorder (direct attribution).
+export const skillUsageEvents = pgTable("skill_usage_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  skillId: varchar("skill_id").notNull().references(() => skillDefinitions.id, { onDelete: "cascade" }),
+  agentId: varchar("agent_id").references(() => knownAgents.id),
+  traceId: varchar("trace_id").references(() => agentTraces.id),
+  llmCallId: varchar("llm_call_id").references(() => llmCalls.id, { onDelete: "set null" }),
+  event: text("event").notNull(), // "loaded" | "matched" | "invoked" | "failed"
+  source: text("source").notNull(), // "audit_log" | "sdk" | "manual"
+  actorUserId: text("actor_user_id"),
+  latencyMs: integer("latency_ms"),
+  errorMessage: text("error_message"),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+  occurredAt: timestamp("occurred_at").notNull().defaultNow(),
+}, (table) => [
+  index("skill_usage_events_tenant_occurred_idx").on(table.tenantId, table.occurredAt.desc()),
+  index("skill_usage_events_skill_occurred_idx").on(table.skillId, table.occurredAt.desc()),
+  index("skill_usage_events_tenant_event_occurred_idx").on(table.tenantId, table.event, table.occurredAt.desc()),
+]);
+
+export const insertSkillUsageEventSchema = createInsertSchema(skillUsageEvents).omit({
+  id: true,
+  occurredAt: true,
+}).extend({
+  occurredAt: z.coerce.date().optional(),
+});
+export type InsertSkillUsageEvent = z.infer<typeof insertSkillUsageEventSchema>;
+export type SkillUsageEvent = typeof skillUsageEvents.$inferSelect;
 
 export const savedViews = pgTable("saved_views", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

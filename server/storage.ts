@@ -44,6 +44,8 @@ import {
   foundryDeployments, type FoundryDeployment, type InsertFoundryDeployment,
   foundryUsageSnapshots, type FoundryUsageSnapshot, type InsertFoundryUsageSnapshot,
   foundryPricingOverrides, type FoundryPricingOverride, type InsertFoundryPricingOverride,
+  skillDefinitions, type SkillDefinition, type InsertSkillDefinition,
+  skillUsageEvents, type SkillUsageEvent, type InsertSkillUsageEvent,
   type CopilotSurfaceAlertPayload,
 } from "@shared/schema";
 
@@ -329,6 +331,29 @@ export interface IStorage {
   upsertFoundryPricingOverride(data: InsertFoundryPricingOverride): Promise<FoundryPricingOverride>;
   deleteFoundryPricingOverride(deploymentId: string): Promise<void>;
   getFoundryCostAllocation(tenantId: string, windowHours: number): Promise<FoundryCostAllocation>;
+
+  upsertSkillDefinitionByDriveItem(data: InsertSkillDefinition): Promise<{ skill: SkillDefinition; created: boolean }>;
+  markUnseenSkillsMissing(tenantId: string, source: string, seenIds: Set<string>): Promise<number>;
+  getSkillDefinitions(tenantId: string, opts?: { source?: string; status?: string; parseStatus?: string; search?: string; limit?: number; offset?: number }): Promise<{ items: SkillDefinitionWithUsage[]; total: number }>;
+  getSkillDefinition(id: string): Promise<SkillDefinition | undefined>;
+  updateSkillDefinition(id: string, data: Partial<InsertSkillDefinition>): Promise<SkillDefinition | undefined>;
+  getSkillStats(tenantId: string): Promise<{
+    totalSkills: number;
+    bySource: Record<string, number>;
+    byStatus: Record<string, number>;
+    invalidCount: number;
+    orphanCount: number;
+    driftCount: number;
+    topSkills: { skillId: string; name: string; source: string; usageCount: number }[];
+  }>;
+  createSkillUsageEvent(data: InsertSkillUsageEvent): Promise<SkillUsageEvent>;
+  getSkillUsageEvents(skillId: string, opts?: { limit?: number; offset?: number; event?: string; since?: Date }): Promise<{ items: SkillUsageEvent[]; total: number }>;
+  getSkillUsageTimeline(skillId: string, since?: Date): Promise<{ bucket: string; count: number }[]>;
+}
+
+export interface SkillDefinitionWithUsage extends SkillDefinition {
+  usageCount30d: number;
+  lastUsedAt: Date | null;
 }
 
 export interface FoundryAgentAllocation {
@@ -1197,6 +1222,7 @@ export class DatabaseStorage implements IStorage {
       tenantId: r.tenant_id,
       modelId: r.model_id,
       agentId: r.agent_id,
+      skillId: r.skill_id ?? null,
       traceId: r.trace_id,
       spanId: r.span_id,
       agentName: r.agent_name,
@@ -2328,6 +2354,7 @@ export class DatabaseStorage implements IStorage {
       tenantId: r.tenant_id,
       modelId: r.model_id,
       agentId: r.agent_id ?? null,
+      skillId: r.skill_id ?? null,
       traceId: r.trace_id ?? null,
       spanId: r.span_id ?? null,
       agentName: r.agent_name ?? null,
@@ -4170,6 +4197,269 @@ export class DatabaseStorage implements IStorage {
       default:
         return 0;
     }
+  }
+
+  async upsertSkillDefinitionByDriveItem(data: InsertSkillDefinition): Promise<{ skill: SkillDefinition; created: boolean }> {
+    const conditions = [eq(skillDefinitions.tenantId, data.tenantId)];
+    if (data.driveId) conditions.push(eq(skillDefinitions.driveId, data.driveId));
+    else conditions.push(sql`${skillDefinitions.driveId} IS NULL`);
+    if (data.itemId) conditions.push(eq(skillDefinitions.itemId, data.itemId));
+    else conditions.push(sql`${skillDefinitions.itemId} IS NULL`);
+
+    const [existing] = await db.select().from(skillDefinitions).where(and(...conditions));
+    const now = new Date();
+    if (existing) {
+      const [updated] = await db.update(skillDefinitions)
+        .set({
+          source: data.source,
+          siteId: data.siteId ?? null,
+          libraryName: data.libraryName ?? null,
+          parentPath: data.parentPath ?? null,
+          ownerUserId: data.ownerUserId ?? null,
+          ownerUserPrincipalName: data.ownerUserPrincipalName ?? null,
+          name: data.name,
+          displayName: data.displayName ?? null,
+          version: data.version ?? null,
+          description: data.description ?? null,
+          webUrl: data.webUrl ?? null,
+          contentHash: data.contentHash ?? null,
+          sizeBytes: data.sizeBytes ?? null,
+          frontmatter: data.frontmatter ?? null,
+          tags: data.tags ?? null,
+          parseStatus: data.parseStatus ?? "ok",
+          parseError: data.parseError ?? null,
+          status: data.status ?? "active",
+          fileLastModifiedAt: data.fileLastModifiedAt ?? null,
+          fileLastModifiedBy: data.fileLastModifiedBy ?? null,
+          lastSeenAt: now,
+          updatedAt: now,
+        })
+        .where(eq(skillDefinitions.id, existing.id))
+        .returning();
+      return { skill: updated, created: false };
+    }
+    const [created] = await db.insert(skillDefinitions).values(data).returning();
+    return { skill: created, created: true };
+  }
+
+  async markUnseenSkillsMissing(tenantId: string, source: string, seenIds: Set<string>): Promise<number> {
+    const seenArray = Array.from(seenIds);
+    const conditions = [
+      eq(skillDefinitions.tenantId, tenantId),
+      eq(skillDefinitions.source, source),
+      eq(skillDefinitions.status, "active"),
+    ];
+    let whereExpr = and(...conditions);
+    if (seenArray.length > 0) {
+      whereExpr = and(whereExpr!, sql`${skillDefinitions.id} NOT IN (${sql.join(seenArray.map(s => sql`${s}`), sql`, `)})`);
+    }
+    const result = await db.update(skillDefinitions)
+      .set({ status: "missing", updatedAt: new Date() })
+      .where(whereExpr)
+      .returning({ id: skillDefinitions.id });
+    return result.length;
+  }
+
+  async getSkillDefinitions(tenantId: string, opts?: { source?: string; status?: string; parseStatus?: string; search?: string; limit?: number; offset?: number }): Promise<{ items: SkillDefinitionWithUsage[]; total: number }> {
+    const conditions = [eq(skillDefinitions.tenantId, tenantId)];
+    if (opts?.source) conditions.push(eq(skillDefinitions.source, opts.source));
+    if (opts?.status) conditions.push(eq(skillDefinitions.status, opts.status));
+    if (opts?.parseStatus) conditions.push(eq(skillDefinitions.parseStatus, opts.parseStatus));
+    if (opts?.search) {
+      const q = `%${opts.search}%`;
+      conditions.push(or(ilike(skillDefinitions.name, q), ilike(skillDefinitions.displayName, q), ilike(skillDefinitions.description, q))!);
+    }
+    const where = and(...conditions);
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
+
+    const thirtyDaysAgo = sql`NOW() - INTERVAL '30 days'`;
+    const rows = await db.execute<any>(sql`
+      WITH usage_rollup AS (
+        SELECT skill_id,
+               COUNT(*)::int AS usage_count_30d,
+               MAX(occurred_at) AS last_used_at
+        FROM skill_usage_events
+        WHERE tenant_id = ${tenantId}
+          AND occurred_at >= ${thirtyDaysAgo}
+        GROUP BY skill_id
+      )
+      SELECT s.*,
+             COALESCE(u.usage_count_30d, 0) AS usage_count_30d,
+             u.last_used_at,
+             COUNT(*) OVER() AS _total
+      FROM skill_definitions s
+      LEFT JOIN usage_rollup u ON u.skill_id = s.id
+      WHERE ${where}
+      ORDER BY s.last_seen_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+    const items: SkillDefinitionWithUsage[] = (rows.rows as any[]).map(r => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      source: r.source,
+      driveId: r.drive_id,
+      itemId: r.item_id,
+      siteId: r.site_id,
+      libraryName: r.library_name,
+      parentPath: r.parent_path,
+      ownerUserId: r.owner_user_id,
+      ownerUserPrincipalName: r.owner_user_principal_name,
+      name: r.name,
+      displayName: r.display_name,
+      version: r.version,
+      description: r.description,
+      webUrl: r.web_url,
+      contentHash: r.content_hash,
+      sizeBytes: r.size_bytes,
+      frontmatter: r.frontmatter,
+      tags: r.tags,
+      parseStatus: r.parse_status,
+      parseError: r.parse_error,
+      status: r.status,
+      fileLastModifiedAt: r.file_last_modified_at ? new Date(r.file_last_modified_at) : null,
+      fileLastModifiedBy: r.file_last_modified_by,
+      discoveredAt: new Date(r.discovered_at),
+      lastSeenAt: new Date(r.last_seen_at),
+      updatedAt: new Date(r.updated_at),
+      usageCount30d: Number(r.usage_count_30d) || 0,
+      lastUsedAt: r.last_used_at ? new Date(r.last_used_at) : null,
+    }));
+    const total = items.length > 0 ? Number((rows.rows[0] as any)._total) : 0;
+    if (items.length === 0 && offset > 0) {
+      const [c] = await db.select({ c: sql<number>`count(*)` }).from(skillDefinitions).where(where);
+      return { items, total: Number(c?.c ?? 0) };
+    }
+    return { items, total };
+  }
+
+  async getSkillDefinition(id: string): Promise<SkillDefinition | undefined> {
+    const [row] = await db.select().from(skillDefinitions).where(eq(skillDefinitions.id, id));
+    return row;
+  }
+
+  async updateSkillDefinition(id: string, data: Partial<InsertSkillDefinition>): Promise<SkillDefinition | undefined> {
+    const [updated] = await db.update(skillDefinitions)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(skillDefinitions.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getSkillStats(tenantId: string): Promise<{
+    totalSkills: number;
+    bySource: Record<string, number>;
+    byStatus: Record<string, number>;
+    invalidCount: number;
+    orphanCount: number;
+    driftCount: number;
+    topSkills: { skillId: string; name: string; source: string; usageCount: number }[];
+  }> {
+    const rows = await db.execute<any>(sql`
+      SELECT source, status, parse_status, COUNT(*)::int AS c
+      FROM skill_definitions
+      WHERE tenant_id = ${tenantId}
+      GROUP BY source, status, parse_status
+    `);
+
+    const bySource: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    let totalSkills = 0;
+    let invalidCount = 0;
+    for (const r of rows.rows as any[]) {
+      const c = Number(r.c) || 0;
+      totalSkills += c;
+      bySource[r.source] = (bySource[r.source] || 0) + c;
+      byStatus[r.status] = (byStatus[r.status] || 0) + c;
+      if (r.parse_status === "invalid") invalidCount += c;
+    }
+
+    const [orphanRow] = await db.execute<any>(sql`
+      SELECT COUNT(*)::int AS c
+      FROM skill_definitions s
+      WHERE s.tenant_id = ${tenantId}
+        AND s.status = 'active'
+        AND NOT EXISTS (
+          SELECT 1 FROM skill_usage_events e
+          WHERE e.skill_id = s.id
+            AND e.occurred_at >= NOW() - INTERVAL '30 days'
+        )
+    `).then(r => r.rows as any[]);
+
+    const [driftRow] = await db.execute<any>(sql`
+      SELECT COUNT(*)::int AS c
+      FROM skill_definitions
+      WHERE tenant_id = ${tenantId}
+        AND updated_at >= NOW() - INTERVAL '7 days'
+        AND updated_at != discovered_at
+    `).then(r => r.rows as any[]);
+
+    const topRows = await db.execute<any>(sql`
+      SELECT s.id AS skill_id, s.name, s.source, COUNT(e.id)::int AS usage_count
+      FROM skill_definitions s
+      LEFT JOIN skill_usage_events e ON e.skill_id = s.id AND e.occurred_at >= NOW() - INTERVAL '30 days'
+      WHERE s.tenant_id = ${tenantId}
+      GROUP BY s.id, s.name, s.source
+      ORDER BY usage_count DESC
+      LIMIT 10
+    `);
+
+    return {
+      totalSkills,
+      bySource,
+      byStatus,
+      invalidCount,
+      orphanCount: Number(orphanRow?.c) || 0,
+      driftCount: Number(driftRow?.c) || 0,
+      topSkills: (topRows.rows as any[]).map(r => ({
+        skillId: r.skill_id,
+        name: r.name,
+        source: r.source,
+        usageCount: Number(r.usage_count) || 0,
+      })),
+    };
+  }
+
+  async createSkillUsageEvent(data: InsertSkillUsageEvent): Promise<SkillUsageEvent> {
+    const [created] = await db.insert(skillUsageEvents).values({
+      ...data,
+      occurredAt: data.occurredAt ?? new Date(),
+    }).returning();
+    return created;
+  }
+
+  async getSkillUsageEvents(skillId: string, opts?: { limit?: number; offset?: number; event?: string; since?: Date }): Promise<{ items: SkillUsageEvent[]; total: number }> {
+    const conditions = [eq(skillUsageEvents.skillId, skillId)];
+    if (opts?.event) conditions.push(eq(skillUsageEvents.event, opts.event));
+    if (opts?.since) conditions.push(gte(skillUsageEvents.occurredAt, opts.since));
+    const where = and(...conditions);
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
+    const rows = await db.select({
+      row: skillUsageEvents,
+      total: sql<number>`count(*) over()`,
+    }).from(skillUsageEvents).where(where).orderBy(desc(skillUsageEvents.occurredAt)).limit(limit).offset(offset);
+    const items = rows.map(r => r.row);
+    const total = rows.length > 0 ? Number(rows[0].total) : 0;
+    if (items.length === 0 && offset > 0) {
+      const [c] = await db.select({ c: sql<number>`count(*)` }).from(skillUsageEvents).where(where);
+      return { items, total: Number(c?.c ?? 0) };
+    }
+    return { items, total };
+  }
+
+  async getSkillUsageTimeline(skillId: string, since?: Date): Promise<{ bucket: string; count: number }[]> {
+    const sinceDate = since ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const rows = await db.execute<any>(sql`
+      SELECT TO_CHAR(date_trunc('day', occurred_at), 'YYYY-MM-DD') AS bucket,
+             COUNT(*)::int AS count
+      FROM skill_usage_events
+      WHERE skill_id = ${skillId}
+        AND occurred_at >= ${sinceDate}
+      GROUP BY 1
+      ORDER BY 1
+    `);
+    return (rows.rows as any[]).map(r => ({ bucket: r.bucket, count: Number(r.count) || 0 }));
   }
 }
 

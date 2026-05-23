@@ -44,6 +44,8 @@ Key architectural decisions include:
 - **mcpServers**: Registered MCP servers with health monitoring (name, transport type, URL, API key, status, heartbeat, capabilities, uptime, restart count). Supports stdio/SSE/streamable-http transports with API key auth.
 - **mcpToolCalls**: Individual MCP tool call traces (JSON-RPC method, tool name, params, result, error, duration, session ID). Linked to mcpServers and optionally to agentTraces for correlation.
 - **metricBaselines**, **anomalyStreamConfigs**: Rolling 7-day hourly baselines per tenant×stream and per-stream sensitivity config. New columns on **alerts**: `alertType` ("threshold" | "anomaly" | "copilot_surface" | ...), `streamKey`, `payload` (jsonb).
+- **skillDefinitions**: `skill.md` files discovered in OneDrive (Coworker-style apps) or SharePoint Agent Assets libraries. Unique on `(tenantId, driveId, itemId)`. Stores parsed frontmatter, contentHash (sha256), tags, version, owner/library context. `parseStatus` = `ok | invalid | no_frontmatter`; `status` = `active | missing | deprecated` (rows are marked `missing` when a collector sweep fails to find them again).
+- **skillUsageEvents**: One row per skill `loaded | matched | invoked | failed` event. Sources: `audit_log` (passive, future via Office 365 Management Activity correlation), `sdk` (direct LLM recorder attribution), `manual`. Optional FKs to `knownAgents`, `agentTraces`, and `llmCalls`. `llm_calls.skillId` is also a nullable FK for direct attribution.
 - **Copilot Surface Alerts**: `alertRules` rows with `alertType="copilot_surface"`, `metric` either `copilot_p95_latency_ms` (threshold in ms) or `copilot_empty_response_rate` (threshold as integer percent), `streamKey` set to a specific surface label (e.g. "M365 Chat", "Outlook") or `__all__` for global scope, `condition="gt"`. The `copilotSurfaceEval` scheduler job (every 15m) reads the last 60m of `copilotInteractions` per tenant via `getCopilotModelStats`, opens a `copilot_surface` alert (payload.state="open") on breach, and auto-resolves (payload.state="resolved") when the metric returns to normal. Min sample thresholds: 5 for latency, 10 for empty-rate.
 
 ### Anomaly Detection
@@ -127,6 +129,13 @@ All prefixed with `/api`:
 - `GET /tenants/:tenantId/audit-log?operation=&since=&limit=` (SharePoint audit log)
 - `GET /tenants/:tenantId/audit-log/stats` (audit log counts by operation)
 - `GET /admin-audit?tenantId=&since=&limit=` (internal admin audit trail)
+- `GET /tenants/:tenantId/skills?source=&status=&parseStatus=&search=&limit=&offset=` (list skill.md catalog)
+- `GET /tenants/:tenantId/skills/stats` (totals by source/status, invalid/orphan/drift counts, top 10 by usage)
+- `GET /tenants/:tenantId/skills/:id` (definition + last 20 usage events + 30d daily timeline)
+- `GET /tenants/:tenantId/skills/:id/usage?event=&since=&limit=&offset=` (full event log for a skill)
+- `PATCH /tenants/:tenantId/skills/:id` (mark deprecated/active/missing)
+- `POST /tenants/:tenantId/skills/discover` (manual trigger; body `{source?: "onedrive" | "sharepoint_agent_assets"}`)
+- `POST /tenants/:tenantId/skills/:id/usage` (record a usage event from an external integration)
 
 ## Frontend Pages
 - `/` - Tenant Dashboard (default single-tenant view with charts)
@@ -137,6 +146,7 @@ All prefixed with `/api`:
 - `/usage-reports` - SharePoint usage reports per tenant (5 Graph usage types + 5 site structure types with charts/tables)
 - `/audit-log` - SharePoint audit trail + internal admin activity (tabbed)
 - `/agent-observability` - Agent Observability (tabbed: Agent Traces + Copilot Interactions + **Copilot Models** + MCP Servers). Copilot Models tab mirrors the LLM Performance leaderboard for M365 Copilot: 6-card metric grid (total interactions, p50/p95/p99 latency, empty-response rate, surface count), surface bar chart, capability list, sortable per-model leaderboard with drill-down (latency distribution histogram + per-model surface/capability breakdown), 24h/7d/30d/all window selector, and a per-tenant Backfill button.
+- `/skills` - Skill.md catalog (tabbed: Catalog + Usage + Health). 6-tile stat grid (total / per-source counts / invalid / orphan-30d / drift-7d), sortable per-skill table with source/status filters, click-through to a detail dialog with frontmatter + recent usage timeline + "Open in OneDrive/SharePoint" link. Health tab surfaces parse failures, missing files, and orphan skills.
 - `/alerts` - Alerts & incidents list
 - `/reports` - Report generation & scheduling
 - `/onboarding` - New tenant onboarding wizard
@@ -147,13 +157,15 @@ All prefixed with `/api`:
 
 ## Scheduler
 - Adapted from Synozur Orbit multi-tenant scheduler pattern (https://github.com/chris-mcnulty/synozur-orbit)
-- 6 job types with independent intervals:
+- Scheduler job types (independent intervals):
   - **syntheticTests**: Every 60s sweep, per-test interval checking
   - **serviceHealth**: Every 5 minutes (near-real-time incident detection)
   - **auditLogs**: Every 15 minutes (per consented tenant)
   - **graphReports**: Every 6 hours (daily aggregate reports)
   - **siteStructure**: Every 1 hour (subsites, lists/libraries, drives, groups, users)
   - **copilotInteractions**: Every 1 hour (Copilot prompt/response history via Graph API)
+  - **skillsSharePointDiscovery**: Every 6 hours (Agent Assets libraries; scans drives whose name matches "Agent Assets" / "agent-assets" / "Skills" — or libraries explicitly listed in `agent_discovery_sources` with `kind="sharepoint_agent_assets"`)
+  - **skillsOneDriveDiscovery**: Every 6 hours (Coworker-style `skill.md` files in per-user OneDrives; scans the default paths `/Skills`, `/Documents/Skills`, `/Coworker/Skills` — or explicit paths from `agent_discovery_sources` with `kind="onedrive_skills"`)
 - Only runs for tenants with `consentStatus === "Connected"`
 - Staggered execution with jitter between tests/tenants
 - AbortController support for job cancellation
@@ -174,6 +186,9 @@ All prefixed with `/api`:
   3. Graph `/auditLogs/signIns` — SharePoint Online sign-in events with risk/MFA/location data. Requires `AuditLog.Read.All`.
   4. Site fallback — Site analytics, list modifications, drive recent items via `Sites.Read.All`.
 - **Site Structure** (`server/collectors/siteStructure.ts`): Enumerates subsites, lists/libraries, drive structure (files/folders/quota), M365 Groups, and tenant users. Requires `Sites.Read.All`, `Group.Read.All`, `User.Read.All` permissions.
+- **Skills — SharePoint** (`server/collectors/skillsSharePoint.ts`): Discovers `skill.md` (and `*.skill.md` / `*.skill.yaml`) in SharePoint document libraries named "Agent Assets" / "agent-assets" / "Skills". Strategy: `GET /sites?search=*` to enumerate sites the app principal can see, then `/sites/{id}/drives` filtered by drive name. When the tenant has rows in `agent_discovery_sources` with `kind="sharepoint_agent_assets"`, only those configured siteIds are scanned (avoids tenant-wide site enumeration). Files >256 KB are skipped. Per file: download body, parse frontmatter with `skillParser.ts`, upsert into `skill_definitions` keyed by `(tenantId, driveId, itemId)`. After each sweep, previously-discovered skills not seen this run are marked `status="missing"`. Requires `Sites.Read.All`.
+- **Skills — OneDrive** (`server/collectors/skillsOneDrive.ts`): Discovers `skill.md` in per-user OneDrives (the Coworker convention). Iterates members from the latest `siteUsers` Graph report (cached) or, as fallback, `GET /users?$filter=userType eq 'Member'`. For each user, tries the configured `folderPath` from `agent_discovery_sources` rows with `kind="onedrive_skills"`, or three default paths (`/Skills`, `/Documents/Skills`, `/Coworker/Skills`) — non-existent paths return 404 cheaply. Files >256 KB skipped. Upsert + missing-mark behavior matches the SharePoint collector. Requires `Files.Read.All`.
+- **Skill parser** (`server/collectors/skillParser.ts`): Minimal YAML-ish frontmatter parser (between leading `---` markers). Handles scalars, quoted strings, flow lists (`[a, b]`), and 2-space block-style mappings/lists used by typical `skill.md` files. On parse failure, the record is upserted with `parseStatus="invalid"` and the error message preserved — it does NOT block discovery. Computes `contentHash` (sha256) so re-runs are idempotent and drift is detectable.
 - **Copilot Interactions** (`server/collectors/copilotInteractions.ts`): Collects Copilot prompt/response history per-user via `/copilot/users/{id}/interactionHistory/getAllEnterpriseInteractions`. Groups by requestId (prompt↔response pairs) and sessionId (conversations). Incremental collection with unique constraint dedup. Requires `AiEnterpriseInteraction.Read.All` permission. On insert, runs `extractCopilotEnrichment(rawData)` (`server/collectors/copilotEnrichment.ts`) to parse `attributedSurface` (from `from.application.displayName` / `appClass` — `IPM.SkypeTeams.Message.Copilot.<surface>` strip + BizChat→"M365 Chat" / WebChat→"Web Chat" normalization) and `capabilities[]` (from `contexts`, `attachments`, `links`, `mentions`, `appClass`, body content). For aiResponse rows, computes `responseLatencyMs` = createdAt − matching userPrompt createdAt (same `tenantId`+`requestId`), capped at 1800s. `modelName` is reserved — as confirmed against Microsoft Learn (Graph beta `aiInteractionHistory: getAllEnterpriseInteractions`, verified May 2026), the documented `aiInteraction` schema currently exposes only `id`, `sessionId`, `requestId`, `appClass`, `interactionType`, `conversationType`, `etag`, `createdDateTime`, `locale`, `contexts`, `from`, and `body` — there is **no confirmed model-identifier field yet**. To stay future-proof, `MODEL_NAME_PATHS` in `server/collectors/copilotEnrichment.ts` probes the most-likely Microsoft naming conventions (`modelInfo.{name,modelName,id}`, `metadata.{modelName,modelId,model}`, `attribution.{modelName,model.name}`, `body.modelInfo.name`, `aiModel.{name,id}`, `model.{name,id}`, top-level `model`/`modelName` strings) so a value flowing on any of those paths populates automatically. The scheduler runs `backfillCopilotEnrichment()` every 6 hours (`copilotEnrichmentBackfillInterval` in `server/scheduler.ts`) so historical rows are re-enriched retroactively without per-tenant code changes; the manual `POST /api/admin/copilot-models/backfill` endpoint forces an immediate pass. The Copilot Models leaderboard (`AgentObservability.tsx` → CopilotModelsTab) auto-hides the "model name not yet exposed by Graph" hint as soon as any row in the dataset has a populated `modelName`. **When Microsoft publishes the official path** (track [aiInteraction resource type docs](https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/ai-services/interaction-export/resources/aiinteractionhistory)), ADD it to `MODEL_NAME_PATHS` (don't replace existing probes — older preview paths must keep resolving on rows already collected) and replace this paragraph with the confirmed JSON path. Backfill is non-destructive: only fills NULL columns and only computes latency when both prompt and response exist for the same requestId.
 - All collectors handle 403 permission errors gracefully with warning logs (no crashes).
 
