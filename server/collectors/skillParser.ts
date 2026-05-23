@@ -15,14 +15,21 @@ export interface ParsedSkill {
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 // Minimal YAML-ish frontmatter parser. Handles the shape that skill.md files
-// typically use (scalars, quoted strings, flow-style and block-style lists,
-// nested mappings via 2-space indentation). Not a full YAML parser; on
+// typically use (scalars, quoted strings, flow-style lists, block-style lists,
+// and nested mappings via 2-space indentation). Not a full YAML parser; on
 // anything ambiguous it falls back to a string value rather than throwing.
+//
+// Implementation note: a frame whose `pendingKey` is set has just seen
+// `<key>:` with an empty value. The next line at greater indent decides
+// whether that key becomes a block list (`- item`) or a nested object
+// (`subkey: subval`). The pending object is created lazily so we don't have
+// to convert `{}` to `[]` after the fact.
 function parseFrontmatter(raw: string): Record<string, any> {
   const lines = raw.split(/\r?\n/);
   const root: Record<string, any> = {};
-  const stack: Array<{ indent: number; container: any; keyForListAppend: string | null }> = [
-    { indent: -1, container: root, keyForListAppend: null },
+  type Frame = { indent: number; container: any; pendingKey: string | null; pendingIndent: number };
+  const stack: Frame[] = [
+    { indent: -1, container: root, pendingKey: null, pendingIndent: -1 },
   ];
 
   function unquote(s: string): string {
@@ -54,36 +61,45 @@ function parseFrontmatter(raw: string): Record<string, any> {
     return unquote(t);
   }
 
-  function topContainer(): any {
-    return stack[stack.length - 1].container;
+  function findPendingFrame(currentIndent: number): Frame | null {
+    // Walk the stack from the top looking for the first frame with a pending
+    // key whose indent is shallower than the current line.
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const f = stack[i];
+      if (f.pendingKey && currentIndent > f.pendingIndent) return f;
+    }
+    return null;
   }
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  for (const line of lines) {
     if (!line.trim() || line.trim().startsWith("#")) continue;
 
     const indent = line.length - line.trimStart().length;
-    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
+    // Strict `<` so that sibling lines at the same nested indent stay in the
+    // same frame. (Using `<=` would pop the frame after its first child.)
+    while (stack.length > 1 && indent < stack[stack.length - 1].indent) {
       stack.pop();
     }
 
     const trimmed = line.trim();
 
     if (trimmed.startsWith("- ")) {
-      const parent = stack[stack.length - 1];
-      const key = parent.keyForListAppend;
-      if (!key) continue;
-      const container = parent.container;
-      if (!Array.isArray(container[key])) container[key] = [];
+      const pending = findPendingFrame(indent);
+      if (!pending) continue;
+      const key = pending.pendingKey!;
+      if (!Array.isArray(pending.container[key])) {
+        pending.container[key] = [];
+      }
       const itemText = trimmed.slice(2).trim();
-      if (itemText.includes(": ")) {
+      const colonIdxItem = itemText.indexOf(": ");
+      if (colonIdxItem !== -1) {
         const obj: Record<string, any> = {};
-        container[key].push(obj);
-        const [k, ...rest] = itemText.split(":");
-        const v = rest.join(":").trim();
-        if (v) obj[k.trim()] = coerceScalar(v);
+        const k = itemText.slice(0, colonIdxItem).trim();
+        const v = itemText.slice(colonIdxItem + 1).trim();
+        if (v) obj[k] = coerceScalar(v);
+        (pending.container[key] as any[]).push(obj);
       } else {
-        container[key].push(coerceScalar(itemText));
+        (pending.container[key] as any[]).push(coerceScalar(itemText));
       }
       continue;
     }
@@ -92,20 +108,35 @@ function parseFrontmatter(raw: string): Record<string, any> {
     if (colonIdx === -1) continue;
     const key = trimmed.slice(0, colonIdx).trim();
     const value = trimmed.slice(colonIdx + 1).trim();
-    const container = topContainer();
 
+    const pending = findPendingFrame(indent);
+    if (pending && stack[stack.length - 1] === pending) {
+      // First nested k/v under a pending key — materialize the child mapping,
+      // push a frame for it, and clear the parent's pendingKey so siblings at
+      // the same indent are routed to the top frame directly.
+      const pk = pending.pendingKey!;
+      const child: Record<string, any> = (pending.container[pk] && typeof pending.container[pk] === "object" && !Array.isArray(pending.container[pk])) ? pending.container[pk] : {};
+      pending.container[pk] = child;
+      pending.pendingKey = null;
+      pending.pendingIndent = -1;
+      const childFrame: Frame = { indent, container: child, pendingKey: null, pendingIndent: -1 };
+      stack.push(childFrame);
+      if (value === "") {
+        childFrame.pendingKey = key;
+        childFrame.pendingIndent = indent;
+      } else {
+        child[key] = coerceScalar(value);
+      }
+      continue;
+    }
+
+    const top = stack[stack.length - 1];
     if (value === "") {
-      // Block-style child: could be a list (next line starts with `- `) or a
-      // mapping. We don't know yet, so push a frame and let the next line
-      // decide. Default to mapping; the list-handler creates the array on
-      // demand.
-      const child: Record<string, any> = {};
-      container[key] = child;
-      stack[stack.length - 1].keyForListAppend = key;
-      stack.push({ indent, container: child, keyForListAppend: null });
+      top.pendingKey = key;
+      top.pendingIndent = indent;
     } else {
-      container[key] = coerceScalar(value);
-      stack[stack.length - 1].keyForListAppend = null;
+      top.container[key] = coerceScalar(value);
+      top.pendingKey = null;
     }
   }
 

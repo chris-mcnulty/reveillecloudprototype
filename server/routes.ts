@@ -2270,11 +2270,15 @@ export async function registerRoutes(
     if (!event || !["loaded", "matched", "invoked", "failed"].includes(event)) {
       return res.status(400).json({ error: "event must be one of: loaded, matched, invoked, failed" });
     }
+    const resolvedSource = source || "manual";
+    if (!["audit_log", "sdk", "manual"].includes(resolvedSource)) {
+      return res.status(400).json({ error: "source must be one of: audit_log, sdk, manual" });
+    }
     const created = await storage.createSkillUsageEvent({
       tenantId: req.params.tenantId,
       skillId: req.params.id,
       event,
-      source: source || "manual",
+      source: resolvedSource,
       agentId: agentId || null,
       traceId: traceId || null,
       llmCallId: llmCallId || null,
@@ -2283,6 +2287,11 @@ export async function registerRoutes(
       errorMessage: errorMessage || null,
       metadata: metadata || null,
       occurredAt: occurredAt ? new Date(occurredAt) : undefined,
+    });
+    await logAdminAction(req.params.tenantId, "skill.usage_event.create", "skillUsageEvent", created.id, {
+      skillId: req.params.id,
+      event,
+      source: resolvedSource,
     });
     res.status(201).json(created);
   });

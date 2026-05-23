@@ -243,7 +243,7 @@ function SkillDetailDialog({
                         <TableCell className="text-xs"><Badge variant="outline" className="text-[10px]">{e.event}</Badge></TableCell>
                         <TableCell className="text-xs text-muted-foreground">{e.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{e.actorUserId || "—"}</TableCell>
-                        <TableCell className="text-xs text-right tabular-nums">{e.latencyMs ? `${e.latencyMs}ms` : "—"}</TableCell>
+                        <TableCell className="text-xs text-right tabular-nums">{e.latencyMs != null ? `${e.latencyMs}ms` : "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

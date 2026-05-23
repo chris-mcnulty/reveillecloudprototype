@@ -152,6 +152,7 @@ export async function collectSharePointSkills(tenantId: string): Promise<SharePo
 
   let sitesScanned = 0;
   let librariesScanned = 0;
+  let librariesFullySwept = 0;
   let skillsDiscovered = 0;
   let skillsUpdated = 0;
   const seenItemIds = new Set<string>();
@@ -168,6 +169,7 @@ export async function collectSharePointSkills(tenantId: string): Promise<SharePo
 
     for (const { driveId, libraryName } of drives) {
       librariesScanned++;
+      let librarySweepFailed = false;
       try {
         for await (const file of iterateMarkdownFiles(driveId, token)) {
           if (file.size > MAX_FILE_BYTES) continue;
@@ -212,13 +214,25 @@ export async function collectSharePointSkills(tenantId: string): Promise<SharePo
         }
       } catch (err: any) {
         errors.push(`library ${libraryName}: ${err.message}`);
+        librarySweepFailed = true;
       }
+      if (!librarySweepFailed) librariesFullySwept++;
       await delay(200);
     }
   }
 
-  const skillsMarkedMissing = await storage.markUnseenSkillsMissing(tenantId, "sharepoint_agent_assets", seenItemIds);
+  // Only mark previously-active skills missing when we actually completed at
+  // least one library sweep without errors. A blanket scan failure (token
+  // expiry, permission revoke, transient Graph 5xx) would otherwise flip every
+  // previously-discovered skill to status="missing" — exactly the kind of
+  // false-positive we want to avoid.
+  let skillsMarkedMissing = 0;
+  if (librariesFullySwept > 0) {
+    skillsMarkedMissing = await storage.markUnseenSkillsMissing(tenantId, "sharepoint_agent_assets", seenItemIds);
+  } else if (librariesScanned > 0) {
+    errors.push("Skipped missing-mark sweep: every library scan errored, refusing to flip skills to missing on partial data");
+  }
 
-  console.log(`[Skills SP] tenant ${tenantId}: ${sitesScanned} sites, ${librariesScanned} libraries, ${skillsDiscovered} new, ${skillsUpdated} updated, ${skillsMarkedMissing} missing`);
+  console.log(`[Skills SP] tenant ${tenantId}: ${sitesScanned} sites, ${librariesScanned} libraries (${librariesFullySwept} fully swept), ${skillsDiscovered} new, ${skillsUpdated} updated, ${skillsMarkedMissing} missing`);
   return { sitesScanned, librariesScanned, skillsDiscovered, skillsUpdated, skillsMarkedMissing, errors };
 }

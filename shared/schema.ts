@@ -770,54 +770,21 @@ export const insertLlmModelSchema = createInsertSchema(llmModels).omit({
 export type InsertLlmModel = z.infer<typeof insertLlmModelSchema>;
 export type LlmModel = typeof llmModels.$inferSelect;
 
-export const llmCalls = pgTable("llm_calls", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
-  modelId: varchar("model_id").notNull().references(() => llmModels.id),
-  agentId: varchar("agent_id").references(() => knownAgents.id),
-  skillId: varchar("skill_id"),
-  traceId: varchar("trace_id").references(() => agentTraces.id),
-  spanId: varchar("span_id").references(() => agentTraceSpans.id),
-  agentName: text("agent_name"),
-  operation: text("operation").notNull().default("chat.completions"),
-  durationMs: real("duration_ms"),
-  ttftMs: real("ttft_ms"),
-  tokensPerSec: real("tokens_per_sec"),
-  inputTokens: integer("input_tokens"),
-  outputTokens: integer("output_tokens"),
-  cachedInputTokens: integer("cached_input_tokens"),
-  costCents: real("cost_cents"),
-  temperature: real("temperature"),
-  maxTokensRequested: integer("max_tokens_requested"),
-  stream: boolean("stream").default(false),
-  status: text("status").notNull().default("success"),
-  errorClass: text("error_class"),
-  errorCode: text("error_code"),
-  errorMessage: text("error_message"),
-  requestId: text("request_id"),
-  metadata: jsonb("metadata").$type<Record<string, any>>(),
-  calledAt: timestamp("called_at").notNull().defaultNow(),
-}, (table) => [
-  index("llm_calls_tenant_called_idx").on(table.tenantId, table.calledAt.desc()),
-  index("llm_calls_model_called_idx").on(table.modelId, table.calledAt.desc()),
-  index("llm_calls_tenant_agent_called_idx").on(table.tenantId, table.agentId, table.calledAt.desc()),
-  index("llm_calls_trace_span_idx").on(table.traceId, table.spanId),
-  index("llm_calls_skill_called_idx").on(table.skillId, table.calledAt.desc()),
-]);
-
-export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
-export type InsertLlmCall = z.infer<typeof insertLlmCallSchema>;
-export type LlmCall = typeof llmCalls.$inferSelect;
-
 // Skill.md files discovered in OneDrive (Coworker-style) or SharePoint Agent
 // Assets libraries. One row per unique file; updates in place when the file
 // is re-seen at the same (driveId, itemId).
+//
+// Defined before llmCalls so llmCalls.skillId can FK to it without forward
+// reference. Discovery collectors always supply driveId+itemId together, so
+// the unique index (tenantId, driveId, itemId) is reliable (Postgres treats
+// NULLs as distinct in unique indexes — keeping both NOT NULL prevents
+// duplicate rows).
 export const skillDefinitions = pgTable("skill_definitions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
   source: text("source").notNull(), // "onedrive" | "sharepoint_agent_assets" | "manual"
-  driveId: text("drive_id"),
-  itemId: text("item_id"),
+  driveId: text("drive_id").notNull(),
+  itemId: text("item_id").notNull(),
   siteId: text("site_id"),
   libraryName: text("library_name"),
   parentPath: text("parent_path"),
@@ -856,6 +823,46 @@ export const insertSkillDefinitionSchema = createInsertSchema(skillDefinitions).
 });
 export type InsertSkillDefinition = z.infer<typeof insertSkillDefinitionSchema>;
 export type SkillDefinition = typeof skillDefinitions.$inferSelect;
+
+export const llmCalls = pgTable("llm_calls", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  modelId: varchar("model_id").notNull().references(() => llmModels.id),
+  agentId: varchar("agent_id").references(() => knownAgents.id),
+  skillId: varchar("skill_id").references(() => skillDefinitions.id, { onDelete: "set null" }),
+  traceId: varchar("trace_id").references(() => agentTraces.id),
+  spanId: varchar("span_id").references(() => agentTraceSpans.id),
+  agentName: text("agent_name"),
+  operation: text("operation").notNull().default("chat.completions"),
+  durationMs: real("duration_ms"),
+  ttftMs: real("ttft_ms"),
+  tokensPerSec: real("tokens_per_sec"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  cachedInputTokens: integer("cached_input_tokens"),
+  costCents: real("cost_cents"),
+  temperature: real("temperature"),
+  maxTokensRequested: integer("max_tokens_requested"),
+  stream: boolean("stream").default(false),
+  status: text("status").notNull().default("success"),
+  errorClass: text("error_class"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  requestId: text("request_id"),
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+  calledAt: timestamp("called_at").notNull().defaultNow(),
+}, (table) => [
+  index("llm_calls_tenant_called_idx").on(table.tenantId, table.calledAt.desc()),
+  index("llm_calls_model_called_idx").on(table.modelId, table.calledAt.desc()),
+  index("llm_calls_tenant_agent_called_idx").on(table.tenantId, table.agentId, table.calledAt.desc()),
+  index("llm_calls_trace_span_idx").on(table.traceId, table.spanId),
+  index("llm_calls_skill_called_idx").on(table.skillId, table.calledAt.desc()),
+]);
+
+export const insertLlmCallSchema = createInsertSchema(llmCalls).omit({ id: true });
+export type InsertLlmCall = z.infer<typeof insertLlmCallSchema>;
+export type LlmCall = typeof llmCalls.$inferSelect;
+
 
 // One row per skill load / match / invocation / failure. Written by collectors
 // (audit-log correlation) or by the LLM recorder (direct attribution).

@@ -71,19 +71,27 @@ async function listMembersFromSiteUsers(tenantId: string): Promise<{ id: string;
 }
 
 async function listUsersFromGraph(token: string): Promise<{ id: string; upn: string; displayName: string }[]> {
-  try {
-    const data = await graphGet(
-      "https://graph.microsoft.com/v1.0/users?$top=200&$select=id,displayName,userPrincipalName,userType&$filter=userType eq 'Member'",
-      token,
-    );
-    return (data.value || []).map((u: any) => ({
-      id: u.id,
-      upn: u.userPrincipalName || "",
-      displayName: u.displayName || "",
-    }));
-  } catch {
-    return [];
+  const users: { id: string; upn: string; displayName: string }[] = [];
+  let url: string | null =
+    "https://graph.microsoft.com/v1.0/users?$top=200&$select=id,displayName,userPrincipalName,userType&$filter=userType eq 'Member'";
+  while (url) {
+    let data: any;
+    try {
+      data = await graphGet(url, token);
+    } catch {
+      return users;
+    }
+    for (const u of data.value || []) {
+      users.push({
+        id: u.id,
+        upn: u.userPrincipalName || "",
+        displayName: u.displayName || "",
+      });
+    }
+    url = data["@odata.nextLink"] || null;
+    if (url) await delay(150);
   }
+  return users;
 }
 
 async function getUserDriveId(userId: string, token: string): Promise<string | null> {
@@ -104,27 +112,31 @@ async function listSkillFilesUnderPath(
   token: string,
 ): Promise<Array<{ id: string; name: string; size: number; webUrl: string; lastModifiedDateTime: string; lastModifiedBy: string | null; parentPath: string }>> {
   // pathExpr looks like "/drive/root:/Skills". To list children we append :/children
-  const url = `https://graph.microsoft.com/v1.0/users/${userId}${pathExpr}:/children?$select=id,name,size,webUrl,lastModifiedDateTime,lastModifiedBy,parentReference,file`;
-  let data: any;
-  try {
-    data = await graphGet(url, token);
-  } catch (err: any) {
-    if (err.status === 404) return [];
-    throw err;
-  }
   const out: Array<{ id: string; name: string; size: number; webUrl: string; lastModifiedDateTime: string; lastModifiedBy: string | null; parentPath: string }> = [];
-  for (const item of data.value || []) {
-    if (!item.file) continue;
-    if (!isSkillFilename(item.name)) continue;
-    out.push({
-      id: item.id,
-      name: item.name,
-      size: item.size || 0,
-      webUrl: item.webUrl || "",
-      lastModifiedDateTime: item.lastModifiedDateTime || new Date().toISOString(),
-      lastModifiedBy: item.lastModifiedBy?.user?.displayName || item.lastModifiedBy?.user?.email || null,
-      parentPath: item.parentReference?.path || pathExpr,
-    });
+  let url: string | null = `https://graph.microsoft.com/v1.0/users/${userId}${pathExpr}:/children?$top=200&$select=id,name,size,webUrl,lastModifiedDateTime,lastModifiedBy,parentReference,file`;
+  while (url) {
+    let data: any;
+    try {
+      data = await graphGet(url, token);
+    } catch (err: any) {
+      if (err.status === 404) return out;
+      throw err;
+    }
+    for (const item of data.value || []) {
+      if (!item.file) continue;
+      if (!isSkillFilename(item.name)) continue;
+      out.push({
+        id: item.id,
+        name: item.name,
+        size: item.size || 0,
+        webUrl: item.webUrl || "",
+        lastModifiedDateTime: item.lastModifiedDateTime || new Date().toISOString(),
+        lastModifiedBy: item.lastModifiedBy?.user?.displayName || item.lastModifiedBy?.user?.email || null,
+        parentPath: item.parentReference?.path || pathExpr,
+      });
+    }
+    url = data["@odata.nextLink"] || null;
+    if (url) await delay(100);
   }
   return out;
 }
@@ -163,6 +175,7 @@ export async function collectOneDriveSkills(tenantId: string): Promise<OneDriveS
   }
 
   let usersScanned = 0;
+  let usersFullySwept = 0;
   let skillsDiscovered = 0;
   let skillsUpdated = 0;
   const seenSkillIds = new Set<string>();
@@ -170,6 +183,7 @@ export async function collectOneDriveSkills(tenantId: string): Promise<OneDriveS
   for (const user of users) {
     usersScanned++;
     let driveId: string | null = null;
+    let userSweepFailed = false;
 
     for (const pathExpr of scanPaths) {
       let files: Awaited<ReturnType<typeof listSkillFilesUnderPath>> = [];
@@ -178,6 +192,7 @@ export async function collectOneDriveSkills(tenantId: string): Promise<OneDriveS
       } catch (err: any) {
         if (err.status !== 404 && err.status !== 403) {
           errors.push(`user ${user.upn} ${pathExpr}: ${err.message}`);
+          userSweepFailed = true;
         }
         continue;
       }
@@ -229,10 +244,20 @@ export async function collectOneDriveSkills(tenantId: string): Promise<OneDriveS
       }
     }
 
+    if (!userSweepFailed) usersFullySwept++;
     await delay(150);
   }
 
-  const skillsMarkedMissing = await storage.markUnseenSkillsMissing(tenantId, "onedrive", seenSkillIds);
-  console.log(`[Skills OD] tenant ${tenantId}: ${usersScanned} users, ${skillsDiscovered} new, ${skillsUpdated} updated, ${skillsMarkedMissing} missing`);
+  // Only mark previously-active OneDrive skills missing when we successfully
+  // swept at least one user. A wholesale scan failure (token expired, Graph
+  // 5xx, etc.) would otherwise flip every previously-discovered skill to
+  // missing — exactly the false-positive we want to avoid.
+  let skillsMarkedMissing = 0;
+  if (usersFullySwept > 0) {
+    skillsMarkedMissing = await storage.markUnseenSkillsMissing(tenantId, "onedrive", seenSkillIds);
+  } else if (usersScanned > 0) {
+    errors.push("Skipped missing-mark sweep: every user sweep errored, refusing to flip skills to missing on partial data");
+  }
+  console.log(`[Skills OD] tenant ${tenantId}: ${usersScanned} users (${usersFullySwept} fully swept), ${skillsDiscovered} new, ${skillsUpdated} updated, ${skillsMarkedMissing} missing`);
   return { usersScanned, skillsDiscovered, skillsUpdated, skillsMarkedMissing, errors };
 }

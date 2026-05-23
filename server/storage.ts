@@ -4200,46 +4200,86 @@ export class DatabaseStorage implements IStorage {
   }
 
   async upsertSkillDefinitionByDriveItem(data: InsertSkillDefinition): Promise<{ skill: SkillDefinition; created: boolean }> {
-    const conditions = [eq(skillDefinitions.tenantId, data.tenantId)];
-    if (data.driveId) conditions.push(eq(skillDefinitions.driveId, data.driveId));
-    else conditions.push(sql`${skillDefinitions.driveId} IS NULL`);
-    if (data.itemId) conditions.push(eq(skillDefinitions.itemId, data.itemId));
-    else conditions.push(sql`${skillDefinitions.itemId} IS NULL`);
-
-    const [existing] = await db.select().from(skillDefinitions).where(and(...conditions));
+    // Atomic upsert keyed on the unique index (tenant_id, drive_id, item_id).
+    // RETURNING (xmax = 0) tells us whether the row was freshly inserted
+    // (xmax = 0) or updated (xmax != 0), so concurrent discovery passes can't
+    // race and we still know which counter to bump.
     const now = new Date();
-    if (existing) {
-      const [updated] = await db.update(skillDefinitions)
-        .set({
-          source: data.source,
-          siteId: data.siteId ?? null,
-          libraryName: data.libraryName ?? null,
-          parentPath: data.parentPath ?? null,
-          ownerUserId: data.ownerUserId ?? null,
-          ownerUserPrincipalName: data.ownerUserPrincipalName ?? null,
-          name: data.name,
-          displayName: data.displayName ?? null,
-          version: data.version ?? null,
-          description: data.description ?? null,
-          webUrl: data.webUrl ?? null,
-          contentHash: data.contentHash ?? null,
-          sizeBytes: data.sizeBytes ?? null,
-          frontmatter: data.frontmatter ?? null,
-          tags: data.tags ?? null,
-          parseStatus: data.parseStatus ?? "ok",
-          parseError: data.parseError ?? null,
-          status: data.status ?? "active",
-          fileLastModifiedAt: data.fileLastModifiedAt ?? null,
-          fileLastModifiedBy: data.fileLastModifiedBy ?? null,
-          lastSeenAt: now,
-          updatedAt: now,
-        })
-        .where(eq(skillDefinitions.id, existing.id))
-        .returning();
-      return { skill: updated, created: false };
-    }
-    const [created] = await db.insert(skillDefinitions).values(data).returning();
-    return { skill: created, created: true };
+    const rows = await db.execute<any>(sql`
+      INSERT INTO skill_definitions (
+        tenant_id, source, drive_id, item_id, site_id, library_name, parent_path,
+        owner_user_id, owner_user_principal_name, name, display_name, version,
+        description, web_url, content_hash, size_bytes, frontmatter, tags,
+        parse_status, parse_error, status, file_last_modified_at, file_last_modified_by,
+        discovered_at, last_seen_at, updated_at
+      ) VALUES (
+        ${data.tenantId}, ${data.source}, ${data.driveId}, ${data.itemId},
+        ${data.siteId ?? null}, ${data.libraryName ?? null}, ${data.parentPath ?? null},
+        ${data.ownerUserId ?? null}, ${data.ownerUserPrincipalName ?? null},
+        ${data.name}, ${data.displayName ?? null}, ${data.version ?? null},
+        ${data.description ?? null}, ${data.webUrl ?? null}, ${data.contentHash ?? null},
+        ${data.sizeBytes ?? null}, ${data.frontmatter ?? null}::jsonb, ${data.tags ?? null}::text[],
+        ${data.parseStatus ?? "ok"}, ${data.parseError ?? null}, ${data.status ?? "active"},
+        ${data.fileLastModifiedAt ?? null}, ${data.fileLastModifiedBy ?? null},
+        ${now}, ${now}, ${now}
+      )
+      ON CONFLICT (tenant_id, drive_id, item_id) DO UPDATE SET
+        source = EXCLUDED.source,
+        site_id = EXCLUDED.site_id,
+        library_name = EXCLUDED.library_name,
+        parent_path = EXCLUDED.parent_path,
+        owner_user_id = EXCLUDED.owner_user_id,
+        owner_user_principal_name = EXCLUDED.owner_user_principal_name,
+        name = EXCLUDED.name,
+        display_name = EXCLUDED.display_name,
+        version = EXCLUDED.version,
+        description = EXCLUDED.description,
+        web_url = EXCLUDED.web_url,
+        content_hash = EXCLUDED.content_hash,
+        size_bytes = EXCLUDED.size_bytes,
+        frontmatter = EXCLUDED.frontmatter,
+        tags = EXCLUDED.tags,
+        parse_status = EXCLUDED.parse_status,
+        parse_error = EXCLUDED.parse_error,
+        status = EXCLUDED.status,
+        file_last_modified_at = EXCLUDED.file_last_modified_at,
+        file_last_modified_by = EXCLUDED.file_last_modified_by,
+        last_seen_at = EXCLUDED.last_seen_at,
+        updated_at = EXCLUDED.updated_at
+      RETURNING *, (xmax = 0) AS _inserted
+    `);
+    const r = (rows.rows as any[])[0];
+    const created = r._inserted === true || r._inserted === "t";
+    const skill: SkillDefinition = {
+      id: r.id,
+      tenantId: r.tenant_id,
+      source: r.source,
+      driveId: r.drive_id,
+      itemId: r.item_id,
+      siteId: r.site_id,
+      libraryName: r.library_name,
+      parentPath: r.parent_path,
+      ownerUserId: r.owner_user_id,
+      ownerUserPrincipalName: r.owner_user_principal_name,
+      name: r.name,
+      displayName: r.display_name,
+      version: r.version,
+      description: r.description,
+      webUrl: r.web_url,
+      contentHash: r.content_hash,
+      sizeBytes: r.size_bytes,
+      frontmatter: r.frontmatter,
+      tags: r.tags,
+      parseStatus: r.parse_status,
+      parseError: r.parse_error,
+      status: r.status,
+      fileLastModifiedAt: r.file_last_modified_at ? new Date(r.file_last_modified_at) : null,
+      fileLastModifiedBy: r.file_last_modified_by,
+      discoveredAt: new Date(r.discovered_at),
+      lastSeenAt: new Date(r.last_seen_at),
+      updatedAt: new Date(r.updated_at),
+    };
+    return { skill, created };
   }
 
   async markUnseenSkillsMissing(tenantId: string, source: string, seenIds: Set<string>): Promise<number> {
@@ -4274,6 +4314,9 @@ export class DatabaseStorage implements IStorage {
     const offset = opts?.offset ?? 0;
 
     const thirtyDaysAgo = sql`NOW() - INTERVAL '30 days'`;
+    // NOTE: do not alias `skill_definitions` here — the `where` expression is
+    // built from Drizzle column refs that render as `"skill_definitions"."col"`,
+    // and Postgres won't resolve the original name once the table is aliased.
     const rows = await db.execute<any>(sql`
       WITH usage_rollup AS (
         SELECT skill_id,
@@ -4284,14 +4327,14 @@ export class DatabaseStorage implements IStorage {
           AND occurred_at >= ${thirtyDaysAgo}
         GROUP BY skill_id
       )
-      SELECT s.*,
-             COALESCE(u.usage_count_30d, 0) AS usage_count_30d,
-             u.last_used_at,
+      SELECT skill_definitions.*,
+             COALESCE(usage_rollup.usage_count_30d, 0) AS usage_count_30d,
+             usage_rollup.last_used_at,
              COUNT(*) OVER() AS _total
-      FROM skill_definitions s
-      LEFT JOIN usage_rollup u ON u.skill_id = s.id
+      FROM skill_definitions
+      LEFT JOIN usage_rollup ON usage_rollup.skill_id = skill_definitions.id
       WHERE ${where}
-      ORDER BY s.last_seen_at DESC
+      ORDER BY skill_definitions.last_seen_at DESC
       LIMIT ${limit} OFFSET ${offset}
     `);
     const items: SkillDefinitionWithUsage[] = (rows.rows as any[]).map(r => ({
