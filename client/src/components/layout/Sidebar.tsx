@@ -17,6 +17,7 @@ import {
   Brain,
   Bot,
   TrendingUp,
+  BookOpen,
 } from "lucide-react";
 import {
   Tooltip,
@@ -47,6 +48,7 @@ export function Sidebar() {
     { href: "/power-platform", icon: Layers, label: "Power Platform" },
     { href: "/agent-observability", icon: ScanSearch, label: "Agent Observability" },
     { href: "/known-agents", icon: Bot, label: "Known Agents" },
+    { href: "/skills", icon: BookOpen, label: "Skills" },
     { href: "/llm-performance", icon: Brain, label: "LLM Performance" },
     { href: "/entra-signins", icon: Fingerprint, label: "Entra Sign-Ins" },
     { href: "/spe", icon: HardDrive, label: "SharePoint Embedded" },

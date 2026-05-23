@@ -12,7 +12,7 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, triggerCopilotSurfaceEvalNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, triggerCopilotSurfaceEvalNow, triggerSkillsSharePointDiscoveryNow, triggerSkillsOneDriveDiscoveryNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY, computeAnomalyContext } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
@@ -496,6 +496,12 @@ export async function registerRoutes(
         break;
       case "copilotSurfaceEval":
         await triggerCopilotSurfaceEvalNow();
+        break;
+      case "skillsSharePointDiscovery":
+        await triggerSkillsSharePointDiscoveryNow();
+        break;
+      case "skillsOneDriveDiscovery":
+        await triggerSkillsOneDriveDiscoveryNow();
         break;
       default:
         return res.status(400).json({ message: `Unknown job type: ${jobType}` });
@@ -2186,6 +2192,108 @@ export async function registerRoutes(
     });
     res.set("X-Total-Count", String(total));
     res.json(items);
+  });
+
+  app.get("/api/tenants/:tenantId/skills", async (req, res) => {
+    const { source, status, parseStatus, search, limit, offset } = req.query as any;
+    const { items, total } = await storage.getSkillDefinitions(req.params.tenantId, {
+      source, status, parseStatus, search,
+      limit: limit ? parseInt(limit) : undefined,
+      offset: offset ? parseInt(offset) : 0,
+    });
+    res.set("X-Total-Count", String(total));
+    res.json(items);
+  });
+
+  app.get("/api/tenants/:tenantId/skills/stats", async (req, res) => {
+    const stats = await storage.getSkillStats(req.params.tenantId);
+    res.json(stats);
+  });
+
+  app.get("/api/tenants/:tenantId/skills/:id", async (req, res) => {
+    const skill = await storage.getSkillDefinition(req.params.id);
+    if (!skill || skill.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Skill not found" });
+    const { items: recentEvents } = await storage.getSkillUsageEvents(skill.id, { limit: 20 });
+    const timeline = await storage.getSkillUsageTimeline(skill.id);
+    res.json({ skill, recentEvents, timeline });
+  });
+
+  app.get("/api/tenants/:tenantId/skills/:id/usage", async (req, res) => {
+    const skill = await storage.getSkillDefinition(req.params.id);
+    if (!skill || skill.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Skill not found" });
+    const { event, since, limit, offset } = req.query as any;
+    const { items, total } = await storage.getSkillUsageEvents(req.params.id, {
+      event,
+      since: since ? new Date(since) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
+      offset: offset ? parseInt(offset) : 0,
+    });
+    res.set("X-Total-Count", String(total));
+    res.json(items);
+  });
+
+  app.patch("/api/tenants/:tenantId/skills/:id", async (req, res) => {
+    const skill = await storage.getSkillDefinition(req.params.id);
+    if (!skill || skill.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Skill not found" });
+    const allowed: Partial<typeof skill> = {};
+    if (req.body?.status && ["active", "missing", "deprecated"].includes(req.body.status)) {
+      (allowed as any).status = req.body.status;
+    }
+    const updated = await storage.updateSkillDefinition(req.params.id, allowed);
+    await logAdminAction(req.params.tenantId, "skill.update", "skillDefinition", req.params.id, allowed);
+    res.json(updated);
+  });
+
+  app.post("/api/tenants/:tenantId/skills/discover", async (req, res) => {
+    const { collectSharePointSkills } = await import("./collectors/skillsSharePoint");
+    const { collectOneDriveSkills } = await import("./collectors/skillsOneDrive");
+    const source = req.body?.source || req.query.source;
+    try {
+      const results: Record<string, any> = {};
+      if (!source || source === "sharepoint_agent_assets") {
+        results.sharepoint = await collectSharePointSkills(req.params.tenantId);
+      }
+      if (!source || source === "onedrive") {
+        results.onedrive = await collectOneDriveSkills(req.params.tenantId);
+      }
+      await logAdminAction(req.params.tenantId, "skill.discover", "skillDefinition", null, { source: source || "all", ...results });
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/tenants/:tenantId/skills/:id/usage", async (req, res) => {
+    const skill = await storage.getSkillDefinition(req.params.id);
+    if (!skill || skill.tenantId !== req.params.tenantId) return res.status(404).json({ error: "Skill not found" });
+    const { event, source, agentId, traceId, llmCallId, actorUserId, latencyMs, errorMessage, metadata, occurredAt } = req.body || {};
+    if (!event || !["loaded", "matched", "invoked", "failed"].includes(event)) {
+      return res.status(400).json({ error: "event must be one of: loaded, matched, invoked, failed" });
+    }
+    const resolvedSource = source || "manual";
+    if (!["audit_log", "sdk", "manual"].includes(resolvedSource)) {
+      return res.status(400).json({ error: "source must be one of: audit_log, sdk, manual" });
+    }
+    const created = await storage.createSkillUsageEvent({
+      tenantId: req.params.tenantId,
+      skillId: req.params.id,
+      event,
+      source: resolvedSource,
+      agentId: agentId || null,
+      traceId: traceId || null,
+      llmCallId: llmCallId || null,
+      actorUserId: actorUserId || null,
+      latencyMs: latencyMs ?? null,
+      errorMessage: errorMessage || null,
+      metadata: metadata || null,
+      occurredAt: occurredAt ? new Date(occurredAt) : undefined,
+    });
+    await logAdminAction(req.params.tenantId, "skill.usage_event.create", "skillUsageEvent", created.id, {
+      skillId: req.params.id,
+      event,
+      source: resolvedSource,
+    });
+    res.status(201).json(created);
   });
 
   app.get("/api/tenants/:tenantId/foundry/deployments", async (req, res) => {

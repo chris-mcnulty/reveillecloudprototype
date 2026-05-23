@@ -30,6 +30,7 @@ import EntraSignIns from "@/pages/EntraSignIns";
 import SpEmbedded from "@/pages/SpEmbedded";
 import Benchmarking from "@/pages/Benchmarking";
 import Baselines from "@/pages/Baselines";
+import Skills from "@/pages/Skills";
 
 function Router() {
   return (
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/known-agents" component={KnownAgents}/>
       <Route path="/entra-signins" component={EntraSignIns}/>
       <Route path="/spe" component={SpEmbedded}/>
+      <Route path="/skills" component={Skills}/>
       <Route path="/benchmarking" component={Benchmarking}/>
       <Route path="/reports" component={Reports}/>
       <Route path="/onboarding" component={Onboarding}/>

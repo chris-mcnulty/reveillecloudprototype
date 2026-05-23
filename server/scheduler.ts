@@ -10,6 +10,8 @@ import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
 import { runAnomalyDetection } from "./anomalyDetection";
 import { collectFoundryDiscovery } from "./collectors/foundryDiscovery";
+import { collectSharePointSkills } from "./collectors/skillsSharePoint";
+import { collectOneDriveSkills } from "./collectors/skillsOneDrive";
 import { isAzureAppConfigured } from "./azureAuth";
 import type { SyntheticTest } from "@shared/schema";
 
@@ -38,6 +40,8 @@ const jobStatus: Record<string, JobStatus> = {
   llmSpendRollup: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   llmBudgetEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   copilotSurfaceEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  skillsSharePointDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  skillsOneDriveDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
 
 let llmSpendRollupInterval: NodeJS.Timeout | null = null;
@@ -896,6 +900,77 @@ async function runAnomalyDetectionJob(): Promise<void> {
   }
 }
 
+async function runSkillsSharePointJob(): Promise<void> {
+  if (jobStatus.skillsSharePointDiscovery.isRunning) {
+    console.log("[Scheduler] SharePoint skills discovery already running, skipping...");
+    return;
+  }
+  if (!isAzureAppConfigured()) return;
+
+  jobStatus.skillsSharePointDiscovery.isRunning = true;
+  console.log("[Scheduler] Starting SharePoint skills discovery...");
+
+  try {
+    const tenants = (await storage.getTenants()).filter(t => t.consentStatus === "Connected" && t.azureTenantId);
+    for (const tenant of tenants) {
+      const jobRunId = await trackJobStart("skillsSharePointDiscovery", tenant.id, undefined, `SharePoint skills for ${tenant.name}`);
+      jobStatus.skillsSharePointDiscovery.activeJobRunId = jobRunId;
+      try {
+        const result = await collectSharePointSkills(tenant.id);
+        const hasErrors = result.errors.length > 0;
+        await trackJobComplete(jobRunId, "completed", result, hasErrors ? result.errors.slice(0, 3).join("; ") : undefined);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] SharePoint skills failed for ${tenant.name}:`, err.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  } catch (err) {
+    console.error("[Scheduler] SharePoint skills discovery job failed:", err);
+  } finally {
+    jobStatus.skillsSharePointDiscovery.isRunning = false;
+    jobStatus.skillsSharePointDiscovery.activeJobRunId = null;
+    jobStatus.skillsSharePointDiscovery.lastRun = new Date();
+  }
+}
+
+async function runSkillsOneDriveJob(): Promise<void> {
+  if (jobStatus.skillsOneDriveDiscovery.isRunning) {
+    console.log("[Scheduler] OneDrive skills discovery already running, skipping...");
+    return;
+  }
+  if (!isAzureAppConfigured()) return;
+
+  jobStatus.skillsOneDriveDiscovery.isRunning = true;
+  console.log("[Scheduler] Starting OneDrive skills discovery...");
+
+  try {
+    const tenants = (await storage.getTenants()).filter(t => t.consentStatus === "Connected" && t.azureTenantId);
+    for (const tenant of tenants) {
+      const jobRunId = await trackJobStart("skillsOneDriveDiscovery", tenant.id, undefined, `OneDrive skills for ${tenant.name}`);
+      jobStatus.skillsOneDriveDiscovery.activeJobRunId = jobRunId;
+      try {
+        const result = await collectOneDriveSkills(tenant.id);
+        const hasErrors = result.errors.length > 0;
+        await trackJobComplete(jobRunId, "completed", result, hasErrors ? result.errors.slice(0, 3).join("; ") : undefined);
+      } catch (err: any) {
+        await trackJobComplete(jobRunId, "failed", undefined, err.message);
+        console.error(`[Scheduler] OneDrive skills failed for ${tenant.name}:`, err.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (err) {
+    console.error("[Scheduler] OneDrive skills discovery job failed:", err);
+  } finally {
+    jobStatus.skillsOneDriveDiscovery.isRunning = false;
+    jobStatus.skillsOneDriveDiscovery.activeJobRunId = null;
+    jobStatus.skillsOneDriveDiscovery.lastRun = new Date();
+  }
+}
+
+let skillsSharePointInterval: NodeJS.Timeout | null = null;
+let skillsOneDriveInterval: NodeJS.Timeout | null = null;
+
 export function startScheduler(): void {
   console.log("[Scheduler] Initializing scheduled jobs...");
 
@@ -977,6 +1052,17 @@ export function startScheduler(): void {
   copilotSurfaceEvalInterval = setInterval(() => {
     runCopilotSurfaceEvalJob();
   }, 15 * 60 * 1000);
+
+  if (skillsSharePointInterval) clearInterval(skillsSharePointInterval);
+  if (skillsOneDriveInterval) clearInterval(skillsOneDriveInterval);
+
+  skillsSharePointInterval = setInterval(() => {
+    runSkillsSharePointJob();
+  }, 6 * 60 * 60 * 1000);
+
+  skillsOneDriveInterval = setInterval(() => {
+    runSkillsOneDriveJob();
+  }, 6 * 60 * 60 * 1000);
 
   stuckJobInterval = setInterval(() => {
     cleanupStuckJobs().catch(err => {
@@ -1063,6 +1149,16 @@ export function startScheduler(): void {
     });
   }, 115 * 1000);
 
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial SharePoint skills discovery...");
+    runSkillsSharePointJob();
+  }, 130 * 1000);
+
+  setTimeout(() => {
+    console.log("[Scheduler] Running initial OneDrive skills discovery...");
+    runSkillsOneDriveJob();
+  }, 145 * 1000);
+
   console.log("[Scheduler] Jobs scheduled:");
   console.log("  - Synthetic tests: every 60s (initial in 10s)");
   console.log("  - Service health: every 5m (initial in 15s)");
@@ -1078,6 +1174,8 @@ export function startScheduler(): void {
   console.log("  - Foundry discovery: every 1h (initial in 105s)");
   console.log("  - LLM spend rollup: every 1h (initial in 115s)");
   console.log("  - LLM budget eval: every 1h (initial in 120s)");
+  console.log("  - SharePoint skills discovery: every 6h (initial in 130s)");
+  console.log("  - OneDrive skills discovery: every 6h (initial in 145s)");
   console.log("  - Stuck job cleanup: every 15m");
 }
 
@@ -1098,6 +1196,8 @@ export function stopScheduler(): void {
   if (llmSpendRollupInterval) { clearInterval(llmSpendRollupInterval); llmSpendRollupInterval = null; }
   if (llmBudgetEvalInterval) { clearInterval(llmBudgetEvalInterval); llmBudgetEvalInterval = null; }
   if (copilotSurfaceEvalInterval) { clearInterval(copilotSurfaceEvalInterval); copilotSurfaceEvalInterval = null; }
+  if (skillsSharePointInterval) { clearInterval(skillsSharePointInterval); skillsSharePointInterval = null; }
+  if (skillsOneDriveInterval) { clearInterval(skillsOneDriveInterval); skillsOneDriveInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
   console.log("[Scheduler] All scheduled jobs stopped");
 }
@@ -1173,6 +1273,14 @@ export async function triggerLlmBudgetEvalNow(): Promise<void> {
 
 export async function triggerCopilotSurfaceEvalNow(): Promise<void> {
   runCopilotSurfaceEvalJob();
+}
+
+export async function triggerSkillsSharePointDiscoveryNow(): Promise<void> {
+  runSkillsSharePointJob();
+}
+
+export async function triggerSkillsOneDriveDiscoveryNow(): Promise<void> {
+  runSkillsOneDriveJob();
 }
 
 export async function resetStuckJob(jobType: string): Promise<boolean> {
