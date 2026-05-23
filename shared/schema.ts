@@ -82,6 +82,7 @@ export const alertRules = pgTable("alert_rules", {
   periodStart: timestamp("period_start"),
   lastTriggeredThresholds: jsonb("last_triggered_thresholds").$type<Record<string, number[]>>().default({}),
   streamKey: text("stream_key"),
+  windowMinutes: integer("window_minutes"),
 });
 
 export interface CopilotSurfaceAlertPayload {

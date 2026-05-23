@@ -12,7 +12,7 @@ import { foundryChatCompletion } from "./llm/foundryClient";
 import { runA2aDiscoveryForTenant, discoverA2aAgentAtUrl } from "./agents/a2aDiscovery";
 import { runAgent365DiscoveryForTenant } from "./agents/agent365Discovery";
 import { runTestAndRecord, isSharePointConnected } from "./testRunner";
-import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, triggerCopilotSurfaceEvalNow, triggerSkillsSharePointDiscoveryNow, triggerSkillsOneDriveDiscoveryNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
+import { getSchedulerStatus, triggerSyntheticTestsNow, triggerGraphReportsNow, triggerServiceHealthNow, triggerAuditLogsNow, triggerSiteStructureNow, triggerPowerPlatformNow, triggerCopilotInteractionsNow, triggerCopilotEnrichmentBackfillNow, triggerEntraSignInsNow, triggerSpeDataNow, triggerAnomalyDetectionNow, triggerFoundryDiscoveryNow, triggerLlmSpendRollupNow, triggerLlmBudgetEvalNow, triggerCopilotSurfaceEvalNow, triggerLlmPerfEvalNow, triggerSkillsSharePointDiscoveryNow, triggerSkillsOneDriveDiscoveryNow, resetStuckJob, resetAllStuckJobs, cancelJob } from "./scheduler";
 import { STREAM_DEFINITIONS, DEFAULT_SENSITIVITY, computeAnomalyContext } from "./anomalyDetection";
 import { collectEntraSignIns } from "./collectors/entraSignIns";
 import { collectSpeData } from "./collectors/spEmbedded";
@@ -496,6 +496,9 @@ export async function registerRoutes(
         break;
       case "copilotSurfaceEval":
         await triggerCopilotSurfaceEvalNow();
+        break;
+      case "llmPerfEval":
+        await triggerLlmPerfEvalNow();
         break;
       case "skillsSharePointDiscovery":
         await triggerSkillsSharePointDiscoveryNow();

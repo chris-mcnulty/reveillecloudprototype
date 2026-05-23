@@ -3,7 +3,7 @@ import { Shell } from "@/components/layout/Shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { BellRing, CheckCircle2, AlertOctagon, Loader2, Activity, Filter, Sparkles } from "lucide-react";
+import { BellRing, CheckCircle2, AlertOctagon, Loader2, Activity, Filter, Sparkles, Cpu } from "lucide-react";
 import { useAlerts, useAcknowledgeAlert, useMetricBaselineHistory, useAlertContext, type AnomalyContextItem } from "@/lib/api";
 import { useLiveStream, type LiveEvent } from "@/lib/liveStream";
 import { useQueryClient } from "@tanstack/react-query";
@@ -14,7 +14,7 @@ import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceL
 import { isAnomalyAlertPayload, isCopilotSurfaceAlertPayload, type Alert, type Alert as AlertType, type AnomalyAlertPayload } from "@shared/schema";
 import { ExportMenu } from "@/components/ExportMenu";
 
-type AlertFilter = "all" | "anomaly" | "threshold" | "copilot_surface";
+type AlertFilter = "all" | "anomaly" | "threshold" | "copilot_surface" | "llm_performance";
 
 function formatStreamValue(v: number, unit: string): string {
   if (unit === "%") return `${v.toFixed(1)}%`;
@@ -68,14 +68,17 @@ export default function Alerts() {
   const allAlerts: Alert[] = alertList || [];
   const anomalyCount = allAlerts.filter((a) => a.alertType === "anomaly").length;
   const copilotSurfaceCount = allAlerts.filter((a) => a.alertType === "copilot_surface").length;
-  const thresholdCount = allAlerts.filter((a) => a.alertType !== "anomaly" && a.alertType !== "copilot_surface").length;
+  const llmPerfCount = allAlerts.filter((a) => a.alertType === "llm_performance").length;
+  const thresholdCount = allAlerts.filter((a) => a.alertType !== "anomaly" && a.alertType !== "copilot_surface" && a.alertType !== "llm_performance").length;
   const alerts: Alert[] = filter === "anomaly"
     ? allAlerts.filter((a) => a.alertType === "anomaly")
     : filter === "copilot_surface"
       ? allAlerts.filter((a) => a.alertType === "copilot_surface")
-      : filter === "threshold"
-        ? allAlerts.filter((a) => a.alertType !== "anomaly" && a.alertType !== "copilot_surface")
-        : allAlerts;
+      : filter === "llm_performance"
+        ? allAlerts.filter((a) => a.alertType === "llm_performance")
+        : filter === "threshold"
+          ? allAlerts.filter((a) => a.alertType !== "anomaly" && a.alertType !== "copilot_surface" && a.alertType !== "llm_performance")
+          : allAlerts;
 
   return (
     <Shell>
@@ -143,6 +146,17 @@ export default function Alerts() {
             <Badge variant="secondary" className="ml-2">{copilotSurfaceCount}</Badge>
           )}
         </Button>
+        <Button
+          size="sm"
+          variant={filter === "llm_performance" ? "default" : "outline"}
+          onClick={() => setFilter("llm_performance")}
+          data-testid="button-filter-llm-perf"
+        >
+          <Cpu className="h-3 w-3 mr-1" /> LLM Performance
+          {filter !== "llm_performance" && llmPerfCount > 0 && (
+            <Badge variant="secondary" className="ml-2">{llmPerfCount}</Badge>
+          )}
+        </Button>
       </div>
 
       <div className="grid gap-4 mt-4">
@@ -158,6 +172,9 @@ export default function Alerts() {
           const timeStr = mins < 1 ? "Just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)}h ago`;
           const isAnomaly = alert.alertType === "anomaly";
           const isCopilotSurface = alert.alertType === "copilot_surface";
+          const isLlmPerf = alert.alertType === "llm_performance";
+          const llmPerfPayload = isLlmPerf && alert.payload ? (alert.payload as Record<string, any>) : null;
+          const isLlmPerfResolved = llmPerfPayload?.state === "resolved";
           const anomalyPayload: AnomalyAlertPayload | null = isAnomalyAlertPayload(alert.payload) ? alert.payload : null;
           const isFollowup = anomalyPayload?.isFollowup === true;
           const isRecovered = anomalyPayload?.state === "recovered";
@@ -167,7 +184,7 @@ export default function Alerts() {
               <CardHeader className="pb-2 flex flex-row items-start justify-between">
                 <div>
                   <CardTitle className="text-lg flex items-center gap-2">
-                    {isAnomaly ? <Activity className="h-5 w-5 text-amber-500" /> : isCopilotSurface ? <Sparkles className="h-5 w-5 text-blue-500" /> : isActive ? <AlertOctagon className="h-5 w-5 text-destructive" /> : <CheckCircle2 className="h-5 w-5 text-emerald-500" />}
+                    {isAnomaly ? <Activity className="h-5 w-5 text-amber-500" /> : isCopilotSurface ? <Sparkles className="h-5 w-5 text-blue-500" /> : isLlmPerf ? <Cpu className="h-5 w-5 text-violet-500" /> : isActive ? <AlertOctagon className="h-5 w-5 text-destructive" /> : <CheckCircle2 className="h-5 w-5 text-emerald-500" />}
                     {alert.title}
                   </CardTitle>
                   <CardDescription className="mt-1">{timeStr}</CardDescription>
@@ -195,6 +212,16 @@ export default function Alerts() {
                   )}
                   {isAutoResolved && (
                     <Badge variant="outline" className="border-emerald-500 text-emerald-600" data-testid={`badge-auto-resolved-${alert.id}`}>
+                      Auto-resolved
+                    </Badge>
+                  )}
+                  {isLlmPerf && (
+                    <Badge variant="outline" className="border-violet-500 text-violet-600" data-testid={`badge-llm-perf-${alert.id}`}>
+                      LLM Performance
+                    </Badge>
+                  )}
+                  {isLlmPerfResolved && (
+                    <Badge variant="outline" className="border-emerald-500 text-emerald-600" data-testid={`badge-llm-perf-resolved-${alert.id}`}>
                       Auto-resolved
                     </Badge>
                   )}
@@ -229,7 +256,7 @@ export default function Alerts() {
         {alerts.length === 0 && (
           <Card>
             <CardContent className="flex items-center justify-center py-8 text-muted-foreground">
-              {filter === "anomaly" ? "No anomalies detected." : filter === "copilot_surface" ? "No Copilot surface alerts." : filter === "threshold" ? "No threshold alerts." : "No alerts recorded."}
+              {filter === "anomaly" ? "No anomalies detected." : filter === "copilot_surface" ? "No Copilot surface alerts." : filter === "llm_performance" ? "No LLM performance alerts." : filter === "threshold" ? "No threshold alerts." : "No alerts recorded."}
             </CardContent>
           </Card>
         )}

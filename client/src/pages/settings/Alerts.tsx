@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil, Gauge, Sparkles, Zap } from "lucide-react";
+import { AlertCircle, Mail, MessageSquare, Plus, Webhook, Activity, Loader2, RefreshCw, DollarSign, Trash2, Pencil, Gauge, Sparkles, Zap, Cpu } from "lucide-react";
 import { useActiveTenant } from "@/lib/tenant-context";
 import { useAnomalyStreamConfigs, useUpdateAnomalyStreamConfig, useTriggerJob, useAlertRules, useCreateAlertRule, useUpdateAlertRule, useDeleteAlertRule, useLlmModels, useAnomalyNotificationSettings, useUpdateAnomalyNotificationSettings, type AnomalyStreamConfigUI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
@@ -102,6 +102,8 @@ export default function AlertRulesConfig() {
       {activeTenantId && <FoundryThrottleRulesSection tenantId={activeTenantId} />}
 
       {activeTenantId && <CopilotSurfaceRulesSection tenantId={activeTenantId} />}
+
+      {activeTenantId && <LlmPerformanceRulesSection tenantId={activeTenantId} />}
 
       <div className="grid gap-6">
         <Card>
@@ -1317,6 +1319,379 @@ function StreamConfigRow({ tenantId, config, isPending, onSave }: {
           <span>6 (fewer alerts)</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+const LLM_PERF_WINDOWS = [15, 30, 60, 120, 240] as const;
+
+function LlmPerformanceRulesSection({ tenantId }: { tenantId: string }) {
+  const { data: rulesAll = [], isLoading } = useAlertRules(tenantId);
+  const { data: llmModels = [] } = useLlmModels(tenantId);
+  const createMut = useCreateAlertRule();
+  const updateMut = useUpdateAlertRule();
+  const deleteMut = useDeleteAlertRule();
+  const triggerJob = useTriggerJob();
+  const { toast } = useToast();
+
+  const [name, setName] = useState("");
+  const [metric, setMetric] = useState<"llm_error_rate" | "llm_p95_latency_ms">("llm_error_rate");
+  const [threshold, setThreshold] = useState("");
+  const [windowMinutes, setWindowMinutes] = useState<number>(60);
+  const [modelId, setModelId] = useState<string>("__all__");
+  const [agentId, setAgentId] = useState<string>("");
+  const [channels, setChannels] = useState("");
+
+  function submit() {
+    const t = parseFloat(threshold);
+    if (!name.trim() || !Number.isFinite(t) || t <= 0) {
+      toast({ title: "Please fill in all fields with valid values", variant: "destructive" });
+      return;
+    }
+    const parsedChannels = channels
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const idx = entry.indexOf(":");
+        if (idx <= 0) return { type: "email", target: entry };
+        return { type: entry.slice(0, idx).trim(), target: entry.slice(idx + 1).trim() };
+      })
+      .filter((c) => c.target.length > 0);
+
+    createMut.mutate(
+      {
+        tenantId,
+        alertType: "llm_performance",
+        name: name.trim(),
+        metric,
+        condition: "gt",
+        threshold: t,
+        windowMinutes,
+        modelId: modelId !== "__all__" ? modelId : null,
+        streamKey: agentId.trim() || null,
+        channels: parsedChannels,
+        enabled: true,
+      } as any,
+      {
+        onSuccess: () => {
+          toast({ title: "Rule created" });
+          setName(""); setThreshold(""); setAgentId(""); setChannels("");
+          setModelId("__all__"); setMetric("llm_error_rate"); setWindowMinutes(60);
+        },
+        onError: (e: any) => toast({ title: "Failed to create rule", description: e?.message, variant: "destructive" }),
+      },
+    );
+  }
+
+  const perfRules = (rulesAll as AlertRule[]).filter((r) => r.alertType === "llm_performance");
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-violet-100 dark:bg-violet-900/30">
+            <Cpu className="h-5 w-5 text-violet-600" />
+          </div>
+          <div>
+            <CardTitle>LLM Performance Alerts</CardTitle>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Alert when an LLM model's error rate or P95 latency exceeds a threshold over a rolling window.
+              Checks every 15 minutes, auto-resolves when metric recovers.
+            </p>
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => triggerJob.mutate("llmPerfEval", { onSuccess: () => toast({ title: "LLM perf evaluation triggered" }) })}
+          data-testid="button-trigger-llm-perf-eval"
+        >
+          <RefreshCw className="h-3 w-3 mr-1" /> Run now
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 border rounded-lg p-4 bg-muted/40">
+          <div className="space-y-2">
+            <Label htmlFor="llm-perf-rule-name">Rule name</Label>
+            <Input
+              id="llm-perf-rule-name"
+              placeholder="e.g. GPT-4o latency guard"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              data-testid="input-llm-perf-rule-name"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Metric</Label>
+            <Select value={metric} onValueChange={(v) => setMetric(v as any)}>
+              <SelectTrigger data-testid="select-llm-perf-metric">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="llm_error_rate">Error rate (%)</SelectItem>
+                <SelectItem value="llm_p95_latency_ms">P95 latency (ms)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="llm-perf-threshold">
+              Threshold ({metric === "llm_error_rate" ? "%" : "ms"})
+            </Label>
+            <Input
+              id="llm-perf-threshold"
+              type="number"
+              min={1}
+              placeholder={metric === "llm_error_rate" ? "e.g. 10" : "e.g. 3000"}
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+              data-testid="input-llm-perf-threshold"
+            />
+            <p className="text-xs text-muted-foreground">
+              {metric === "llm_error_rate" ? "Alert when error rate exceeds this %" : "Alert when P95 latency exceeds this ms"}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>Window</Label>
+            <Select value={String(windowMinutes)} onValueChange={(v) => setWindowMinutes(Number(v))}>
+              <SelectTrigger data-testid="select-llm-perf-window">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LLM_PERF_WINDOWS.map((w) => (
+                  <SelectItem key={w} value={String(w)}>
+                    Last {w >= 60 ? `${w / 60}h` : `${w}m`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Model (optional)</Label>
+            <Select value={modelId} onValueChange={setModelId}>
+              <SelectTrigger data-testid="select-llm-perf-model">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All models</SelectItem>
+                {(llmModels as any[]).map((m) => (
+                  <SelectItem key={m.id} value={m.id}>{m.displayName || m.modelName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="llm-perf-agent">Agent scope (optional)</Label>
+            <Input
+              id="llm-perf-agent"
+              placeholder="Agent ID or name"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              data-testid="input-llm-perf-agent"
+            />
+          </div>
+          <div className="space-y-2 md:col-span-3">
+            <Label htmlFor="llm-perf-channels">Notify channels</Label>
+            <Input
+              id="llm-perf-channels"
+              placeholder="email:ops@acme.com, teams:#alerts"
+              value={channels}
+              onChange={(e) => setChannels(e.target.value)}
+              data-testid="input-llm-perf-channels"
+            />
+          </div>
+          <div className="md:col-span-5 flex justify-end">
+            <Button onClick={submit} disabled={createMut.isPending} data-testid="button-create-llm-perf-rule">
+              {createMut.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+              Add LLM performance rule
+            </Button>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center py-6">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : perfRules.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center" data-testid="text-no-llm-perf-rules">
+            No LLM performance rules yet. Create one above to be alerted when models start erroring or slowing down.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {perfRules.map((rule) => (
+              <LlmPerfRuleRow
+                key={rule.id}
+                rule={rule}
+                llmModels={llmModels as any[]}
+                onToggle={(enabled) =>
+                  updateMut.mutate(
+                    { id: rule.id, enabled },
+                    {
+                      onSuccess: () => toast({ title: enabled ? "Rule enabled" : "Rule disabled" }),
+                      onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+                    },
+                  )
+                }
+                onSave={(patch) =>
+                  updateMut.mutate(
+                    { id: rule.id, ...patch },
+                    {
+                      onSuccess: () => toast({ title: "Rule updated" }),
+                      onError: (e: any) => toast({ title: "Update failed", description: e?.message, variant: "destructive" }),
+                    },
+                  )
+                }
+                onDelete={() =>
+                  deleteMut.mutate(rule.id, {
+                    onSuccess: () => toast({ title: "Rule deleted" }),
+                    onError: (e: any) => toast({ title: "Delete failed", description: e?.message, variant: "destructive" }),
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function LlmPerfRuleRow({ rule, llmModels, onToggle, onSave, onDelete }: {
+  rule: AlertRule;
+  llmModels: any[];
+  onToggle: (enabled: boolean) => void;
+  onSave: (patch: Partial<AlertRule>) => void;
+  onDelete: () => void;
+}) {
+  const metricLabel = rule.metric === "llm_error_rate" ? "Error rate" : "P95 latency";
+  const thresholdLabel = rule.metric === "llm_error_rate" ? `${rule.threshold}%` : `${rule.threshold}ms`;
+  const windowLabel = (rule as any).windowMinutes ? ((rule as any).windowMinutes >= 60 ? `${(rule as any).windowMinutes / 60}h` : `${(rule as any).windowMinutes}m`) : "60m";
+  const model = llmModels.find((m) => m.id === rule.modelId);
+  const scopeLabel = model ? (model.displayName || model.modelName) : "All models";
+  const agentLabel = rule.streamKey ? ` · agent: ${rule.streamKey}` : "";
+  const channelSummary = (rule.channels ?? []).map((c) => `${c.type}:${c.target}`).join(", ");
+
+  const [editing, setEditing] = useState(false);
+  const [editMetric, setEditMetric] = useState(rule.metric);
+  const [editThreshold, setEditThreshold] = useState(String(rule.threshold ?? 0));
+  const [editWindow, setEditWindow] = useState(String((rule as any).windowMinutes ?? 60));
+  const [editModelId, setEditModelId] = useState(rule.modelId ?? "__all__");
+  const [editAgentId, setEditAgentId] = useState(rule.streamKey ?? "");
+  const [editChannels, setEditChannels] = useState(channelSummary);
+
+  function saveEdits() {
+    const t = parseFloat(editThreshold);
+    if (!Number.isFinite(t) || t <= 0) return;
+    const parsedChannels = editChannels
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const idx = entry.indexOf(":");
+        if (idx <= 0) return { type: "email", target: entry };
+        return { type: entry.slice(0, idx).trim(), target: entry.slice(idx + 1).trim() };
+      })
+      .filter((c) => c.target.length > 0);
+    onSave({
+      metric: editMetric,
+      threshold: t,
+      windowMinutes: Number(editWindow),
+      modelId: editModelId !== "__all__" ? editModelId : null,
+      streamKey: editAgentId.trim() || null,
+      channels: parsedChannels,
+    } as any);
+    setEditing(false);
+  }
+
+  return (
+    <div className="border rounded-lg p-3 flex flex-col gap-2" data-testid={`row-llm-perf-rule-${rule.id}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Switch
+            checked={rule.enabled ?? true}
+            onCheckedChange={onToggle}
+            data-testid={`switch-llm-perf-rule-${rule.id}`}
+          />
+          <div>
+            <p className="font-medium text-sm" data-testid={`text-llm-perf-rule-name-${rule.id}`}>{rule.name}</p>
+            <p className="text-xs text-muted-foreground">
+              {metricLabel} &gt; {thresholdLabel} · window {windowLabel} · {scopeLabel}{agentLabel}
+            </p>
+            {channelSummary && (
+              <p className="text-xs text-muted-foreground mt-0.5">Channels: {channelSummary}</p>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setEditing((v) => !v)} data-testid={`button-edit-llm-perf-rule-${rule.id}`}>
+            <Pencil className="h-3 w-3" />
+          </Button>
+          <Button size="sm" variant="ghost" className="text-destructive" onClick={onDelete} data-testid={`button-delete-llm-perf-rule-${rule.id}`}>
+            <Trash2 className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
+      {editing && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2 border-t pt-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Metric</Label>
+            <Select value={editMetric} onValueChange={setEditMetric}>
+              <SelectTrigger className="h-8 text-xs" data-testid={`select-edit-llm-metric-${rule.id}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="llm_error_rate">Error rate (%)</SelectItem>
+                <SelectItem value="llm_p95_latency_ms">P95 latency (ms)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Threshold ({editMetric === "llm_error_rate" ? "%" : "ms"})</Label>
+            <Input className="h-8 text-xs" type="number" value={editThreshold} onChange={(e) => setEditThreshold(e.target.value)} data-testid={`input-edit-llm-threshold-${rule.id}`} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Window</Label>
+            <Select value={editWindow} onValueChange={setEditWindow}>
+              <SelectTrigger className="h-8 text-xs" data-testid={`select-edit-llm-window-${rule.id}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LLM_PERF_WINDOWS.map((w) => (
+                  <SelectItem key={w} value={String(w)}>
+                    Last {w >= 60 ? `${w / 60}h` : `${w}m`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Model</Label>
+            <Select value={editModelId} onValueChange={setEditModelId}>
+              <SelectTrigger className="h-8 text-xs" data-testid={`select-edit-llm-model-${rule.id}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All models</SelectItem>
+                {llmModels.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>{m.displayName || m.modelName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Agent scope</Label>
+            <Input className="h-8 text-xs" placeholder="Agent ID (optional)" value={editAgentId} onChange={(e) => setEditAgentId(e.target.value)} data-testid={`input-edit-llm-agent-${rule.id}`} />
+          </div>
+          <div className="space-y-1 md:col-span-2">
+            <Label className="text-xs">Channels</Label>
+            <Input className="h-8 text-xs" placeholder="email:..., teams:#..." value={editChannels} onChange={(e) => setEditChannels(e.target.value)} data-testid={`input-edit-llm-channels-${rule.id}`} />
+          </div>
+          <div className="flex items-end justify-end gap-2 md:col-span-4">
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
+            <Button size="sm" onClick={saveEdits} data-testid={`button-save-llm-perf-rule-${rule.id}`}>Save</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

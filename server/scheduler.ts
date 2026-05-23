@@ -40,6 +40,7 @@ const jobStatus: Record<string, JobStatus> = {
   llmSpendRollup: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   llmBudgetEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   copilotSurfaceEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
+  llmPerfEval: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   skillsSharePointDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
   skillsOneDriveDiscovery: { lastRun: null, isRunning: false, nextRun: null, abortController: null, activeJobRunId: null },
 };
@@ -47,6 +48,7 @@ const jobStatus: Record<string, JobStatus> = {
 let llmSpendRollupInterval: NodeJS.Timeout | null = null;
 let llmBudgetEvalInterval: NodeJS.Timeout | null = null;
 let copilotSurfaceEvalInterval: NodeJS.Timeout | null = null;
+let llmPerfEvalInterval: NodeJS.Timeout | null = null;
 
 async function runLlmSpendRollupJob(): Promise<void> {
   if (jobStatus.llmSpendRollup.isRunning) return;
@@ -105,6 +107,26 @@ async function runCopilotSurfaceEvalJob(): Promise<void> {
     jobStatus.copilotSurfaceEval.isRunning = false;
     jobStatus.copilotSurfaceEval.activeJobRunId = null;
     jobStatus.copilotSurfaceEval.lastRun = new Date();
+  }
+}
+
+async function runLlmPerfEvalJob(): Promise<void> {
+  if (jobStatus.llmPerfEval.isRunning) return;
+  jobStatus.llmPerfEval.isRunning = true;
+  const jobRunId = await trackJobStart("llmPerfEval");
+  jobStatus.llmPerfEval.activeJobRunId = jobRunId;
+  try {
+    const result = await storage.evaluateLlmPerformanceAlerts();
+    await trackJobComplete(jobRunId, "completed", result);
+    console.log(`[Scheduler] LLM perf eval: ${result.rulesEvaluated} rules, ${result.alertsCreated} alerts created, ${result.alertsResolved} resolved`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await trackJobComplete(jobRunId, "failed", undefined, msg);
+    console.error("[Scheduler] LLM perf eval failed:", msg);
+  } finally {
+    jobStatus.llmPerfEval.isRunning = false;
+    jobStatus.llmPerfEval.activeJobRunId = null;
+    jobStatus.llmPerfEval.lastRun = new Date();
   }
 }
 
@@ -1053,6 +1075,10 @@ export function startScheduler(): void {
     runCopilotSurfaceEvalJob();
   }, 15 * 60 * 1000);
 
+  llmPerfEvalInterval = setInterval(() => {
+    runLlmPerfEvalJob();
+  }, 15 * 60 * 1000);
+
   if (skillsSharePointInterval) clearInterval(skillsSharePointInterval);
   if (skillsOneDriveInterval) clearInterval(skillsOneDriveInterval);
 
@@ -1150,6 +1176,11 @@ export function startScheduler(): void {
   }, 115 * 1000);
 
   setTimeout(() => {
+    console.log("[Scheduler] Running initial LLM performance evaluation...");
+    runLlmPerfEvalJob();
+  }, 125 * 1000);
+
+  setTimeout(() => {
     console.log("[Scheduler] Running initial SharePoint skills discovery...");
     runSkillsSharePointJob();
   }, 130 * 1000);
@@ -1196,6 +1227,7 @@ export function stopScheduler(): void {
   if (llmSpendRollupInterval) { clearInterval(llmSpendRollupInterval); llmSpendRollupInterval = null; }
   if (llmBudgetEvalInterval) { clearInterval(llmBudgetEvalInterval); llmBudgetEvalInterval = null; }
   if (copilotSurfaceEvalInterval) { clearInterval(copilotSurfaceEvalInterval); copilotSurfaceEvalInterval = null; }
+  if (llmPerfEvalInterval) { clearInterval(llmPerfEvalInterval); llmPerfEvalInterval = null; }
   if (skillsSharePointInterval) { clearInterval(skillsSharePointInterval); skillsSharePointInterval = null; }
   if (skillsOneDriveInterval) { clearInterval(skillsOneDriveInterval); skillsOneDriveInterval = null; }
   if (stuckJobInterval) { clearInterval(stuckJobInterval); stuckJobInterval = null; }
@@ -1273,6 +1305,10 @@ export async function triggerLlmBudgetEvalNow(): Promise<void> {
 
 export async function triggerCopilotSurfaceEvalNow(): Promise<void> {
   runCopilotSurfaceEvalJob();
+}
+
+export async function triggerLlmPerfEvalNow(): Promise<void> {
+  runLlmPerfEvalJob();
 }
 
 export async function triggerSkillsSharePointDiscoveryNow(): Promise<void> {

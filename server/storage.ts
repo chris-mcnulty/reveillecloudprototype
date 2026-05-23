@@ -278,6 +278,8 @@ export interface IStorage {
   evaluateFoundryThrottleRules(tenantId?: string): Promise<{ rulesEvaluated: number; alertsCreated: number }>;
   getActiveCopilotSurfaceRules(): Promise<AlertRule[]>;
   evaluateCopilotSurfaceAlerts(): Promise<{ rulesEvaluated: number; alertsCreated: number; alertsResolved: number }>;
+  getActiveLlmPerformanceRules(): Promise<AlertRule[]>;
+  evaluateLlmPerformanceAlerts(): Promise<{ rulesEvaluated: number; alertsCreated: number; alertsResolved: number }>;
 
   createSavedView(data: InsertSavedView): Promise<SavedView>;
   updateSavedView(id: string, data: Partial<InsertSavedView>): Promise<SavedView | undefined>;
@@ -4114,6 +4116,142 @@ export class DatabaseStorage implements IStorage {
           resolvedAt: new Date().toISOString(),
         };
         await this.updateAlertPayload(latest.id, resolved);
+        alertsResolved++;
+      }
+    }
+
+    return { rulesEvaluated: rules.length, alertsCreated, alertsResolved };
+  }
+
+  async getActiveLlmPerformanceRules(): Promise<AlertRule[]> {
+    return db.select().from(alertRules)
+      .where(and(eq(alertRules.alertType, "llm_performance"), eq(alertRules.enabled, true)));
+  }
+
+  async evaluateLlmPerformanceAlerts(): Promise<{ rulesEvaluated: number; alertsCreated: number; alertsResolved: number }> {
+    const rules = await this.getActiveLlmPerformanceRules();
+    let alertsCreated = 0;
+    let alertsResolved = 0;
+
+    type PerfStats = { totalCalls: number; errorRate: number; p95DurationMs: number };
+    const statsCache = new Map<string, PerfStats>();
+
+    const getStats = async (tenantId: string, modelId: string | null, agentId: string | null, windowMinutes: number): Promise<PerfStats> => {
+      const cacheKey = `${tenantId}:${modelId ?? "__all__"}:${agentId ?? "__all__"}:${windowMinutes}`;
+      const cached = statsCache.get(cacheKey);
+      if (cached) return cached;
+
+      const since = new Date(Date.now() - windowMinutes * 60 * 1000);
+      const modelFilter = modelId ? sql`AND model_id = ${modelId}` : sql``;
+      const agentFilter = agentId ? sql`AND agent_id = ${agentId}` : sql``;
+
+      const rows = await db.execute(sql`
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'error')::int AS errors,
+          COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::real AS p95_duration
+        FROM llm_calls
+        WHERE tenant_id = ${tenantId}
+          AND called_at >= ${since}
+          ${modelFilter}
+          ${agentFilter}
+      `);
+      const r = (rows.rows as any[])[0] || {};
+      const total = Number(r.total) || 0;
+      const stats: PerfStats = {
+        totalCalls: total,
+        errorRate: total > 0 ? (Number(r.errors) / total) * 100 : 0,
+        p95DurationMs: Number(r.p95_duration) || 0,
+      };
+      statsCache.set(cacheKey, stats);
+      return stats;
+    };
+
+    for (const rule of rules) {
+      const metric = rule.metric as "llm_error_rate" | "llm_p95_latency_ms";
+      if (metric !== "llm_error_rate" && metric !== "llm_p95_latency_ms") continue;
+
+      const windowMinutes = rule.windowMinutes ?? 60;
+      const modelId = rule.modelId ?? null;
+      const agentId = rule.streamKey ?? null;
+
+      const stats = await getStats(rule.tenantId, modelId, agentId, windowMinutes);
+
+      const minSamples = 5;
+      const streamKey = `llm_performance:${rule.id}`;
+      const [latest] = await db.select().from(alerts)
+        .where(and(
+          eq(alerts.tenantId, rule.tenantId),
+          eq(alerts.alertType, "llm_performance"),
+          eq(alerts.streamKey, streamKey),
+        ))
+        .orderBy(desc(alerts.timestamp))
+        .limit(1);
+      const latestPayload = (latest?.payload ?? null) as Record<string, any> | null;
+      const isOpen = latestPayload?.state === "open";
+
+      if (stats.totalCalls < minSamples) {
+        if (isOpen && latest) {
+          await this.updateAlertPayload(latest.id, { ...latestPayload, state: "resolved", resolvedAt: new Date().toISOString() });
+          alertsResolved++;
+        }
+        continue;
+      }
+
+      const observed = metric === "llm_error_rate" ? stats.errorRate : stats.p95DurationMs;
+      const breached = observed > rule.threshold;
+
+      if (breached && !isOpen) {
+        const severity = metric === "llm_error_rate"
+          ? (observed > 50 ? "critical" : observed > 20 ? "warning" : "info")
+          : (observed > rule.threshold * 3 ? "critical" : observed > rule.threshold * 1.5 ? "warning" : "info");
+        const tenant = await this.getTenant(rule.tenantId);
+        let modelName: string | null = null;
+        if (modelId) {
+          const model = await this.getLlmModel(modelId);
+          modelName = model?.displayName || model?.modelName || null;
+        }
+        const scopeLabel = modelName ?? "all models";
+        const agentSuffix = agentId ? ` · agent ${agentId}` : "";
+        const metricLabel = metric === "llm_error_rate" ? "error rate" : "P95 latency";
+        const valueLabel = metric === "llm_error_rate" ? `${observed.toFixed(1)}%` : `${Math.round(observed)}ms`;
+        const thresholdLabel = metric === "llm_error_rate" ? `${rule.threshold}%` : `${rule.threshold}ms`;
+        const deepLink = `/llm-performance${modelId ? `?modelId=${encodeURIComponent(modelId)}` : ""}`;
+
+        await this.createAlert({
+          tenantId: rule.tenantId,
+          ruleId: rule.id,
+          alertType: "llm_performance",
+          severity,
+          title: `LLM ${metricLabel} elevated: ${scopeLabel}`,
+          message: `${tenant?.name ?? "Tenant"}: ${metricLabel} for ${scopeLabel}${agentSuffix} is ${valueLabel} (threshold ${thresholdLabel}) over the last ${windowMinutes}m across ${stats.totalCalls} calls. See details at ${deepLink}`,
+          streamKey,
+          payload: {
+            ruleId: rule.id,
+            ruleName: rule.name,
+            metric,
+            modelId,
+            modelName,
+            agentId,
+            threshold: rule.threshold,
+            observed,
+            windowMinutes,
+            totalCalls: stats.totalCalls,
+            errorRate: stats.errorRate,
+            p95DurationMs: stats.p95DurationMs,
+            state: "open",
+            channels: rule.channels ?? [],
+            firstSeenAt: new Date().toISOString(),
+          },
+        });
+        alertsCreated++;
+      } else if (!breached && isOpen && latest) {
+        await this.updateAlertPayload(latest.id, {
+          ...latestPayload,
+          state: "resolved",
+          observed,
+          resolvedAt: new Date().toISOString(),
+        });
         alertsResolved++;
       }
     }
