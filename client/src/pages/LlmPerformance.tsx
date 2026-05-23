@@ -721,6 +721,7 @@ export default function LlmPerformance() {
 
       {foundryPanelOpen && (
         <FoundryDiscoveryPanel
+          tenantId={activeTenantId}
           deployments={foundryData?.deployments ?? []}
           discovering={discoverMutation.isPending}
           onDiscover={() => discoverMutation.mutate()}
@@ -766,7 +767,173 @@ function FoundryUsageCell({ usage, label }: { usage: FoundryDeploymentUsage | nu
   );
 }
 
+interface FoundryUsageSnapshotRow {
+  id: string;
+  deploymentId: string;
+  windowHours: number;
+  windowStart: string;
+  windowEnd: string;
+  processedPromptTokens: number | null;
+  generatedTokens: number | null;
+  totalCalls: number | null;
+  throttledCalls: number | null;
+  inferredCostCents: number | null;
+  collectedAt: string;
+}
+
+const TREND_WINDOWS = [
+  { label: "24h", wh: 24 },
+  { label: "7d", wh: 168 },
+  { label: "30d", wh: 720 },
+];
+
+function FoundryTrendPanel({
+  deployment,
+  tenantId,
+  onBack,
+}: {
+  deployment: FoundryDeployment;
+  tenantId: string;
+  onBack: () => void;
+}) {
+  const [trendWindow, setTrendWindow] = useState<number>(24);
+  const queryClient = useQueryClient();
+
+  const { data: snapshots = [], isFetching, dataUpdatedAt } = useQuery<FoundryUsageSnapshotRow[]>({
+    queryKey: ["/api/foundry/usage-trend", tenantId, deployment.id, trendWindow],
+    queryFn: async () => {
+      const qs = new URLSearchParams({
+        deploymentId: deployment.id,
+        windowHours: String(trendWindow),
+        limit: "72",
+      });
+      const res = await fetch(`/api/tenants/${tenantId}/foundry/usage?${qs}`);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    staleTime: 60000,
+  });
+
+  const chartData = useMemo(() => {
+    return [...snapshots].reverse().map(s => ({
+      t: new Date(s.collectedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+      promptTokens: s.processedPromptTokens ?? 0,
+      generatedTokens: s.generatedTokens ?? 0,
+      totalCalls: s.totalCalls ?? 0,
+      throttledCalls: s.throttledCalls ?? 0,
+    }));
+  }, [snapshots]);
+
+  const lastCollectedAt = snapshots[0]?.collectedAt
+    ? new Date(snapshots[0].collectedAt).toLocaleString()
+    : null;
+
+  function refresh() {
+    queryClient.invalidateQueries({ queryKey: ["/api/foundry/usage-trend", tenantId, deployment.id, trendWindow] });
+  }
+
+  return (
+    <div className="space-y-4" data-testid={`section-foundry-trend-${deployment.id}`}>
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onBack} data-testid="button-back-to-deployments" className="text-xs px-2">
+          <ChevronRight className="h-3.5 w-3.5 rotate-180 mr-1" />
+          Back
+        </Button>
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold text-sm">{deployment.deploymentName}</div>
+          <div className="text-xs text-muted-foreground truncate">{deployment.accountName} · {deployment.region || "?"}</div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-1 border rounded-md p-0.5">
+          {TREND_WINDOWS.map(w => (
+            <button
+              key={w.wh}
+              onClick={() => setTrendWindow(w.wh)}
+              data-testid={`button-trend-window-${w.label}`}
+              className={`px-3 py-1 text-xs rounded font-medium transition-colors ${
+                trendWindow === w.wh
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          {lastCollectedAt && (
+            <span className="text-xs text-muted-foreground" data-testid="text-last-collected">
+              Last collected: {lastCollectedAt}
+            </span>
+          )}
+          <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching} data-testid="button-refresh-trend">
+            {isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+      </div>
+
+      {chartData.length === 0 ? (
+        <div className="border-2 border-dashed rounded-lg p-8 text-center text-sm text-muted-foreground">
+          {isFetching ? "Loading trend data…" : "No snapshots collected yet for this window. Run a discovery to populate data."}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="border rounded-lg p-3" data-testid="chart-prompt-tokens">
+            <div className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Prompt Tokens</div>
+            <div className="h-36">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
+                  <XAxis dataKey="t" tick={false} />
+                  <YAxis width={50} className="text-xs" tickFormatter={(v) => formatTokens(v)} />
+                  <Tooltip formatter={(v: number) => [formatTokens(v), "Prompt tokens"]} labelFormatter={(l) => l} />
+                  <Line type="monotone" dataKey="promptTokens" stroke="#3b82f6" name="Prompt tokens" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="border rounded-lg p-3" data-testid="chart-generated-tokens">
+            <div className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Generated Tokens</div>
+            <div className="h-36">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
+                  <XAxis dataKey="t" tick={false} />
+                  <YAxis width={50} className="text-xs" tickFormatter={(v) => formatTokens(v)} />
+                  <Tooltip formatter={(v: number) => [formatTokens(v), "Generated tokens"]} labelFormatter={(l) => l} />
+                  <Line type="monotone" dataKey="generatedTokens" stroke="#10b981" name="Generated tokens" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="border rounded-lg p-3" data-testid="chart-calls">
+            <div className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Total Calls &amp; Throttling</div>
+            <div className="h-36">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
+                  <XAxis dataKey="t" tick={false} />
+                  <YAxis width={50} className="text-xs" />
+                  <Tooltip formatter={(v: number, name: string) => [v.toLocaleString(), name]} labelFormatter={(l) => l} />
+                  <Legend />
+                  <Line type="monotone" dataKey="totalCalls" stroke="#6366f1" name="Total calls" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="throttledCalls" stroke="#f59e0b" name="Throttled calls" dot={false} strokeWidth={2} strokeDasharray="4 2" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FoundryDiscoveryPanel({
+  tenantId,
   deployments,
   discovering,
   onDiscover,
@@ -775,6 +942,7 @@ function FoundryDiscoveryPanel({
   onBulkImport,
   bulkImporting,
 }: {
+  tenantId: string;
   deployments: FoundryDeployment[];
   discovering: boolean;
   onDiscover: () => void;
@@ -786,6 +954,7 @@ function FoundryDiscoveryPanel({
   const importedCount = deployments.filter(d => d.llmModelId).length;
   const importable = deployments.filter(d => !d.llmModelId);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [trendDeployment, setTrendDeployment] = useState<FoundryDeployment | null>(null);
 
   function toggleOne(id: string) {
     setSelected(prev => {
@@ -815,112 +984,136 @@ function FoundryDiscoveryPanel({
         </div>
 
         <div className="p-4 space-y-4">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm text-muted-foreground">
-              Enumerate Azure OpenAI / AI Foundry deployments via Azure Resource Manager and Azure Monitor.
-            </p>
-            <Button onClick={onDiscover} disabled={discovering} data-testid="button-run-discovery">
-              {discovering ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Search className="h-4 w-4 mr-1.5" />}
-              {discovering ? "Discovering..." : "Discover now"}
-            </Button>
-          </div>
-
-          {discoveryResult?.needsConsent && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex gap-2" data-testid="alert-needs-consent">
-              <ShieldAlert className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
-              <div className="text-sm">
-                <div className="font-semibold text-amber-700">Admin consent required</div>
-                <div className="text-amber-700/90 mt-1">{discoveryResult.consentReason}</div>
-              </div>
-            </div>
-          )}
-
-          {discoveryResult && !discoveryResult.needsConsent && (
-            <div className="rounded-lg border bg-muted/40 p-3 text-sm" data-testid="text-discovery-summary">
-              <div className="font-medium">Discovery complete</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Scanned {discoveryResult.subscriptionsScanned} subscription(s), {discoveryResult.accountsScanned} account(s).
-                Found {discoveryResult.deploymentsDiscovered} deployment(s). Collected {discoveryResult.metricsCollected} metric snapshot(s).
-              </div>
-              {discoveryResult.errors.length > 0 && (
-                <details className="mt-2">
-                  <summary className="text-xs text-amber-600 cursor-pointer">{discoveryResult.errors.length} warning(s)</summary>
-                  <ul className="text-xs text-muted-foreground mt-1 space-y-0.5 list-disc pl-4">
-                    {discoveryResult.errors.slice(0, 6).map((e, i) => <li key={i}>{e}</li>)}
-                  </ul>
-                </details>
-              )}
-            </div>
-          )}
-
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">{deployments.length} known · {importedCount} imported · {importable.length} importable</span>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={importable.length > 0 && selected.size === importable.length}
-                  onChange={toggleAll}
-                  disabled={importable.length === 0}
-                  data-testid="checkbox-select-all"
-                />
-                <span>Select all</span>
-              </label>
-              <Button
-                size="sm"
-                disabled={selected.size === 0 || bulkImporting}
-                onClick={() => { onBulkImport(Array.from(selected)); setSelected(new Set()); }}
-                data-testid="button-import-selected"
-              >
-                {bulkImporting ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
-                Import selected ({selected.size})
-              </Button>
-            </div>
-          </div>
-
-          {deployments.length === 0 ? (
-            <div className="border-2 border-dashed rounded-lg p-8 text-center text-sm text-muted-foreground">
-              No deployments discovered yet. Click "Discover now" to enumerate Azure OpenAI / AI Foundry resources.
-            </div>
+          {trendDeployment ? (
+            <FoundryTrendPanel
+              deployment={trendDeployment}
+              tenantId={tenantId}
+              onBack={() => setTrendDeployment(null)}
+            />
           ) : (
-            <div className="space-y-2">
-              {deployments.map(d => {
-                const isImported = !!d.llmModelId;
-                const isSelected = selected.has(d.id);
-                return (
-                  <div key={d.id} className="border rounded-lg p-3" data-testid={`row-deployment-${d.id}`}>
-                    <div className="flex items-start gap-3">
-                      <div className="pt-0.5">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleOne(d.id)}
-                          disabled={isImported}
-                          data-testid={`checkbox-deployment-${d.id}`}
-                        />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium" data-testid={`text-deployment-name-${d.id}`}>{d.deploymentName}</span>
-                          {d.modelName && <Badge variant="outline" className="text-xs">{d.modelName}{d.modelVersion ? ` · ${d.modelVersion}` : ""}</Badge>}
-                          {d.skuName && <Badge variant="secondary" className="text-xs">{d.skuName}{d.skuCapacity ? ` · ${d.skuCapacity}` : ""}</Badge>}
-                          {isImported && <Badge className="text-xs bg-green-500/15 text-green-700 border-green-500/30 border">Imported</Badge>}
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-1 truncate">
-                          {d.accountName} · {d.region || "?"} · rg: {d.resourceGroup}
-                        </div>
-                        {d.endpoint && <div className="text-xs text-muted-foreground font-mono truncate">{d.endpoint}</div>}
-                        <div className="grid grid-cols-3 gap-2 mt-2" data-testid={`grid-usage-${d.id}`}>
-                          <FoundryUsageCell usage={d.usage24h} label="24h" />
-                          <FoundryUsageCell usage={d.usage7d} label="7d" />
-                          <FoundryUsageCell usage={d.usage30d} label="30d" />
-                        </div>
-                      </div>
-                    </div>
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm text-muted-foreground">
+                  Enumerate Azure OpenAI / AI Foundry deployments via Azure Resource Manager and Azure Monitor.
+                </p>
+                <Button onClick={onDiscover} disabled={discovering} data-testid="button-run-discovery">
+                  {discovering ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Search className="h-4 w-4 mr-1.5" />}
+                  {discovering ? "Discovering..." : "Discover now"}
+                </Button>
+              </div>
+
+              {discoveryResult?.needsConsent && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 flex gap-2" data-testid="alert-needs-consent">
+                  <ShieldAlert className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm">
+                    <div className="font-semibold text-amber-700">Admin consent required</div>
+                    <div className="text-amber-700/90 mt-1">{discoveryResult.consentReason}</div>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              )}
+
+              {discoveryResult && !discoveryResult.needsConsent && (
+                <div className="rounded-lg border bg-muted/40 p-3 text-sm" data-testid="text-discovery-summary">
+                  <div className="font-medium">Discovery complete</div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Scanned {discoveryResult.subscriptionsScanned} subscription(s), {discoveryResult.accountsScanned} account(s).
+                    Found {discoveryResult.deploymentsDiscovered} deployment(s). Collected {discoveryResult.metricsCollected} metric snapshot(s).
+                  </div>
+                  {discoveryResult.errors.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="text-xs text-amber-600 cursor-pointer">{discoveryResult.errors.length} warning(s)</summary>
+                      <ul className="text-xs text-muted-foreground mt-1 space-y-0.5 list-disc pl-4">
+                        {discoveryResult.errors.slice(0, 6).map((e, i) => <li key={i}>{e}</li>)}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">{deployments.length} known · {importedCount} imported · {importable.length} importable</span>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={importable.length > 0 && selected.size === importable.length}
+                      onChange={toggleAll}
+                      disabled={importable.length === 0}
+                      data-testid="checkbox-select-all"
+                    />
+                    <span>Select all</span>
+                  </label>
+                  <Button
+                    size="sm"
+                    disabled={selected.size === 0 || bulkImporting}
+                    onClick={() => { onBulkImport(Array.from(selected)); setSelected(new Set()); }}
+                    data-testid="button-import-selected"
+                  >
+                    {bulkImporting ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
+                    Import selected ({selected.size})
+                  </Button>
+                </div>
+              </div>
+
+              {deployments.length === 0 ? (
+                <div className="border-2 border-dashed rounded-lg p-8 text-center text-sm text-muted-foreground">
+                  No deployments discovered yet. Click "Discover now" to enumerate Azure OpenAI / AI Foundry resources.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {deployments.map(d => {
+                    const isImported = !!d.llmModelId;
+                    const isSelected = selected.has(d.id);
+                    return (
+                      <div key={d.id} className="border rounded-lg p-3 hover:border-primary/50 transition-colors" data-testid={`row-deployment-${d.id}`}>
+                        <div className="flex items-start gap-3">
+                          <div className="pt-0.5">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleOne(d.id)}
+                              disabled={isImported}
+                              data-testid={`checkbox-deployment-${d.id}`}
+                            />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button
+                                className="font-medium hover:text-primary transition-colors text-left"
+                                onClick={() => setTrendDeployment(d)}
+                                data-testid={`button-deployment-trend-${d.id}`}
+                              >
+                                {d.deploymentName}
+                              </button>
+                              {d.modelName && <Badge variant="outline" className="text-xs">{d.modelName}{d.modelVersion ? ` · ${d.modelVersion}` : ""}</Badge>}
+                              {d.skuName && <Badge variant="secondary" className="text-xs">{d.skuName}{d.skuCapacity ? ` · ${d.skuCapacity}` : ""}</Badge>}
+                              {isImported && <Badge className="text-xs bg-green-500/15 text-green-700 border-green-500/30 border">Imported</Badge>}
+                              <button
+                                className="ml-auto text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
+                                onClick={() => setTrendDeployment(d)}
+                                data-testid={`button-view-trend-${d.id}`}
+                              >
+                                <Activity className="h-3 w-3" />
+                                Trend
+                              </button>
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1 truncate">
+                              {d.accountName} · {d.region || "?"} · rg: {d.resourceGroup}
+                            </div>
+                            {d.endpoint && <div className="text-xs text-muted-foreground font-mono truncate">{d.endpoint}</div>}
+                            <div className="grid grid-cols-3 gap-2 mt-2" data-testid={`grid-usage-${d.id}`}>
+                              <FoundryUsageCell usage={d.usage24h} label="24h" />
+                              <FoundryUsageCell usage={d.usage7d} label="7d" />
+                              <FoundryUsageCell usage={d.usage30d} label="30d" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

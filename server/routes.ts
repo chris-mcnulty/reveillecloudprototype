@@ -2390,11 +2390,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/tenants/:tenantId/foundry/usage", async (req, res) => {
-    const { deploymentId, since, limit } = req.query as any;
+    const { deploymentId, since, limit, windowHours } = req.query as any;
     const snapshots = await storage.getFoundryUsageSnapshots(req.params.tenantId, {
       deploymentId,
       since: since ? new Date(since) : undefined,
       limit: limit ? parseInt(limit) : undefined,
+      windowHours: windowHours ? parseInt(windowHours) : undefined,
     });
     res.json(snapshots);
   });
